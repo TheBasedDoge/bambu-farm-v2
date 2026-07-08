@@ -22,24 +22,29 @@ Technologies used:
 * Quarkus https://quarkus.io/
 * Vaadin https://vaadin.com/
 
+> **This fork** adds a farm-management layer on top of upstream: dashboard/UI overhaul, batch print library & queue, print history/cost tracking, maintenance tracking, notifications, Tasmota smart plug control, AI-based print/bed monitoring, AMS tray override, Etsy/eBay order-to-print integration, PWA install, and camera access from outside your LAN without forwarding an extra port. See [Fork Additions](#fork-additions) below for the full list and how to configure each one.
+
 # Features / Supported Devices
 
-| Feature | A1 | A1 Mini | P1P | P1S | X1C|
-|--|:--:|:--:|:--:|:--:|:--:|
-|**Remote View**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>3</sup></li></ul>|
-|**Upload to SD card**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
-|**Print .3mf from SD card**<sup>1</sup>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
-|**Print .gcode from SD card**|?|?|?|?|?|
-|**Batch Printing**<sup>4</sup>|?|?|?|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
-|**AMS**|?|?|?|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|
-|**Send Custom GCode**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|
+| Feature | A1 | A1 Mini | P1P | P1S | X1C | X1E | H2D |
+|--|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+|**Remote View**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>3</sup></li></ul>|<ul><li>[x] <sup>3</sup></li></ul>|<ul><li>[x] <sup>3,6</sup></li></ul>|
+|**Upload to SD card**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
+|**Print .3mf from SD card**<sup>1</sup>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
+|**Print .gcode from SD card**|?|?|?|?|?|?|?|
+|**Batch Printing**<sup>4</sup>|?|?|?|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|<ul><li>[x] <sup>2</sup></li></ul>|
+|**AMS**|?|?|?|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>6</sup></li></ul>|
+|**AMS Slot Override**<sup>5</sup>|?|?|?|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] <sup>6</sup></li></ul>|
+|**Send Custom GCode**|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|<ul><li>[x] </li></ul>|
 
 1. **Currently only .3mf sliced projects are supported.**
   > In Bambu Studio/Orca slicer, make sure to slice the place and then use the "File -> Export -> Export plate sliced file". This creates a `.3mf` project with embedded `.gcode` plate.
 2. **FTPS Connections needs SSL Session Reuse via [Bouncy Castle](#bouncy-castle)**
 > Without enabling bouncy castle, you will see `552 SSL connection failed: session resuse required`
-3. Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README.
+3. Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README. This fork adds a WebRTC (WHEP) stream with automatic HLS fallback so the camera also works from outside your LAN without forwarding an extra port - see [Cameras and remote access](#cameras-and-remote-access).
 4. **Batch Priting** allows you to upload a single/multi sliced .3mf and select which plate to send to multiple printers, each with their own filament mapping.
+5. Force a print onto one specific AMS tray (or the external spool), overriding the printer's current filament assignment - see [AMS Slot Override](#ams-slot-override).
+6. **H2D** has two independent nozzles, each of which can be fed by an AMS unit or its own external spool slot. Dashboard, camera overlay, and print dialogs all show both nozzles side by side.
 
 # Screenshots
 
@@ -102,6 +107,12 @@ Building:
 mvn clean install -Pproduction
 ```
 
+> **Frontend bundle caching:** Vaadin caches the compiled frontend bundle at `bambu/src/main/bundles/prod.bundle`. When only **theme/CSS or index.html** changes, the cache may be reused and your changes silently won't appear. Force a full frontend rebuild with:
+> ```bash
+> mvn clean install -Pproduction -Dvaadin.force.production.build=true
+> ```
+> (or delete `bambu/src/main/bundles/prod.bundle` before building). Java-only changes never need this.
+
 Create a new directory and copy `bambu/target/bambu-web-1.0.0-runner.jar` into it, example:
 ```bash
 tfyre@fsteyn-pc:/mnt/c/bambu-farm$ ls -al
@@ -122,6 +133,297 @@ You can now access it via http://127.0.0.1:8080 (username: admin / password: adm
 # Running as a service
 
 Refer to [README.service.md](/docs/README.service.md)
+
+---
+
+# Fork Additions
+
+Everything below is new on top of upstream. Sidebar pages referenced here are visible once you're logged in - most require the `admin` role (see [User Section](#user-section)).
+
+## UI & Dashboard
+
+### OLED dark theme
+The existing Dark Theme toggle now renders a true-black OLED look: pure black page background, elevated dark card surfaces with hairline borders, high-contrast text, green progress accents. The light theme is unchanged. Theme file: `bambu/frontend/themes/bambu-theme/oled.css`.
+
+### Layout
+- **Sidebar** holds all navigation with icons, plus Dark Theme / Notifications / Logout pinned at the bottom. On desktop, the menu button toggles between the full 200px drawer and a 60px icon-only rail (remembered per browser). On mobile it remains an overlay.
+- **Top bar** is minimal: menu, title, and centered page controls. On phones (<820px) the title hides and controls become icon-only on a single row.
+- **Favicon** at `/favicon.svg`, replaceable at `bambu/src/main/resources/META-INF/resources/favicon.svg`.
+
+### Dashboard
+- **Overview bar** at the top: colored status dots (blue printing / green available / grey offline / red errors with printer names), plus "Next available: P1S 31% • 1h 40m (~21:38)".
+- **Responsive card grid**: column count derives from a minimum card width (380px). Phones get one full-width column, ultrawides get many. Override in a custom `styles.css` next to the jar:
+
+  ```css
+  :root { --bambu-card-min: 500px; }  /* wider cards = fewer columns */
+  ```
+- **Rearrange**: drag a card by its name header onto another card.
+- **Resize**: drag a card's right edge - it snaps to 1-6 grid columns on release.
+- **Sort** dropdown: Custom (drag order) / Name / Status / Next Available. Manual dragging switches back to Custom.
+- **Compact view**: "Toggle View" switches to a dense table (status, file, progress, ETA per row).
+- **Reset Layout** clears order, sizes, and sorting.
+- **Per-card extras**: Print Again button (green, bottom), Start Next queued job (blue, bottom), print queue dialog, maintenance-due wrench (red, opens Maintenance), Tasmota plug menu, fullscreen on thumbnail click.
+- **Global lights**: header buttons switch all printer chamber lights on/off.
+- **AMS / filament tray highlight**: whichever AMS tray (or external spool slot) is currently feeding the hotend is highlighted with a pulsing glow while printing, so you can see at a glance which color/spool is loaded - including on H2D's independent left/right nozzle slots.
+- **H2D dual-nozzle support**: per-nozzle temperatures, side-by-side external spool slots with "Left Nozzle" / "Right Nozzle" labels, fan speed, firmware/module info, and build plate ID all shown per printer.
+
+All layout preferences are stored in **browser localStorage** (per browser/device, not per account).
+
+### Remember Me login
+The login page has a "Remember this device" checkbox that stores a secure token (30-day expiry) so you don't have to log in again on that browser. Works alongside normal username/password auth; no configuration needed.
+
+## Cameras and remote access
+
+The **Cameras** page (`/cameras`, sidebar) is a camera wall with overlays on the image: printer name (click = printer detail), status, progress bar with %, time remaining + clock ETA, and error messages. Cards resize with grid snapping like the dashboard. Click a card for fullscreen (a great single-printer kiosk view).
+
+**Accessing the camera from outside your LAN** normally means forwarding an extra port for the video stream. This fork's camera view instead:
+1. Tries **WHEP (WebRTC-HTTP Egress Protocol)** first - connects in about a second when UDP/WebRTC traffic isn't blocked (typical on LAN, and on many external networks too).
+2. Falls back automatically to **HLS** (via a self-hosted `hls.js`, no CDN dependency) after a few seconds if WHEP can't establish - HLS works over plain HTTPS, so it gets through networks/proxies that block WebRTC, at the cost of a few seconds of latency.
+
+This requires mediamtx + the reverse proxy config in [docker/bambu-liveview](docker/bambu-liveview) - see that folder's README for setup.
+
+## SD card browser
+
+The **SD Card** page (`/sdcard`, sidebar):
+- Multi-select checkboxes + "Delete Selected" (single confirmation for all files).
+- Sortable Name column; long names get tooltips.
+- "Columns" button to show/hide columns; all columns resizable. Choices persist per browser.
+- Toolbar wraps on narrow screens.
+- Thumbnail preview for `.3mf` files.
+- **Print dialog AMS Slot Override**: when printing a `.3mf` straight from the printer's SD card, an optional "AMS Slot Override" dropdown lets you force the print onto one specific AMS tray or the external spool, instead of relying on the plain "Use AMS" checkbox - see [AMS Slot Override](#ams-slot-override).
+
+## Batch print: library and queue
+
+The **Batch Print** page (`/batchprint`, sidebar).
+
+### Project library
+Uploading a `.3mf` on the Batch Print page saves it permanently to the library folder on the server. The **Library** dropdown reloads any saved project instantly - no re-upload from your PC. The trash button removes a project.
+
+Combined with **Skip if same size** (on by default, skips the printer SD upload when unchanged) repeat batch prints start in seconds.
+
+```properties
+bambu.batch-print.library=bambu-library
+```
+
+### Print queue
+- In Batch Print, select printers (they may be busy - only filament mapping is required) and click **Queue**. The job stores file, plate, options, and per-printer AMS mapping in `bambu-queue.json`.
+- When a printer is idle with queued jobs, its dashboard card shows **"Start Next (N queued): file"**. Clicking asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing ever auto-starts.
+- The queue icon in the card toolbar opens the queue dialog (view/remove entries).
+
+```properties
+bambu.queue-file=bambu-queue.json
+```
+
+## AMS Slot Override
+
+Force a print to load filament from one specific physical AMS tray - or the external spool - instead of whatever the printer currently has assigned, for:
+- **SD card prints**: the "AMS Slot Override" dropdown in the SD Card page's print dialog (`/sdcard`).
+- **Etsy/eBay queued prints**: an "AMS slot" dropdown per mapped part in the [Etsy and eBay order mapping](#etsy-and-ebay-order-to-print-integration) editor.
+
+Choices are A1-D4 (covering up to 4 AMS units) plus "External Spool"; leaving it blank keeps the printer's current/default filament assignment untouched. This assumes a single-material print - multi-color files aren't individually remapped per color. The dashboard highlights whichever tray is actually feeding the hotend, so you can confirm the override took effect (see [Dashboard](#dashboard) above).
+
+## History, stats, charts and cost
+
+A background service records every print (any source - app, Bambu Studio, SD) by watching state transitions: file, start, duration, result (Finished/Failed/Stopped/Offline). Stored in `bambu-history.json` (capped at 1,000 jobs).
+
+The **History** page shows per-printer stat badges (prints, success %, total time), two charts (prints per day over 14 days as stacked finished/failed bars; 7-day utilization % per printer), and a sortable job grid.
+
+### Cost per job
+```properties
+bambu.cost-per-kg=18.50
+bambu.currency-symbol=$
+bambu.history-file=bambu-history.json
+```
+When `cost-per-kg` > 0, History gains Weight and Cost columns and totals in the stat badges. Weights are captured from the plate data when prints start via Batch Print or the queue (prints started elsewhere show `--`).
+
+## Maintenance and print hours
+
+Print hours accumulate per printer while the app runs (`bambu-maintenance.json`). The **Maintenance** view shows a Print Hours column and a wrench dialog per printer with maintenance tasks - defaults: carbon rods 200h, lead screws 300h, nozzle/hotend 100h, belts 500h - each showing hours since last done (red when overdue), Done/Remove buttons, and custom task creation.
+
+Set each printer's real starting total in the dialog (tracking starts at zero). Overdue tasks show a red wrench on the dashboard card.
+
+```properties
+bambu.maintenance-file=bambu-maintenance.json
+```
+
+### Backup
+The **Backup** button in Maintenance downloads a zip of all state files (maintenance, history, queue) plus the entire project library. Your `.env` is excluded (it contains access codes) - back it up separately.
+
+## AI Print Monitoring
+
+The **AI Settings** page (`/ai-settings`, sidebar). Uses a self-hosted [Ollama](https://ollama.com/) instance with a vision-capable model to watch printer camera snapshots and catch problems automatically:
+- **Failure detection**: actively-printing printers are checked periodically for spaghetti/detached prints.
+- **First-layer quality check**: fires once, a configurable delay after a print starts.
+- **Bed-clear check**: gates the dashboard's "Start Next" queue action - it asks the AI to confirm the bed looks clear before letting the next queued job start (in addition to the "Is the bed clear?" prompt).
+
+Results show as a status chip on each dashboard card (with an animated "checking" dot) and in a table on the AI Settings page, which also has a runtime on/off toggle (no restart needed) and a "Check Now" button per printer.
+
+```properties
+# Base URL of your Ollama server - AI checks are fully skipped when this is unset
+bambu.ollama.url=http://192.168.1.x:11434
+# Vision-capable model, e.g. gemma3:12b, llava, moondream2
+bambu.ollama.model=gemma3:12b
+bambu.ollama.failure-check-interval=5m
+bambu.ollama.first-layer-delay=8m
+bambu.ollama.timeout=60s
+```
+
+## Notifications
+
+### Browser notifications
+The **Notifications** checkbox in the sidebar enables desktop notifications on print finish/fail (requires an open tab and HTTPS or localhost).
+
+### Notification Settings page
+The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due - resets on server restart), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
+
+### MQTT (recommended for Home Assistant)
+```properties
+bambu.notifications.mqtt.url=tcp://192.168.1.10:1883
+bambu.notifications.mqtt.username=user
+bambu.notifications.mqtt.password=pass
+bambu.notifications.mqtt.topic=bambufarm
+```
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, or `maintenance`, with JSON payload:
+
+```json
+{"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
+```
+
+Example Home Assistant automation trigger:
+
+```yaml
+trigger:
+  - platform: mqtt
+    topic: bambufarm/+/fail
+```
+
+### Webhook (Discord / ntfy / generic)
+```properties
+bambu.notifications.webhook-url=https://discord.com/api/webhooks/...
+bambu.notifications.webhook-format=discord   # json | discord | ntfy
+```
+Both MQTT and webhook can be enabled at once. Printer errors are checked every 30s; maintenance-due every 6h (deduped until the task is marked done).
+
+## Tasmota smart plugs
+
+```properties
+bambu.printers.myprinter1.tasmota=http://192.168.1.50
+# For multi-outlet Tasmota power strips only - leave unset for single-outlet plugs
+bambu.printers.myprinter1.tasmota-channel=2
+```
+Adds a plug button to that printer's dashboard card with Power On / Power Off (confirmed; an extra warning appears if the printer is printing). Uses Tasmota's `/cm?cmnd=Power%20On|Off` HTTP API (no web password support yet).
+
+The **Tasmota Settings** page (`/tasmota-settings`, sidebar) is a central control panel: one card per printer with a plug configured, showing live status (ON/OFF/Unreachable) plus Power On / Power Off / Refresh buttons, so you don't need to go to each printer's dashboard card individually.
+
+## Etsy and eBay order-to-print integration
+
+Two sidebar pages - **Etsy Sales Orders** (`/etsy-orders`) and **eBay Sales Orders** (`/ebay-orders`) - pull unfulfilled/open orders from your shop and let you map each listing straight to a print job, then queue it across your printers. Both marketplaces behave identically (same mapping model, same queueing logic).
+
+**Connect**: each page has a "Connect" button that runs the marketplace's OAuth flow (Etsy uses PKCE; eBay uses Basic auth with your app's RuName) and stores tokens locally (`bambu-etsy-tokens.json` / `bambu-ebay-tokens.json`).
+
+**Map a listing to a print**: for each order line item, add one or more parts:
+- **Source**: a file from the batch print library, or a path already on every printer's SD card (same path on every printer).
+- **Plate**: which plate/plate index to print.
+- **Copies/unit**: how many times this part must print per 1 unit ordered (e.g. a part that only fits once per bed needs `copies=2` for a 2x order).
+- **AMS slot** (optional): force this part onto one AMS tray or the external spool - see [AMS Slot Override](#ams-slot-override).
+
+A listing can have multiple parts - useful for kits made of several different gcode files/plates. Mappings are keyed by listing + variation, so different color/size variations of the same listing can map to different files.
+
+**Queue**: pick one or more printers and click "Queue Print" - jobs are distributed round-robin across the selected printers (`orderedQuantity × copiesPerUnit` jobs per part).
+
+Orders are polled on a schedule and filtered to unfulfilled/open only; poll errors (bad credentials, wrong shop ID, etc.) show directly on the page instead of silently reporting "no orders".
+
+```properties
+# Etsy - from https://www.etsy.com/developers/your-apps
+bambu.etsy.client-id=REPLACE_WITH_KEYSTRING
+bambu.etsy.shared-secret=REPLACE_WITH_SHARED_SECRET
+bambu.etsy.shop-id=REPLACE_WITH_NUMERIC_SHOP_ID
+bambu.etsy.redirect-uri=https://your-domain:8081/etsy-oauth-callback
+bambu.etsy.poll-interval=10m
+bambu.etsy.token-file=bambu-etsy-tokens.json
+bambu.etsy.mapping-file=bambu-etsy-mappings.json
+
+# eBay - from https://developer.ebay.com/my/keys
+bambu.ebay.client-id=REPLACE_WITH_APP_ID
+bambu.ebay.client-secret=REPLACE_WITH_CERT_ID
+bambu.ebay.ru-name=REPLACE_WITH_RUNAME
+bambu.ebay.marketplace-id=EBAY_US
+bambu.ebay.sandbox=false
+bambu.ebay.poll-interval=10m
+bambu.ebay.token-file=bambu-ebay-tokens.json
+bambu.ebay.mapping-file=bambu-ebay-mappings.json
+```
+
+> If your Etsy shop ID is wrong, the page shows an HTTP 403 "User does not own Shop ..." error with a "Look up my shop ID" button that fetches the correct ID for the account you connected with.
+
+## PWA (install as app)
+
+The app serves a web manifest, service worker, and icon (`bambu/src/main/resources/META-INF/resources/icons/icon.png`). Over **HTTPS**, browsers offer "Install" / "Add to Home Screen" for a standalone fullscreen app - ideal on phones and tablets.
+
+## HTTPS setup
+
+No code needed - Quarkus handles TLS via config. Add to the `.env` next to the jar:
+
+```properties
+# PEM certificate + key
+quarkus.http.ssl-port=8443
+quarkus.http.ssl.certificate.files=/path/to/fullchain.pem
+quarkus.http.ssl.certificate.key-files=/path/to/privkey.pem
+
+# optional: redirect all plain-http traffic to https
+quarkus.http.insecure-requests=redirect
+```
+
+For a PKCS12 keystore instead:
+
+```properties
+quarkus.http.ssl-port=8443
+quarkus.http.ssl.certificate.key-store-file=/path/to/keystore.p12
+quarkus.http.ssl.certificate.key-store-password=changeit
+```
+
+Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notifications on any device and PWA installation.
+
+## Quick reference
+
+### New config properties
+| Property | Default | Purpose |
+|---|---|---|
+| `bambu.maintenance-file` | `bambu-maintenance.json` | Print hours + maintenance tasks |
+| `bambu.history-file` | `bambu-history.json` | Print job history |
+| `bambu.queue-file` | `bambu-queue.json` | Print queues |
+| `bambu.batch-print.library` | `bambu-library` | Saved .3mf projects |
+| `bambu.cost-per-kg` | `0` | Material cost (enables Cost column) |
+| `bambu.currency-symbol` | `$` | Cost display |
+| `bambu.printers.X.tasmota` | - | Smart plug base URL |
+| `bambu.printers.X.tasmota-channel` | - | Multi-outlet Tasmota channel number |
+| `bambu.notifications.mqtt.url` | - | Event broker, e.g. `tcp://ip:1883` |
+| `bambu.notifications.mqtt.username/password` | - | Broker credentials |
+| `bambu.notifications.mqtt.topic` | `bambufarm` | Topic prefix |
+| `bambu.notifications.webhook-url` | - | Webhook target |
+| `bambu.notifications.webhook-format` | `json` | `json` / `discord` / `ntfy` |
+| `bambu.ollama.url` | - | Ollama server URL (unset = AI checks skipped) |
+| `bambu.ollama.model` | `gemma3:12b` | Vision model for AI checks |
+| `bambu.ollama.failure-check-interval` | `5m` | How often actively-printing printers are checked |
+| `bambu.ollama.first-layer-delay` | `8m` | Delay before the first-layer quality check |
+| `bambu.ollama.timeout` | `60s` | Per-request Ollama timeout |
+| `bambu.etsy.client-id` / `shared-secret` | - | Etsy app credentials |
+| `bambu.etsy.shop-id` | - | Numeric Etsy shop ID |
+| `bambu.etsy.redirect-uri` | - | OAuth callback URL |
+| `bambu.etsy.poll-interval` | `10m` | Order polling frequency |
+| `bambu.ebay.client-id` / `client-secret` | - | eBay app credentials |
+| `bambu.ebay.ru-name` | - | eBay RuName (OAuth redirect identifier) |
+| `bambu.ebay.marketplace-id` | `EBAY_US` | eBay marketplace |
+| `bambu.ebay.sandbox` | `false` | Use eBay sandbox environment |
+| `bambu.ebay.poll-interval` | `10m` | Order polling frequency |
+
+### Files to back up
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+
+### Browser localStorage keys (per device)
+Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.
+
+---
 
 # Example Config
 
@@ -167,7 +469,7 @@ bambu.printers.myprinter1.timelapse=true
 bambu.printers.myprinter1.bed-levelling=true
 bambu.printers.myprinter1.flow-calibration=true
 bambu.printers.myprinter1.vibration-calibration=true
-bambu.printers.myprinter1.model=unknown / a1 / a1mini / p1p / p1s / x1c
+bambu.printers.myprinter1.model=unknown / a1 / a1mini / p1p / p1s / x1c / x1e / h2d
 bambu.printers.myprinter1.mqtt.port=8883
 bambu.printers.myprinter1.mqtt.url=ssl://${bambu.printers.myprinter1.ip}:${bambu.printers.myprinter1.mqtt.port}
 bambu.printers.myprinter1.mqtt.report-topic=device/${bambu.printers.myprinter1.device-id}/report
@@ -185,6 +487,8 @@ bambu.printers.myprinter1.stream.watch-dog=5m
 ```
 
 ### Farm extras
+
+See [Fork Additions](#fork-additions) above for what each of these enables. Full property list also in the [Quick reference](#quick-reference) table.
 
 ```properties
 # Tasmota smart plug powering a printer (adds a plug button to the dashboard card)
@@ -209,6 +513,24 @@ bambu.notifications.mqtt.topic=bambufarm
 # Webhook alternative: format = json / discord / ntfy
 bambu.notifications.webhook-url=https://discord.com/api/webhooks/...
 bambu.notifications.webhook-format=discord
+
+# AI print/bed monitoring via Ollama - unset url = fully disabled
+bambu.ollama.url=http://192.168.1.x:11434
+bambu.ollama.model=gemma3:12b
+bambu.ollama.failure-check-interval=5m
+bambu.ollama.first-layer-delay=8m
+
+# Etsy order-to-print integration
+bambu.etsy.client-id=REPLACE_WITH_KEYSTRING
+bambu.etsy.shared-secret=REPLACE_WITH_SHARED_SECRET
+bambu.etsy.shop-id=REPLACE_WITH_NUMERIC_SHOP_ID
+bambu.etsy.redirect-uri=https://your-domain:8081/etsy-oauth-callback
+
+# eBay order-to-print integration
+bambu.ebay.client-id=REPLACE_WITH_APP_ID
+bambu.ebay.client-secret=REPLACE_WITH_CERT_ID
+bambu.ebay.ru-name=REPLACE_WITH_RUNAME
+bambu.ebay.marketplace-id=EBAY_US
 ```
 
 ### Cloud Section
@@ -355,7 +677,7 @@ bambu.printers.myprinter1.stream.enable=true
 Live View is the ability to remotely stream the X1C camera (or any other webcam) and requires Remote View to be enabled.
 
 > [!NOTE]
-> Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README.
+> Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README. This fork's camera page also falls back to HLS automatically when WebRTC can't connect (e.g. from outside your LAN) - see [Cameras and remote access](#cameras-and-remote-access).
 
 
 ```properties
@@ -400,6 +722,7 @@ Add to `.env`:
 ```properties
 quarkus.http.limits.max-body-size=30M
 ```
+> Multi-plate batch print projects can be considerably larger than a single-plate `.3mf` - if uploads fail on the Batch Print page, raise this (e.g. `300M`). If you're behind a reverse proxy (nginx, etc.), also raise its body-size limit (e.g. nginx's `client_max_body_size`) to match.
 
 ### Configure XY/Z movement speeds
 
@@ -499,6 +822,10 @@ quarkus.log.file.path=application.log
 
 * https://github.com/bambulab/BambuStudio/issues/1536#issuecomment-1811916472
 
+## Marketplace APIs
+
+* Etsy Open API v3: https://developer.etsy.com/documentation/
+* eBay Sell Fulfillment API: https://developer.ebay.com/api-docs/sell/fulfillment/overview.html
 
 ## Images from
 
