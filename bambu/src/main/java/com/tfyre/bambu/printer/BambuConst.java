@@ -279,22 +279,25 @@ public class BambuConst {
     }
 
     public enum PrinterModel {
-        UNKNOWN("unknown", false),
-        A1("a1", false),
-        A1MINI("a1mini", false),
-        P1P("p1p", false),
-        P1S("p1s", false),
-        X1C("x1c", true),
-        X1E("x1e", true);
+        UNKNOWN("unknown", false, false),
+        A1("a1", false, false),
+        A1MINI("a1mini", false, false),
+        P1P("p1p", false, false),
+        P1S("p1s", false, false),
+        X1C("x1c", true, false),
+        X1E("x1e", true, false),
+        H2D("h2d", true, true);
 
         private static final Map<String, PrinterModel> MAP = EnumSet.allOf(PrinterModel.class).stream().collect(Collectors.toMap(PrinterModel::getModel, Function.identity()));
 
         private final String model;
         private final boolean temperature;
+        private final boolean dualNozzle;
 
-        private PrinterModel(final String model, final boolean temperature) {
+        private PrinterModel(final String model, final boolean temperature, final boolean dualNozzle) {
             this.model = model;
             this.temperature = temperature;
+            this.dualNozzle = dualNozzle;
         }
 
         public String getModel() {
@@ -305,10 +308,89 @@ public class BambuConst {
             return temperature;
         }
 
+        /** True for printers with two independent extruders (e.g. H2D). */
+        public boolean isDualNozzle() {
+            return dualNozzle;
+        }
+
         public static Optional<PrinterModel> fromModel(final String model) {
             return Optional.ofNullable(MAP.get(model));
         }
 
+    }
+
+    /**
+     * AMS unit type, derived from the module hw_ver / project_name strings returned by get_version.
+     * <p>
+     * Known strings (update as more hardware is tested):
+     * <ul>
+     *   <li>AMS v1:      hw_ver starts with "AMS_A", project_name "AMS"</li>
+     *   <li>AMS 2 Pro:   hw_ver contains "AMS2_PRO", project_name "AMS2_PRO"</li>
+     *   <li>AMS 2 Lite:  hw_ver contains "AMS2_LITE", project_name "AMS2_LITE"</li>
+     *   <li>AMS Hub:     hw_ver contains "AMS_HUB"</li>
+     * </ul>
+     */
+    public enum AmsType {
+        UNKNOWN("Unknown", false),
+        AMS("AMS", false),
+        AMS_2_PRO("AMS 2 Pro", true),
+        AMS_2_LITE("AMS 2 Lite", false),
+        AMS_HUB("AMS Hub", false);
+
+        private final String label;
+        private final boolean supportsDrying;
+
+        private AmsType(final String label, final boolean supportsDrying) {
+            this.label = label;
+            this.supportsDrying = supportsDrying;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public boolean isSupportsDrying() {
+            return supportsDrying;
+        }
+
+        /**
+         * Derive AMS type from the module name, project_name and hw_ver fields.
+         * <p>
+         * Module names include a unit-index suffix (e.g. {@code "ams/0"}, {@code "n3f/0"})
+         * which is stripped before matching.
+         * Observed in the wild:
+         * <ul>
+         *   <li>AMS v1:    name {@code "ams/N"}, hw_ver {@code "AMS08"} (or similar AMS prefix)</li>
+         *   <li>AMS 2 Pro: name {@code "n3f/N"}, hw_ver {@code "N3F05"} (Bambu internal code "n3f")</li>
+         * </ul>
+         */
+        public static AmsType fromModule(final String name, final String projectName, final String hwVer) {
+            if (name == null || name.isBlank()) {
+                return UNKNOWN;
+            }
+            // Strip the "/N" unit-index suffix before comparing
+            final String slash = name.contains("/") ? name.substring(0, name.lastIndexOf('/')).trim() : name.trim();
+            final String baseName = slash.toLowerCase();
+            final String hw = hwVer != null ? hwVer.toUpperCase() : "";
+
+            // AMS 2 Pro: Bambu internal code name "n3f", hw_ver prefix "N3F"
+            if ("n3f".equals(baseName) || hw.startsWith("N3F")) {
+                return AMS_2_PRO;
+            }
+            // AMS 2 Lite: not yet observed — add when hw_ver strings are known
+            if (hw.contains("AMS2_LITE") || hw.contains("AMS_LITE")) {
+                return AMS_2_LITE;
+            }
+            // AMS Hub: not yet observed — add when hw_ver strings are known
+            if (hw.contains("AMS_HUB")) {
+                return AMS_HUB;
+            }
+            // Original AMS: module name starts with "ams"
+            if (baseName.startsWith("ams")) {
+                return AMS;
+            }
+            return UNKNOWN;
+        }
     }
 
     public enum GCodeState {

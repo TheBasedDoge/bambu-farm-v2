@@ -37,6 +37,94 @@ public interface BambuConfig {
     @WithDefault("true")
     boolean remoteView();
 
+    @WithDefault("bambu-maintenance.json")
+    String maintenanceFile();
+
+    @WithDefault("bambu-history.json")
+    String historyFile();
+
+    @WithDefault("bambu-queue.json")
+    String queueFile();
+
+    /**
+     * Filament cost per kg - when greater than 0, the History view shows estimated material cost per job.
+     */
+    @WithDefault("0")
+    double costPerKg();
+
+    @WithDefault("$")
+    String currencySymbol();
+
+    Notify notifications();
+
+    public interface Notify {
+
+        /**
+         * Webhook URL for farm events (print finish/fail, printer errors, maintenance due).
+         */
+        Optional<String> webhookUrl();
+
+        /**
+         * Webhook payload format: json (full event), discord, or ntfy (plain text).
+         */
+        @WithDefault("json")
+        String webhookFormat();
+
+        NotifyMqtt mqtt();
+
+        public interface NotifyMqtt {
+
+            /**
+             * MQTT broker for farm events, e.g. tcp://192.168.1.10:1883
+             */
+            Optional<String> url();
+
+            Optional<String> username();
+
+            Optional<String> password();
+
+            @WithDefault("bambufarm")
+            String topic();
+
+        }
+
+    }
+
+    Ollama ollama();
+
+    public interface Ollama {
+
+        /**
+         * Base URL of the Ollama server, e.g. http://192.168.1.x:11434. When absent, all AI checks are skipped.
+         */
+        Optional<String> url();
+
+        /**
+         * Vision-capable model to use for AI checks, e.g. gemma3:12b, llava, moondream2.
+         */
+        @WithDefault("gemma3:12b")
+        String model();
+
+        /**
+         * How often to check actively-printing printers for spaghetti / failure.
+         */
+        @WithDefault("5m")
+        Duration failureCheckInterval();
+
+        /**
+         * How long after a print starts before the first-layer quality check fires.
+         */
+        @WithDefault("8m")
+        Duration firstLayerDelay();
+
+        /**
+         * HTTP request timeout for each Ollama inference call.
+         */
+        @WithDefault("60s")
+        Duration timeout();
+
+    }
+
     Optional<String> liveViewUrl();
 
     Dashboard dashboard();
@@ -53,6 +141,97 @@ public interface BambuConfig {
     Optional<List<Temperature>> preheat();
 
     Cloud cloud();
+
+    Etsy etsy();
+
+    Ebay ebay();
+
+    public interface Ebay {
+
+        /**
+         * eBay App ID (Client ID), from https://developer.ebay.com/my/keys
+         */
+        Optional<String> clientId();
+
+        /**
+         * eBay Cert ID (Client Secret).
+         */
+        Optional<String> clientSecret();
+
+        /**
+         * The "RuName" (redirect URL name) eBay assigns your app - an opaque identifier, NOT a real URL. Set the
+         * actual HTTPS callback (this app's /ebay-oauth-callback) as the "Auth Accepted URL" for this RuName in
+         * Your Account &gt; Application Keys &gt; User Tokens.
+         */
+        Optional<String> ruName();
+
+        /**
+         * Marketplace to fetch orders for, e.g. EBAY_US, EBAY_GB, EBAY_AU.
+         */
+        @WithDefault("EBAY_US")
+        String marketplaceId();
+
+        /**
+         * Use the sandbox environment (auth.sandbox.ebay.com / api.sandbox.ebay.com) instead of production.
+         */
+        @WithDefault("false")
+        boolean sandbox();
+
+        /**
+         * How often to poll eBay for new/updated unfulfilled orders.
+         */
+        @WithDefault("10m")
+        Duration pollInterval();
+
+        @WithDefault("30s")
+        Duration timeout();
+
+        @WithDefault("bambu-ebay-tokens.json")
+        String tokenFile();
+
+        @WithDefault("bambu-ebay-mappings.json")
+        String mappingFile();
+
+    }
+
+    public interface Etsy {
+
+        /**
+         * Etsy App API Key (keystring), from https://www.etsy.com/developers/your-apps
+         */
+        Optional<String> clientId();
+
+        /**
+         * Etsy App shared secret, used together with the keystring for the x-api-key header.
+         */
+        Optional<String> sharedSecret();
+
+        /**
+         * Numeric shop ID to pull receipts/listings for.
+         */
+        Optional<String> shopId();
+
+        /**
+         * Callback URL registered with the Etsy app, e.g. https://backup.lockoncomputer.com:8081/etsy-oauth-callback
+         */
+        Optional<String> redirectUri();
+
+        /**
+         * How often to poll Etsy for new/updated unfulfilled orders.
+         */
+        @WithDefault("10m")
+        Duration pollInterval();
+
+        @WithDefault("30s")
+        Duration timeout();
+
+        @WithDefault("bambu-etsy-tokens.json")
+        String tokenFile();
+
+        @WithDefault("bambu-etsy-mappings.json")
+        String mappingFile();
+
+    }
 
     public interface BatchPrint {
 
@@ -73,6 +252,9 @@ public interface BambuConfig {
 
         @WithDefault("true")
         boolean enforceFilamentMapping();
+
+        @WithDefault("bambu-library")
+        String library();
         
     }
 
@@ -140,6 +322,18 @@ public interface BambuConfig {
         @WithDefault("unknown")
         @WithConverter(PrinterModelConverter.class)
         PrinterModel model();
+
+        /**
+         * Base URL of a Tasmota smart plug powering this printer, e.g. http://192.168.1.50
+         */
+        Optional<String> tasmota();
+
+        /**
+         * For multi-outlet Tasmota devices (power strips), the outlet channel number: 1, 2, 3…
+         * Leave empty (default) for single-outlet plugs.
+         * Config: bambu.printers.&lt;id&gt;.tasmota-channel=2
+         */
+        Optional<Integer> tasmotaChannel();
 
         public interface Mqtt {
 

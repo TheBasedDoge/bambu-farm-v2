@@ -14,15 +14,22 @@ import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.Unit;
 import com.vaadin.flow.component.button.Button;
+import com.vaadin.flow.component.button.ButtonVariant;
 import com.vaadin.flow.component.checkbox.Checkbox;
 import com.vaadin.flow.component.combobox.ComboBox;
+import com.vaadin.flow.component.contextmenu.ContextMenu;
+import com.vaadin.flow.component.contextmenu.MenuItem;
 import com.vaadin.flow.component.grid.Grid;
 import com.vaadin.flow.component.grid.GridSortOrder;
 import com.vaadin.flow.component.html.Anchor;
+import com.vaadin.flow.component.html.Image;
 import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.icon.Icon;
 import com.vaadin.flow.component.icon.VaadinIcon;
+import com.vaadin.flow.component.dialog.Dialog;
+import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.orderedlayout.HorizontalLayout;
+import com.vaadin.flow.component.orderedlayout.VerticalLayout;
 import com.vaadin.flow.component.progressbar.ProgressBar;
 import com.vaadin.flow.component.textfield.IntegerField;
 import com.vaadin.flow.component.textfield.TextField;
@@ -51,7 +58,9 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPFile;
@@ -88,6 +97,8 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
     Instance<BambuFtp> clientInstance;
     @Inject
     BambuConfig config;
+    @Inject
+    SdCardThumbnailService thumbnailService;
 
     @ConfigProperty(name = "quarkus.http.limits.max-body-size")
     MemorySize maxBodySize;
@@ -101,6 +112,11 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
     private final Button disconnect = new Button("Disconnect", new Icon(VaadinIcon.CLOSE), l -> doDisconnect());
     private final Button cdup = new Button("", new Icon(VaadinIcon.ARROW_BACKWARD), l -> doCDUP());
     private final Button refresh = new Button("Refresh", new Icon(VaadinIcon.REFRESH), l -> runCallable(this::doRefresh));
+    private final Button deleteSelected = new Button("Delete Selected", new Icon(VaadinIcon.TRASH), l -> doRemoveSelected());
+    private final Button broadcastUploadButton = new Button("Broadcast Upload", new Icon(VaadinIcon.UPLOAD), l -> showBroadcastDialog());
+    private final Button columnsButton = new Button("Columns", new Icon(VaadinIcon.GRID_H));
+    private static final String JS_COLUMNS_KEY = "bambufarm-sdcard-columns";
+    private final Map<String, ColumnToggle> columnToggles = new LinkedHashMap<>();
     private final ProgressBar progressBar = newProgressBar();
     private final MemoryBuffer buffer = new MemoryBuffer();
     private final Upload upload = new Upload(buffer);
@@ -166,6 +182,7 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         cdup.setEnabled(!canConnect);
         refresh.setEnabled(!canConnect);
         upload.setVisible(!canConnect);
+        deleteSelected.setEnabled(false);
     }
 
     private void buildList(final BambuPrinters.PrinterDetail printer) {
@@ -239,11 +256,12 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
             nh.showError(l.getErrorMessage());
         });
         final HorizontalLayout result = new HorizontalLayout(new Span("Printers"), comboBox, connect, disconnect, new Span("Path"),
-                path, cdup, refresh, upload
+                path, cdup, refresh, deleteSelected, broadcastUploadButton, columnsButton, upload
         );
         result.setWidthFull();
         result.setAlignItems(Alignment.CENTER);
         result.setMinHeight(80, Unit.PIXELS);
+        result.addClassName("toolbar");
         return result;
     }
 
@@ -318,6 +336,77 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         return anchor;
     }
 
+    private static String formatSize(final long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        } else if (bytes < 1024 * 1024) {
+            return "%.1f KB".formatted(bytes / 1024.0);
+        } else {
+            return "%.1f MB".formatted(bytes / (1024.0 * 1024));
+        }
+    }
+
+    private void showPreview(final FTPFile file) {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle(file.getName());
+        dialog.setWidth("480px");
+
+        final Span sizeLabel = new Span("Size: " + formatSize(file.getSize()));
+        final Span dateLabel = new Span("Date: " + DTF.format(file.getTimestampInstant().atOffset(java.time.ZoneOffset.UTC)));
+        final Span loadingLabel = new Span("Loading thumbnail…");
+        loadingLabel.getStyle().set("color", "var(--lumo-secondary-text-color)");
+
+        final Image thumbImage = new Image();
+        thumbImage.setMaxWidth("440px");
+        thumbImage.setMaxHeight("440px");
+        thumbImage.setVisible(false);
+
+        final VerticalLayout content = new VerticalLayout(sizeLabel, dateLabel, loadingLabel, thumbImage);
+        content.setPadding(false);
+        content.setSpacing(true);
+        dialog.add(content);
+
+        final Button closeBtn = new Button("Close", new Icon(VaadinIcon.CLOSE), l -> dialog.close());
+        dialog.getFooter().add(closeBtn);
+        dialog.open();
+
+        // Fetch thumbnail on background thread — use the currently selected printer in the combobox
+        final BambuPrinters.PrinterDetail printerDetail = comboBox.getValue();
+        if (printerDetail == null) {
+            loadingLabel.setText("No printer selected.");
+            return;
+        }
+        final String directory = path.getValue();
+
+        final BambuFtp activeClient = client;
+        executor.submit(() -> {
+            if (activeClient == null || !activeClient.isConnected()) {
+                ui.access(() -> {
+                    loadingLabel.setText("Not connected — connect to SD card first.");
+                    loadingLabel.setVisible(true);
+                });
+                return;
+            }
+            final Optional<byte[]> thumb = thumbnailService.getThumbnail(
+                    activeClient, printerDetail.name(), directory, file.getName());
+            ui.access(() -> {
+                loadingLabel.setVisible(false);
+                if (thumb.isEmpty()) {
+                    loadingLabel.setText("No thumbnail embedded in this file.");
+                    loadingLabel.setVisible(true);
+                    return;
+                }
+                final byte[] thumbBytes = thumb.get();
+                // Detect format from magic bytes: JPEG starts 0xFF 0xD8, PNG starts 0x89 'P'
+                final String mime = thumbBytes.length >= 2 && (thumbBytes[0] & 0xFF) == 0xFF && (thumbBytes[1] & 0xFF) == 0xD8
+                        ? "image/jpeg" : "image/png";
+                final String b64 = java.util.Base64.getEncoder().encodeToString(thumbBytes);
+                thumbImage.setSrc("data:%s;base64,%s".formatted(mime, b64));
+                thumbImage.setVisible(true);
+            });
+        });
+    }
+
     private Component getComponentColumn(final FTPFile file) {
         final HorizontalLayout result = new HorizontalLayout();
         if (file.isDirectory()) {
@@ -328,6 +417,13 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
             if (BambuConst.EXT.stream().anyMatch(ext -> file.getName().endsWith(ext))) {
                 result.add(new Button(new Icon(VaadinIcon.PRINT), l -> doPrintFile(file)));
             }
+            final String lowerName = file.getName().toLowerCase();
+            if (lowerName.endsWith(".gcode") || lowerName.endsWith(".3mf")) {
+                final Button preview = new Button(new Icon(VaadinIcon.EYE));
+                preview.setTooltipText("Preview thumbnail");
+                preview.addClickListener(l -> showPreview(file));
+                result.add(preview);
+            }
             result.add(getDownloadLink(file));
             result.add(new Button(new Icon(VaadinIcon.FILE_REMOVE), l -> doRemoveFile(file)));
         }
@@ -335,18 +431,72 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
     }
 
     private void configureGrid() {
-        setupColumn("Type", getTypeRender());
-        setupColumn("Name", f -> f.getName());
-
-        setupColumn("Size", f -> f.getSize())
+        final Grid.Column<FTPFile> colType = setupColumn("Type", getTypeRender())
+                .setFlexGrow(0).setWidth("90px");
+        final Grid.Column<FTPFile> colName = setupColumn("Name", f -> f.getName())
+                .setSortable(true).setComparator(Comparator.comparing(FTPFile::getName, String.CASE_INSENSITIVE_ORDER))
+                .setFlexGrow(3)
+                .setTooltipGenerator(FTPFile::getName);
+        final Grid.Column<FTPFile> colSize = setupColumn("Size", f -> f.getSize())
                 .setSortable(true).setComparator(FTPFile::getSize);
         final Grid.Column<FTPFile> coldDate
                 = setupColumn("Date", f -> DTF.format(f.getTimestampInstant().atOffset(ZoneOffset.UTC)))
                         .setSortable(true).setComparator(FTPFile::getTimestampInstant);
 
-        grid.addComponentColumn(this::getComponentColumn);
+        final Grid.Column<FTPFile> colActions = grid.addComponentColumn(this::getComponentColumn)
+                .setHeader("Actions").setFlexGrow(2);
+        grid.getColumns().forEach(c -> c.setResizable(true));
         grid.addItemDoubleClickListener(l -> doDoubleClick(l.getItem()));
+        grid.setSelectionMode(Grid.SelectionMode.MULTI);
+        grid.addSelectionListener(l -> deleteSelected.setEnabled(!l.getAllSelectedItems().isEmpty()));
         grid.sort(GridSortOrder.desc(coldDate).build());
+
+        final ContextMenu columnsMenu = new ContextMenu(columnsButton);
+        columnsMenu.setOpenOnClick(true);
+        addColumnToggle(columnsMenu, "Type", colType);
+        addColumnToggle(columnsMenu, "Name", colName);
+        addColumnToggle(columnsMenu, "Size", colSize);
+        addColumnToggle(columnsMenu, "Date", coldDate);
+        addColumnToggle(columnsMenu, "Actions", colActions);
+        restoreHiddenColumns();
+    }
+
+    private void addColumnToggle(final ContextMenu menu, final String name, final Grid.Column<FTPFile> column) {
+        final MenuItem item = menu.addItem(name, l -> {
+            column.setVisible(l.getSource().isChecked());
+            saveHiddenColumns();
+        });
+        item.setCheckable(true);
+        item.setChecked(true);
+        item.setKeepOpen(true);
+        columnToggles.put(name, new ColumnToggle(column, item));
+    }
+
+    private void saveHiddenColumns() {
+        final String hidden = columnToggles.entrySet().stream()
+                .filter(e -> !e.getValue().column().isVisible())
+                .map(Map.Entry::getKey)
+                .collect(java.util.stream.Collectors.joining(","));
+        getElement().executeJs("localStorage.setItem($0, $1)", JS_COLUMNS_KEY, hidden);
+    }
+
+    private void restoreHiddenColumns() {
+        getElement().executeJs("return localStorage.getItem($0) || ''", JS_COLUMNS_KEY)
+                .then(String.class, saved -> {
+                    if (saved == null || saved.isBlank()) {
+                        return;
+                    }
+                    for (final String name : saved.split(",")) {
+                        Optional.ofNullable(columnToggles.get(name)).ifPresent(toggle -> {
+                            toggle.column().setVisible(false);
+                            toggle.item().setChecked(false);
+                        });
+                    }
+                });
+    }
+
+    private record ColumnToggle(Grid.Column<FTPFile> column, MenuItem item) {
+
     }
 
     private String buildFileName(final String fileName) {
@@ -402,6 +552,42 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
 
                 if (!ok) {
                     runInUI(() -> nh.showError("Delete Failed"));
+                } else {
+                    final String printerName = comboBox.getValue() != null ? comboBox.getValue().name() : "";
+                    thumbnailService.evict(printerName, path.getValue(), file.getName());
+                }
+                doRefresh();
+            });
+        });
+    }
+
+    private void doRemoveSelected() {
+        final List<FTPFile> files = grid.getSelectedItems().stream()
+                .filter(f -> f.isFile() || f.isDirectory())
+                .toList();
+        if (files.isEmpty()) {
+            return;
+        }
+        final String names = files.stream().map(FTPFile::getName).collect(java.util.stream.Collectors.joining("\n"));
+        YesNoCancelDialog.show("Confirm to delete %d item(s):\n\n%s".formatted(files.size(), names), ync -> {
+            if (!ync.isConfirmed()) {
+                return;
+            }
+            runCallable(() -> {
+                final List<String> failed = new java.util.ArrayList<>();
+                for (final FTPFile file : files) {
+                    final boolean ok;
+                    if (file.isDirectory()) {
+                        ok = client.removeDirectory(file.getName());
+                    } else {
+                        ok = client.deleteFile(file.getName());
+                    }
+                    if (!ok) {
+                        failed.add(file.getName());
+                    }
+                }
+                if (!failed.isEmpty()) {
+                    runInUI(() -> nh.showError("Delete Failed: %s".formatted(String.join(", ", failed))));
                 }
                 doRefresh();
             });
@@ -419,13 +605,21 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         final Checkbox bedLevelling = new Checkbox("Bed Levelling", comboBox.getValue().config().bedLevelling());
         final Checkbox flowCalibration = new Checkbox("Flow Calibration", comboBox.getValue().config().flowCalibration());
         final Checkbox vibrationCalibration = new Checkbox("Vibration Calibration", comboBox.getValue().config().vibrationCalibration());
+        final ComboBox<Integer> amsSlot = new ComboBox<>("AMS Slot Override");
+        amsSlot.setItems(AmsSlotSupport.ITEMS);
+        amsSlot.setItemLabelGenerator(AmsSlotSupport::label);
+        amsSlot.setClearButtonVisible(true);
+        amsSlot.setPlaceholder("Use AMS checkbox above");
+        amsSlot.setHelperText(
+                "Optional - forces every filament slot in this file onto one physical tray (or the external "
+                        + "spool), overriding the Use AMS checkbox");
 
         final String fileName = buildFileName(file.getName());
         final boolean is3mf = fileName.endsWith(BambuConst.FILE_3MF);
 
         final List<Component> list;
         if (is3mf) {
-            list = List.of(plateId, useAMS, timelapse, bedLevelling, flowCalibration, vibrationCalibration);
+            list = List.of(plateId, useAMS, amsSlot, timelapse, bedLevelling, flowCalibration, vibrationCalibration);
         } else {
             list = List.of(useAMS, timelapse, bedLevelling, flowCalibration, vibrationCalibration);
         }
@@ -437,16 +631,172 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
             if (fileName.endsWith(BambuConst.FILE_GCODE)) {
                 comboBox.getValue().printer().commandPrintGCodeFile(fileName);
             } else if (is3mf) {
+                final Integer slot = amsSlot.getValue();
+                final List<Integer> amsMapping = slot == null ? List.of() : List.of(slot);
+                final boolean effectiveUseAms = slot != null ? slot != BambuConst.AMS_TRAY_VIRTUAL : useAMS.getValue();
                 comboBox.getValue().printer().commandPrintProjectFile(
                         new BambuPrinter.CommandPPF(
                                 fileName, plateId.getValue(),
-                                useAMS.getValue(), timelapse.getValue(), bedLevelling.getValue(),
+                                effectiveUseAms, timelapse.getValue(), bedLevelling.getValue(),
                                 flowCalibration.getValue(), vibrationCalibration.getValue(),
-                                List.of()));
+                                amsMapping));
             } else {
                 nh.showError("Unknown File: %s".formatted(fileName));
             }
         });
+    }
+
+    private void showBroadcastDialog() {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle("Broadcast Upload to All Printers");
+        dialog.setWidth("560px");
+
+        // Destination path on each SD card
+        final TextField destPath = new TextField("Destination path on SD card");
+        destPath.setWidthFull();
+        // Pre-fill from current connection if available
+        destPath.setValue(client != null && client.isConnected() && !path.getValue().isEmpty()
+                ? path.getValue() : BambuConst.PATHSEP);
+        destPath.setHelperText("e.g. /_S2000 — directory is created automatically if it doesn't exist");
+        destPath.setPrefixComponent(new Icon(VaadinIcon.FOLDER));
+
+        // File picker
+        final MemoryBuffer broadcastBuffer = new MemoryBuffer();
+        final Upload broadcastUpload = new Upload(broadcastBuffer);
+        broadcastUpload.setAcceptedFileTypes(BambuConst.EXT.toArray(String[]::new));
+        broadcastUpload.setMaxFileSize((int) maxBodySize.asLongValue());
+        broadcastUpload.setDropLabel(new Span("Drop .3mf or .gcode file here"));
+        broadcastUpload.setWidthFull();
+        broadcastUpload.addFileRejectedListener(e -> nh.showError(e.getErrorMessage()));
+
+        // Printer selection — all printers, all checked by default
+        final List<BambuPrinters.PrinterDetail> allPrinters = printers.getPrintersDetail().stream()
+                .sorted(Comparator.comparing(BambuPrinters.PrinterDetail::name)).toList();
+        final Map<BambuPrinters.PrinterDetail, Checkbox> printerChecks = new LinkedHashMap<>();
+        final VerticalLayout printerList = new VerticalLayout();
+        printerList.setPadding(false);
+        printerList.setSpacing(false);
+        printerList.add(new Span("Upload to:"));
+        for (final BambuPrinters.PrinterDetail pd : allPrinters) {
+            final Checkbox cb = new Checkbox(pd.name(), true);
+            printerChecks.put(pd, cb);
+            printerList.add(cb);
+        }
+
+        // Per-printer status area (hidden until upload starts)
+        final Map<String, Span> statusSpans = new LinkedHashMap<>();
+        final VerticalLayout statusArea = new VerticalLayout();
+        statusArea.setPadding(false);
+        statusArea.setSpacing(false);
+        statusArea.setVisible(false);
+
+        // Start button — enabled only after a file is buffered
+        final Button startBtn = new Button("Upload to Selected Printers", new Icon(VaadinIcon.UPLOAD));
+        startBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        startBtn.setEnabled(false);
+        startBtn.setWidthFull();
+
+        // Hold the file in memory so each printer gets its own fresh ByteArrayInputStream
+        final String[] pendingFileName = {null};
+        final byte[][] pendingBytes = {null};
+
+        broadcastUpload.addSucceededListener(e -> {
+            try {
+                pendingBytes[0] = broadcastBuffer.getInputStream().readAllBytes();
+                pendingFileName[0] = e.getFileName();
+                startBtn.setEnabled(true);
+            } catch (IOException ex) {
+                nh.showError("Failed to buffer file: " + ex.getMessage());
+            }
+        });
+
+        startBtn.addClickListener(e -> {
+            final String fileName = pendingFileName[0];
+            final byte[] bytes = pendingBytes[0];
+            if (fileName == null || bytes == null) {
+                return;
+            }
+
+            final List<BambuPrinters.PrinterDetail> selected = printerChecks.entrySet().stream()
+                    .filter(en -> en.getValue().getValue())
+                    .map(Map.Entry::getKey)
+                    .toList();
+            if (selected.isEmpty()) {
+                nh.showError("Select at least one printer");
+                return;
+            }
+
+            // Normalise destination path
+            String rawDest = destPath.getValue().trim();
+            if (rawDest.isEmpty()) {
+                rawDest = BambuConst.PATHSEP;
+            }
+            if (!rawDest.startsWith(BambuConst.PATHSEP)) {
+                rawDest = BambuConst.PATHSEP + rawDest;
+            }
+            final String finalDest = rawDest;
+
+            // Build status rows
+            statusSpans.clear();
+            statusArea.removeAll();
+            statusArea.add(new Span("Upload progress:"));
+            for (final BambuPrinters.PrinterDetail pd : selected) {
+                final Span s = new Span("⏳ " + pd.name() + ": Queued");
+                statusSpans.put(pd.name(), s);
+                statusArea.add(s);
+            }
+            statusArea.setVisible(true);
+            startBtn.setEnabled(false);
+
+            // Fire off one FTP connection per printer in parallel
+            for (final BambuPrinters.PrinterDetail pd : selected) {
+                final Span statusSpan = statusSpans.get(pd.name());
+                executor.submit(() -> {
+                    final BambuFtp ftpClient = clientInstance.get().setup(pd, (total, b, stream) -> {
+                    });
+                    try {
+                        ui.access(() -> statusSpan.setText("🔄 " + pd.name() + ": Connecting…"));
+                        ftpClient.doConnect();
+                        if (!ftpClient.doLogin()) {
+                            ui.access(() -> statusSpan.setText("✗ " + pd.name() + ": Login failed"));
+                            return;
+                        }
+                        // Navigate to destination, creating it if necessary
+                        if (!ftpClient.changeWorkingDirectory(finalDest)) {
+                            ftpClient.makeDirectory(finalDest);
+                            if (!ftpClient.changeWorkingDirectory(finalDest)) {
+                                ui.access(() -> statusSpan.setText("✗ " + pd.name() + ": Cannot access " + finalDest));
+                                return;
+                            }
+                        }
+                        ui.access(() -> statusSpan.setText("⬆ " + pd.name() + ": Uploading " + fileName + "…"));
+                        final boolean ok = ftpClient.doUpload(fileName, new ByteArrayInputStream(bytes));
+                        ui.access(() -> statusSpan.setText(ok
+                                ? "✓ " + pd.name() + ": Done"
+                                : "✗ " + pd.name() + ": Upload returned failure"));
+                    } catch (Exception ex) {
+                        Log.errorf(ex, "Broadcast upload to %s failed: %s", pd.name(), ex.getMessage());
+                        final String msg = ex.getMessage();
+                        ui.access(() -> statusSpan.setText("✗ " + pd.name() + ": " + (msg != null ? msg : "Unknown error")));
+                    } finally {
+                        try {
+                            ftpClient.doClose();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                });
+            }
+        });
+
+        final Button closeBtn = new Button("Close", new Icon(VaadinIcon.CLOSE), e -> dialog.close());
+
+        final VerticalLayout content = new VerticalLayout(destPath, broadcastUpload, printerList, startBtn, statusArea);
+        content.setPadding(false);
+        content.setSpacing(true);
+        content.setWidth("100%");
+        dialog.add(content);
+        dialog.getFooter().add(closeBtn);
+        dialog.open();
     }
 
     private void bytesTransferred(long totalBytesTransferred, int bytesTransferred, long streamSize) {

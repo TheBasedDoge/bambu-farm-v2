@@ -25,3 +25,6 @@ bambu/styles.css
 /docker/bambu-liveview/bambu-web-*
 /docker/bambu-liveview/compose.yml
 /docker/bambu-liveview/mediamtx.yml
+
+# Generated Vaadin production frontend bundle
+bambu/src/main/bundles/

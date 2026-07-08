@@ -5,6 +5,7 @@
 */
 
 @import 'bambu.css';
+@import 'oled.css';
 
 /* Example: CSS class name to center align the content . */
 .centered-content {

@@ -2,7 +2,9 @@ package com.tfyre.servlet;
 
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.security.RememberMeService;
 import io.quarkus.elytron.security.common.BcryptUtil;
+import io.quarkus.logging.Log;
 import io.quarkus.security.AuthenticationFailedException;
 import io.quarkus.security.identity.AuthenticationRequestContext;
 import io.quarkus.security.identity.IdentityProvider;
@@ -35,6 +37,8 @@ public class TFyreIdentityProvider implements IdentityProvider<UsernamePasswordA
 
     @Inject
     BambuConfig config;
+    @Inject
+    RememberMeService rememberMeService;
 
     private final Map<String, User> map = new HashMap<>();
 
@@ -67,17 +71,32 @@ public class TFyreIdentityProvider implements IdentityProvider<UsernamePasswordA
 
     @Override
     public Uni<SecurityIdentity> authenticate(final UsernamePasswordAuthenticationRequest request, final AuthenticationRequestContext context) {
-        return context.runBlocking(() ->
-                Optional.ofNullable(map.get(request.getUsername().toLowerCase()))
-                        .filter(u -> passwordValid(u.password, request.getPassword().getPassword()))
-                        .map(u -> QuarkusSecurityIdentity.builder()
-                                .setPrincipal(new QuarkusPrincipal(request.getUsername()))
-                                .addCredential(request.getPassword())
-                                .addRole(u.role())
-                                .build()
-                        )
-                        .orElseThrow(AuthenticationFailedException::new)
-        );
+        return context.runBlocking(() -> {
+            final String username = request.getUsername().toLowerCase();
+            final char[] passwordChars = request.getPassword().getPassword();
+            final User user = map.get(username);
+
+            // 1. Normal username + password check
+            if (user != null && passwordValid(user.password(), passwordChars)) {
+                return buildIdentity(request.getUsername(), user.role());
+            }
+
+            // 2. Remember-me token check (token passed as the "password" field)
+            final String tokenCandidate = new String(passwordChars);
+            if (user != null && rememberMeService.isValidToken(username, tokenCandidate)) {
+                Log.debugf("TFyreIdentityProvider: remember-me auto-login for %s", username);
+                return buildIdentity(request.getUsername(), user.role());
+            }
+
+            throw new AuthenticationFailedException();
+        });
+    }
+
+    private QuarkusSecurityIdentity buildIdentity(final String username, final String role) {
+        return QuarkusSecurityIdentity.builder()
+                .setPrincipal(new QuarkusPrincipal(username))
+                .addRole(role)
+                .build();
     }
 
     private boolean passwordValid(final String password, final char[] requestPassword) {

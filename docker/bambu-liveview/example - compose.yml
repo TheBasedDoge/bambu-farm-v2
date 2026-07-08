@@ -37,16 +37,16 @@ services:
             - mediamtx
             - bambuweb
 
-    printer1:
+    h2d:
         extends:
             file: common-liveview.yml
             service: liveview
         depends_on:
             - mediamtx
         environment:
-            PRINTER_HOST: FIXME_this_is_my_printer_ip_or_host
-            PRINTER_ID: FIXME_this_is_my_printer_id
-            PRINTER_ACCESS_CODE: FIXME_this_is_my_printer_access_code
+            PRINTER_HOST: 192.168.0.182
+            PRINTER_ID: printer5
+            PRINTER_ACCESS_CODE: c909a947
 
 #    printer2:
 #        extends:

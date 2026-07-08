@@ -1,0 +1,122 @@
+/*
+   Clean OLED dark theme.
+   Overrides the Lumo dark palette (applied via the `theme="dark"` attribute on <html>)
+   with a true-black page background, elevated printer cards and high-contrast text.
+*/
+
+html[theme~="dark"] {
+    /* True black base for OLED */
+    --lumo-base-color: hsl(0, 0%, 0%);
+
+    /* Elevated surface tones */
+    --bambu-card-color: hsl(222, 16%, 9%);
+    --bambu-surface-color: hsl(222, 14%, 13%);
+    --bambu-border-color: hsla(220, 30%, 80%, 0.08);
+
+    /* Text */
+    --lumo-header-text-color: hsl(0, 0%, 98%);
+    --lumo-body-text-color: hsla(0, 0%, 96%, 0.92);
+    --lumo-secondary-text-color: hsla(0, 0%, 85%, 0.72);
+    --lumo-tertiary-text-color: hsla(0, 0%, 75%, 0.55);
+    --lumo-disabled-text-color: hsla(0, 0%, 65%, 0.35);
+
+    /* Contrast scale (pure white based) */
+    --lumo-contrast: hsl(0, 0%, 100%);
+    --lumo-contrast-90pct: hsla(0, 0%, 100%, 0.88);
+    --lumo-contrast-80pct: hsla(0, 0%, 100%, 0.76);
+    --lumo-contrast-70pct: hsla(0, 0%, 100%, 0.64);
+    --lumo-contrast-60pct: hsla(0, 0%, 100%, 0.52);
+    --lumo-contrast-50pct: hsla(0, 0%, 100%, 0.42);
+    --lumo-contrast-40pct: hsla(0, 0%, 100%, 0.32);
+    --lumo-contrast-30pct: hsla(0, 0%, 100%, 0.24);
+    --lumo-contrast-20pct: hsla(0, 0%, 100%, 0.16);
+    --lumo-contrast-10pct: hsla(0, 0%, 100%, 0.09);
+    --lumo-contrast-5pct: hsla(0, 0%, 100%, 0.05);
+
+    /* Tint / shade */
+    --lumo-tint-5pct: hsla(0, 0%, 100%, 0.04);
+    --lumo-tint-10pct: hsla(0, 0%, 100%, 0.07);
+    --lumo-tint-20pct: hsla(0, 0%, 100%, 0.13);
+    --lumo-tint-30pct: hsla(0, 0%, 100%, 0.21);
+    --lumo-tint-40pct: hsla(0, 0%, 100%, 0.29);
+    --lumo-tint-50pct: hsla(0, 0%, 100%, 0.38);
+    --lumo-tint-60pct: hsla(0, 0%, 100%, 0.48);
+    --lumo-tint-70pct: hsla(0, 0%, 100%, 0.60);
+    --lumo-tint-80pct: hsla(0, 0%, 100%, 0.74);
+    --lumo-tint-90pct: hsla(0, 0%, 100%, 0.87);
+    --lumo-tint: hsl(0, 0%, 100%);
+    --lumo-shade-5pct: hsla(0, 0%, 0%, 0.3);
+    --lumo-shade-10pct: hsla(0, 0%, 0%, 0.4);
+    --lumo-shade-20pct: hsla(0, 0%, 0%, 0.5);
+    --lumo-shade-30pct: hsla(0, 0%, 0%, 0.6);
+    --lumo-shade-40pct: hsla(0, 0%, 0%, 0.7);
+    --lumo-shade-50pct: hsla(0, 0%, 0%, 0.75);
+    --lumo-shade-60pct: hsla(0, 0%, 0%, 0.8);
+    --lumo-shade-70pct: hsla(0, 0%, 0%, 0.85);
+    --lumo-shade-80pct: hsla(0, 0%, 0%, 0.9);
+    --lumo-shade-90pct: hsla(0, 0%, 0%, 0.95);
+    --lumo-shade: hsl(0, 0%, 0%);
+
+    /* Primary */
+    --lumo-primary-color: hsl(214, 90%, 52%);
+    --lumo-primary-color-50pct: hsla(214, 90%, 52%, 0.5);
+    --lumo-primary-color-10pct: hsla(214, 90%, 52%, 0.12);
+    --lumo-primary-text-color: hsl(214, 100%, 70%);
+    --lumo-primary-contrast-color: hsl(0, 0%, 100%);
+
+    /* Error / success / warning tuned for black */
+    --lumo-error-text-color: hsl(0, 100%, 74%);
+    --lumo-error-color-10pct: hsla(0, 90%, 63%, 0.12);
+    --lumo-success-color: hsl(145, 65%, 42%);
+    --lumo-success-text-color: hsl(145, 70%, 58%);
+    --lumo-success-color-50pct: hsla(145, 65%, 42%, 0.5);
+    --lumo-success-color-10pct: hsla(145, 65%, 42%, 0.12);
+    --lumo-warning-text-color: hsl(43, 100%, 64%);
+
+    /* Shadows are invisible on black: replace with hairline borders + soft depth */
+    --lumo-box-shadow-xs: 0 0 0 1px var(--bambu-border-color);
+    --lumo-box-shadow-s: 0 0 0 1px var(--bambu-border-color);
+    --lumo-box-shadow-m: 0 0 0 1px var(--bambu-border-color), 0 4px 12px hsla(0, 0%, 0%, 0.8);
+    --lumo-box-shadow-l: 0 0 0 1px var(--bambu-border-color), 0 8px 24px hsla(0, 0%, 0%, 0.85);
+    --lumo-box-shadow-xl: 0 0 0 1px var(--bambu-border-color), 0 12px 48px hsla(0, 0%, 0%, 0.9);
+}
+
+/* Printer cards: slightly lighter elevated box on the pure black page */
+html[theme~="dark"] .dashboard-view > .dashboard-printer {
+    background-color: var(--bambu-card-color);
+    border: 1px solid var(--bambu-border-color);
+    border-radius: var(--lumo-border-radius-l);
+    padding: var(--lumo-space-s);
+    box-sizing: border-box;
+}
+
+html[theme~="dark"] .printer-view .dashboard-printer {
+    background-color: var(--bambu-card-color);
+    border: 1px solid var(--bambu-border-color);
+    border-radius: var(--lumo-border-radius-l);
+    padding: var(--lumo-space-s);
+}
+
+/* Inner surfaces: one step lighter than the card */
+html[theme~="dark"] .dashboard-printer .image,
+html[theme~="dark"] .dashboard-printer .badge,
+html[theme~="dark"] .dashboard-printer .amstray .filament,
+html[theme~="dark"] .batchprint-view .header img {
+    background-color: var(--bambu-surface-color);
+    border: 1px solid var(--bambu-border-color);
+    box-shadow: none;
+}
+
+/* Green progress bar like the print status accent */
+html[theme~="dark"] .dashboard-printer vaadin-progress-bar::part(value) {
+    background-color: var(--lumo-success-color);
+}
+
+/* Dialogs / overlays / drawer on near-black elevated surface */
+html[theme~="dark"] vaadin-dialog-overlay::part(overlay),
+html[theme~="dark"] vaadin-context-menu-overlay::part(overlay),
+html[theme~="dark"] vaadin-select-overlay::part(overlay),
+html[theme~="dark"] vaadin-combo-box-overlay::part(overlay),
+html[theme~="dark"] vaadin-notification-card::part(overlay) {
+    background-color: hsl(222, 14%, 8%);
+}

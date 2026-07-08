@@ -1,5 +1,8 @@
 package com.tfyre.bambu.view;
 
+import com.tfyre.bambu.printer.BambuConst;
+import com.tfyre.bambu.printer.BambuPrinter;
+import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.HasText;
 import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.notification.Notification;
@@ -71,6 +74,40 @@ public interface NotificationHelper {
         n.addThemeVariants(NotificationVariant.LUMO_CONTRAST);
         n.setPosition(Notification.Position.BOTTOM_END);
         n.open();
+    }
+
+    /**
+     * Shows a browser (desktop) notification if the user enabled notifications and granted permission. The tag collapses duplicate notifications from
+     * multiple open tabs.
+     */
+    default void notifyBrowser(final Component owner, final String title, final String body, final String tag) {
+        owner.getElement().executeJs("""
+                if (localStorage.getItem('bambufarm-notifications') !== 'on') { return; }
+                if (!window.Notification || Notification.permission !== 'granted') { return; }
+                new Notification($0, { body: $1, tag: $2 });""", title, body, tag);
+    }
+
+    /**
+     * Fires a browser notification when a printer transitions out of a printing state into finished / failed.
+     */
+    default void notifyPrintState(final Component owner, final BambuPrinter printer,
+            final BambuConst.GCodeState oldState, final BambuConst.GCodeState newState) {
+        if (oldState == newState) {
+            return;
+        }
+        if (!oldState.isPrinting() && oldState != BambuConst.GCodeState.PAUSE) {
+            return;
+        }
+        final String result;
+        if (newState == BambuConst.GCodeState.FINISH) {
+            result = "Print finished";
+        } else if (newState == BambuConst.GCodeState.FAILED) {
+            result = "Print FAILED";
+        } else {
+            return;
+        }
+        notifyBrowser(owner, "%s: %s".formatted(printer.getName(), result),
+                printer.getLastPrintFile().orElse(""), printer.getName());
     }
 
 }

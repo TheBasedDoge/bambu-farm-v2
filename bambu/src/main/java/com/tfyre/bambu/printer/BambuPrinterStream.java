@@ -30,6 +30,8 @@ public class BambuPrinterStream {
 
     private static final byte[] EMPTY = new byte[32];
     private static final int MAX_SIZE = 10_000_000;
+    // Minimum plausible JPEG size — anything smaller is likely a protocol control message
+    private static final int MIN_JPEG_SIZE = 1000;
 
     private final NetClient client;
     private NetSocket socket;
@@ -45,6 +47,7 @@ public class BambuPrinterStream {
     private Consumer<BambuPrinter.Thumbnail> consumer;
 
     private final AtomicBoolean running = new AtomicBoolean();
+    private boolean rtspsWarned = false;
 
     @Inject
     public BambuPrinterStream(final Vertx vertx) {
@@ -87,6 +90,7 @@ public class BambuPrinterStream {
     }
 
     private void startStream() {
+        rtspsWarned = false;
         final URI uri = getURI();
         client.connect(uri.getPort(), uri.getHost())
                 .onSuccess(_s -> {
@@ -111,7 +115,16 @@ public class BambuPrinterStream {
                         final byte[] data = new byte[size];
                         buffer.readBytes(data).discardReadBytes();
 
-                        consumer.accept(new BambuPrinter.Thumbnail(OffsetDateTime.now(), new StreamResource("image.jpg", () -> new ByteArrayInputStream(data))));
+                        if (size < MIN_JPEG_SIZE) {
+                            if (!rtspsWarned) {
+                                rtspsWarned = true;
+                                Log.warnf("%s: Port 6000 stream returned a %d-byte control message instead of a JPEG frame. "
+                                        + "X1C/H2D cameras use RTSPS on port 322 — configure go2rtc and set stream.live-view=true / stream.url in your runtime config.", name, size);
+                            }
+                            return;
+                        }
+
+                        consumer.accept(new BambuPrinter.Thumbnail(OffsetDateTime.now(), new StreamResource("image.jpg", () -> new ByteArrayInputStream(data)), data));
                         nextImage = OffsetDateTime.now().plus(config.stream().watchDog());
                     })
                             .write(getHandshake())

@@ -42,6 +42,8 @@ public final class PrinterMapping implements FilamentHelper, NotificationHelper 
     BambuConfig config;
     @Inject
     Instance<BambuFtp> clientInstance;
+    @Inject
+    com.tfyre.bambu.printer.PrintHistoryService historyService;
 
     private final Map<Integer, Integer> amsMapping = new HashMap<>();
     private final Map<Integer, Integer> amsMappingCache = new HashMap<>();
@@ -139,6 +141,25 @@ public final class PrinterMapping implements FilamentHelper, NotificationHelper 
         }
     }
 
+    public BambuPrinter.CommandPPF buildCommand(final ProjectFile projectFile, final BambuPrinter.CommandPPF command) {
+        final List<Integer> mapping = generateAmsMapping();
+        final boolean useAms = mapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
+        return new BambuPrinter.CommandPPF(
+                projectFile.getFilename(),
+                plate.plateId(),
+                useAms,
+                command.timelapse(),
+                command.bedLevelling(),
+                command.flowCalibration(),
+                command.vibrationCalibration(),
+                mapping
+        );
+    }
+
+    public double getPlateWeight() {
+        return plate.weight();
+    }
+
     public void sendPrint(final ProjectFile projectFile, final BambuPrinter.CommandPPF command, final boolean skipIfSameSize) {
         Log.debugf("%s: sendPrint", printerDetail.name());
         doBlock(true);
@@ -146,18 +167,8 @@ public final class PrinterMapping implements FilamentHelper, NotificationHelper 
         percentageComplete = 0;
         try {
             doFtp(projectFile, skipIfSameSize);
-            final List<Integer> mapping = generateAmsMapping();
-            final boolean useAms = mapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
-            final BambuPrinter.CommandPPF _command = new BambuPrinter.CommandPPF(
-                    projectFile.getFilename(),
-                    plate.plateId(),
-                    useAms,
-                    command.timelapse(),
-                    command.bedLevelling(),
-                    command.flowCalibration(),
-                    command.vibrationCalibration(),
-                    mapping
-            );
+            final BambuPrinter.CommandPPF _command = buildCommand(projectFile, command);
+            historyService.registerExpectedWeight(printerDetail.name(), projectFile.getFilename(), plate.weight());
             printerDetail.printer().commandPrintProjectFile(_command);
             setPrinterState(PrinterState.SENT);
         } catch (Throwable ex) {

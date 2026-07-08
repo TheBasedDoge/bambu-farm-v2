@@ -4,6 +4,7 @@ import com.vaadin.flow.component.page.AppShellConfigurator;
 import com.vaadin.flow.component.page.Inline;
 import com.vaadin.flow.component.page.Push;
 import com.vaadin.flow.server.AppShellSettings;
+import com.vaadin.flow.server.PWA;
 import com.vaadin.flow.theme.Theme;
 import io.quarkus.logging.Log;
 import java.io.IOException;
@@ -17,6 +18,9 @@ import java.nio.file.Paths;
  */
 @Theme(value = "bambu-theme")
 @Push
+@PWA(name = "Bambu Farm", shortName = "BambuFarm",
+        description = "Bambu printer farm dashboard",
+        backgroundColor = "#000000", themeColor = "#000000")
 public class AppConfig implements AppShellConfigurator {
 
     private static final String STYLES = "styles.css";

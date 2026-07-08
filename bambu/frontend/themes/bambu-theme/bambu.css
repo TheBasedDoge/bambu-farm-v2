@@ -1,27 +1,10 @@
-@media screen and (min-width: 0px) and (max-width:1110px) {
-    :root {
-        --bambu-columns: calc(var(--bambu-default-columns,4) - 3);
-    }
-}
-@media screen and (min-width: 1111px) and (max-width:1650px) {
-    :root {
-        --bambu-columns: calc(var(--bambu-default-columns,4) - 2);
-    }
-}
-@media screen and (min-width: 1651px) and (max-width:2200px) {
-    :root {
-        --bambu-columns: calc(var(--bambu-default-columns,4) - 1);
-    }
-}
-@media screen and (min-width: 2201px) and (max-width:2750px) {
-    :root {
-        --bambu-columns: var(--bambu-default-columns,4);
-    }
-}
-@media screen and (min-width: 2751px){
-    :root {
-        --bambu-columns: calc(var(--bambu-default-columns,4) + 1);
-    }
+/*
+   Card grids derive their column count from the container width (auto-fill):
+   each card is at least --bambu-card-min wide, so phones always get a single
+   full-width column and ultrawides get many - no viewport media queries needed.
+*/
+:root {
+    --bambu-card-min: 380px;
 }
 
 .header-content {
@@ -30,19 +13,252 @@
     flex-grow: 1;
     justify-content: center;
     gap: var(--lumo-space-m);
+    flex-wrap: wrap;
+}
+
+/* Header buttons: icon + hideable label */
+.header-content vaadin-button .btn-label {
+    margin-left: var(--lumo-space-xs);
+}
+
+/* Compact header: hide title + labels, one non-wrapping scrollable row.
+   Applies to everything below the wide-desktop breakpoint (phones, Z Fold cover + inner).
+   Note: outer .main-header flex-wrap is forced nowrap via Java inline style in MainLayout. */
+@media screen and (max-width: 1110px) {
+    .main-header .header-title {
+        display: none;
+    }
+    .main-header .header-content {
+        justify-content: flex-start;
+        flex-grow: 1;
+        gap: var(--lumo-space-xs);
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+    .main-header .header-content::-webkit-scrollbar {
+        display: none;
+    }
+    .header-content vaadin-button .btn-label {
+        display: none;
+    }
+    /* Compact selects — short option text fits fine at 80px */
+    .header-content vaadin-select {
+        min-width: 0 !important;
+        width: 80px !important;
+        flex-shrink: 0;
+    }
+    .header-content vaadin-button {
+        flex-shrink: 0;
+    }
+}
+
+/* Center the header controls on the bar itself (wide screens only) */
+@media screen and (min-width: 1111px) {
+    .main-header {
+        position: relative;
+    }
+    .main-header .header-content {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        width: max-content;
+        flex-grow: 0;
+    }
+}
+
+/* Sidebar: narrower drawer with icon links */
+vaadin-app-layout::part(drawer) {
+    width: 200px;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+}
+
+[slot="drawer"] a.drawer-link {
+    display: flex;
+    align-items: center;
+    gap: var(--lumo-space-s);
+    white-space: nowrap;
+}
+
+[slot="drawer"] a.drawer-link vaadin-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--lumo-secondary-text-color);
+}
+
+/* Settings / logout pinned to the bottom of the drawer */
+[slot="drawer"].drawer-controls {
+    margin-top: auto;
+}
+
+/* Icon-only rail mode (desktop, toggled via the menu button) */
+vaadin-app-layout.drawer-rail::part(drawer) {
+    width: 60px;
+    min-width: 60px;
+}
+
+vaadin-app-layout.drawer-rail [slot="drawer"] a.drawer-link > span {
+    display: none;
+}
+
+vaadin-app-layout.drawer-rail [slot="drawer"].drawer-controls {
+    display: none;
 }
 
 .dashboard-view {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--bambu-card-min, 380px)), 1fr));
     gap: var(--lumo-space-m);
     padding: var(--lumo-space-s);
 }
 
 .dashboard-view > * {
-    flex: 1 1 calc((100% / var(--bambu-columns)) - var(--lumo-space-m));
-    max-width: calc((100% / var(--bambu-columns)) - var(--lumo-space-m));
+    /* explicit size: Vaadin layout elements do not reliably stretch to fill grid cells */
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
     min-width: 0;
+    grid-column: span 1;
+}
+
+/* Fixed column count mode — overrides auto-fill when the header select is not "Auto" */
+.dashboard-view.dashboard-view--fixed-cols {
+    grid-template-columns: repeat(var(--dash-cols, 2), 1fr);
+}
+
+.dashboard-view > .bspan-2,
+.camera-view > .bspan-2 {
+    grid-column: span 2;
+}
+
+.dashboard-view > .bspan-3,
+.camera-view > .bspan-3 {
+    grid-column: span 3;
+}
+
+.dashboard-view > .bspan-4,
+.camera-view > .bspan-4 {
+    grid-column: span 4;
+}
+
+.dashboard-view > .bspan-5,
+.camera-view > .bspan-5 {
+    grid-column: span 5;
+}
+
+.dashboard-view > .bspan-6,
+.camera-view > .bspan-6 {
+    grid-column: span 6;
+}
+
+/* Overview bar spans the full grid width */
+.dashboard-view > .dashboard-overview {
+    grid-column: 1 / -1;
+}
+
+.dashboard-overview {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--lumo-space-l);
+    padding: var(--lumo-space-s) var(--lumo-space-m);
+    border-radius: var(--lumo-border-radius-l);
+    background-color: var(--lumo-contrast-5pct);
+    font-weight: bold;
+}
+
+/* Compact row view */
+.dashboard-compact {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-m);
+    padding: var(--lumo-space-s);
+}
+
+.dashboard-overview .ov-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.dashboard-overview .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.dashboard-overview .dot.printing {
+    background-color: var(--lumo-primary-color);
+}
+
+.dashboard-overview .dot.available {
+    background-color: var(--lumo-success-color);
+}
+
+.dashboard-overview .dot.offline {
+    background-color: var(--lumo-contrast-40pct);
+}
+
+.dashboard-overview .dot.error {
+    background-color: var(--lumo-error-color);
+}
+
+.dashboard-overview .ov-error {
+    color: var(--lumo-error-text-color);
+}
+
+.dashboard-overview .next {
+    color: var(--lumo-success-text-color);
+}
+
+/* Clamp card spans to the available column count per breakpoint (cards only - never the overview bar) */
+@media screen and (max-width: 819px) {
+    .dashboard-view > .dashboard-printer,
+    .camera-view > .camera-card {
+        grid-column: span 1 !important;
+        resize: none;
+    }
+}
+@media screen and (min-width: 820px) and (max-width: 1219px) {
+    .dashboard-view > .bspan-3,
+    .dashboard-view > .bspan-4,
+    .dashboard-view > .bspan-5,
+    .dashboard-view > .bspan-6,
+    .camera-view > .bspan-3,
+    .camera-view > .bspan-4,
+    .camera-view > .bspan-5,
+    .camera-view > .bspan-6 {
+        grid-column: span 2;
+    }
+}
+@media screen and (min-width: 1220px) and (max-width: 1619px) {
+    .dashboard-view > .bspan-4,
+    .dashboard-view > .bspan-5,
+    .dashboard-view > .bspan-6,
+    .camera-view > .bspan-4,
+    .camera-view > .bspan-5,
+    .camera-view > .bspan-6 {
+        grid-column: span 3;
+    }
+}
+@media screen and (min-width: 1620px) and (max-width: 2019px) {
+    .dashboard-view > .bspan-5,
+    .dashboard-view > .bspan-6,
+    .camera-view > .bspan-5,
+    .camera-view > .bspan-6 {
+        grid-column: span 4;
+    }
+}
+@media screen and (min-width: 2020px) and (max-width: 2419px) {
+    .dashboard-view > .bspan-6,
+    .camera-view > .bspan-6 {
+        grid-column: span 5;
+    }
 }
 
 .dashboard-printer {
@@ -102,6 +318,25 @@
     border: 0px;
 }
 
+/* Direct WebRTC video container — matches the old iframe sizing */
+.dashboard-printer .image .live-view {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    width: 95%;
+    max-height: 720px;
+    max-width: 1280px;
+    margin: 10px;
+}
+
+.dashboard-printer .image .live-view video {
+    flex-grow: 1;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #000;
+}
+
 .dashboard-printer .imagestatus {
     display: flex;
     width: 90%;
@@ -137,6 +372,19 @@
     flex: 2;
     display: flex;
     flex-direction: column;
+}
+
+/* H2D dual-nozzle slots side-by-side */
+.dashboard-printer .filaments .vir-slots-row {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    width: 100%;
+}
+
+.dashboard-printer .filaments .vir-slots-row .ams {
+    flex: 1;
+    min-width: 0;
 }
 
 .dashboard-printer .ams {
@@ -186,6 +434,12 @@
 .dashboard-printer .amstray .active {
     --lumo-utility-border-color: var(--lumo-success-color);
     border: 2px var(--lumo-utility-border-style, solid) var(--lumo-utility-border-color, var(--lumo-contrast-10pct));
+    animation: ams-active-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ams-active-pulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(37, 180, 108, 0.35), var(--lumo-box-shadow-s); }
+    50% { box-shadow: 0 0 0 6px rgba(37, 180, 108, 0.15), var(--lumo-box-shadow-s); }
 }
 
 .dashboard-printer .amstray .filament .color {
@@ -198,7 +452,13 @@
 
 .dashboard-printer .progress {
     width: 100%;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.dashboard-printer .progress > span {
+    overflow-wrap: anywhere;
 }
 
 .dashboard-printer vaadin-progress-bar {
@@ -297,6 +557,17 @@
     border-radius: var(--lumo-border-radius-l);
 }
 
+/* SD card toolbar: wrap controls instead of overflowing horizontally */
+.sdcard-view .toolbar {
+    flex-wrap: wrap;
+    height: auto;
+}
+
+.sdcard-view .toolbar vaadin-text-field,
+.sdcard-view .toolbar vaadin-combo-box {
+    min-width: 0;
+}
+
 .batchprint-view,
 .sdcard-view {
     display: flex;
@@ -312,6 +583,12 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
+}
+
+.batchprint-view .library {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--lumo-space-s);
 }
 
 .batchprint-view-menu vaadin-context-menu-list-box::part(items) {
@@ -431,4 +708,382 @@
     align-content: center;
     justify-content: center;
     flex-wrap: wrap;
+}
+
+/* AI check animated dot — pulsing circle in the name bar while a check is in progress.
+   Using a <span> so the .name div { width:100% } rule does not apply. */
+@keyframes ai-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.65); }
+}
+
+.dashboard-printer .name .ai-check-dot {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background-color: var(--lumo-primary-color);
+    animation: ai-pulse 1.2s ease-in-out infinite;
+    margin-left: 8px;
+    flex-shrink: 0;
+    align-self: center;
+    vertical-align: middle;
+}
+
+/* AI status chip — small pill below the printer name showing last check result + time */
+.dashboard-printer .ai-status {
+    width: 100%;
+    text-align: center;
+    padding: 0 var(--lumo-space-s) var(--lumo-space-xs);
+    margin-top: calc(-1 * var(--lumo-space-s));
+}
+
+.dashboard-printer .ai-status-chip {
+    display: inline-block;
+    font-size: var(--lumo-font-size-xs);
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+
+.dashboard-printer .ai-status-ok {
+    background-color: var(--lumo-success-color-10pct);
+    color: var(--lumo-success-text-color);
+}
+
+.dashboard-printer .ai-status-warn {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.dashboard-printer .ai-status-fail {
+    background-color: var(--lumo-error-color-10pct);
+    color: var(--lumo-error-text-color);
+}
+
+/* Print Again button at the bottom of a printer card */
+.dashboard-printer vaadin-button.print-again {
+    width: 100%;
+    margin-top: var(--lumo-space-s);
+    cursor: pointer;
+}
+
+/* Dashboard card rearrange & resize (width snaps to grid columns on release) */
+.dashboard-view > .dashboard-printer {
+    resize: horizontal;
+    overflow: hidden;
+}
+
+.dashboard-view .dashboard-printer .name {
+    cursor: grab;
+}
+
+.dashboard-view .dashboard-printer img {
+    -webkit-user-drag: none;
+    user-select: none;
+}
+
+.dashboard-view .dashboard-printer.drag-over {
+    outline: 2px dashed var(--lumo-primary-color);
+    outline-offset: -2px;
+}
+
+/* Camera wall */
+.camera-view {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--bambu-card-min, 380px)), 1fr));
+    gap: var(--lumo-space-m);
+    padding: var(--lumo-space-s);
+    align-items: start;
+    box-sizing: border-box;
+}
+
+/* Fixed-grid mode: fill the entire page with N×M cells */
+.camera-view.camera-view--grid {
+    grid-template-columns: repeat(var(--cam-cols, 2), 1fr);
+    grid-template-rows: repeat(var(--cam-rows, 2), 1fr);
+    /* height is set inline by JS to 100vh - navbar height */
+    overflow: hidden;
+    align-items: stretch;
+    gap: 4px;
+    padding: 4px;
+}
+
+.camera-view.camera-view--grid .camera-card {
+    aspect-ratio: unset !important;
+    min-height: unset !important;
+    height: 100%;
+    resize: none !important;
+}
+
+.camera-view > * {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    grid-column: span 1;
+}
+
+.camera-view .camera-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--lumo-border-radius-l);
+    background-color: #000;
+    aspect-ratio: 16 / 10;
+    min-height: 200px;
+    resize: horizontal;
+}
+
+.camera-card img,
+.camera-card iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    border: 0;
+}
+
+.camera-card .overlay-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 14px;
+    background: rgba(0, 0, 0, 0.55);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    color: #fff;
+    font-weight: bold;
+}
+
+.camera-card .camera-name {
+    font-size: 1.3em;
+    cursor: pointer;
+}
+
+.camera-card .overlay-bottom {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 14px;
+    background: rgba(0, 0, 0, 0.55);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+    color: #fff;
+}
+
+.camera-card .overlay-bottom vaadin-progress-bar {
+    height: 4px;
+    margin: 0;
+}
+
+.camera-card .camera-info {
+    display: flex;
+    justify-content: space-between;
+    font-weight: bold;
+}
+
+.camera-card .camera-error {
+    color: var(--lumo-error-text-color, #ff6b6b);
+    font-weight: bold;
+}
+
+/* Fullscreen camera */
+.camera-view .camera-card {
+    cursor: zoom-in;
+}
+
+.camera-card:fullscreen {
+    aspect-ratio: auto;
+    border-radius: 0;
+}
+
+.dashboard-printer .image img {
+    cursor: zoom-in;
+}
+
+img:fullscreen {
+    object-fit: contain;
+    background-color: #000;
+}
+
+/* Login view — remember-me row sits flush below the LoginForm web component */
+.login-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.login-remember-me {
+    width: 100%;
+    padding: var(--lumo-space-s) var(--lumo-space-m);
+    box-sizing: border-box;
+}
+
+/* AI Settings view */
+.ai-settings-view {
+    max-width: 900px;
+    gap: var(--lumo-space-l);
+}
+
+.ai-settings-section {
+    padding: var(--lumo-space-m);
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-l);
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Etsy Sales Orders */
+.etsy-orders-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-m);
+    width: 100%;
+}
+
+.etsy-transaction-row {
+    margin-top: var(--lumo-space-s);
+    padding-top: var(--lumo-space-s);
+    border-top: 1px solid var(--lumo-contrast-10pct);
+}
+
+.mapping-parts-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-s);
+    margin-top: var(--lumo-space-s);
+}
+
+.mapping-parts-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-xs);
+}
+
+.mapping-part-row {
+    flex-wrap: wrap;
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-m);
+    padding: var(--lumo-space-xs) var(--lumo-space-s);
+}
+
+.mapping-printer-select {
+    flex-wrap: wrap;
+}
+
+/* Print history */
+.history-view .history-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--lumo-space-s);
+}
+
+.history-view .history-badge {
+    padding: var(--lumo-space-s) var(--lumo-space-m);
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-l);
+    font-weight: bold;
+}
+
+/* History charts */
+.history-charts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--lumo-space-m);
+}
+
+.history-charts .chart {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-s);
+    padding: var(--lumo-space-s) var(--lumo-space-m);
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-l);
+    min-width: 280px;
+}
+
+.history-charts .chart-title {
+    font-weight: bold;
+    color: var(--lumo-secondary-text-color);
+}
+
+.history-charts .chart-cols {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 100px;
+}
+
+.history-charts .chart-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    height: 100%;
+}
+
+.history-charts .chart-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    justify-content: flex-start;
+    width: 16px;
+}
+
+.history-charts .chart-ok {
+    background-color: var(--lumo-success-color);
+    border-radius: 2px 2px 0 0;
+}
+
+.history-charts .chart-fail {
+    background-color: var(--lumo-error-color);
+    border-radius: 2px 2px 0 0;
+}
+
+.history-charts .chart-label {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+}
+
+.history-charts .util-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 320px;
+}
+
+.history-charts .util-row {
+    display: flex;
+    align-items: center;
+    gap: var(--lumo-space-s);
+}
+
+.history-charts .util-name {
+    width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-charts .util-track {
+    flex-grow: 1;
+    height: 10px;
+    background-color: var(--lumo-contrast-10pct);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.history-charts .util-fill {
+    height: 100%;
+    background-color: var(--lumo-primary-color);
+    border-radius: 5px;
 }

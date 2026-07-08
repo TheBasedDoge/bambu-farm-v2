@@ -26,3 +26,40 @@ services:
         ports:
             - '990:990'
             - '21100-21110:21100-21110'
+    mediamtx:
+        # RTSP/WebRTC server - receives camera streams from the ffmpeg containers below
+        # WebRTC viewer: http://HOST:8889/PRINTER_ID
+        image: bluenviron/mediamtx:latest
+        restart: always
+        ports:
+            - '8189:8189/tcp'
+            - '8189:8189/udp'
+            - '8889:8889'
+
+    # X1C / H2D camera relay - one container per printer that uses RTSPS (port 322)
+    # Pulls RTSPS from printer → pushes plain RTSP to mediamtx
+    # Rename/duplicate this block for additional printers.
+    # In your runtime bambu config, add:
+    #   bambu.printers.PRINTER_ID.stream.live-view=true
+    # Then either set bambu.live-view-url=http://HOST:8889/
+    # (applies to all live-view printers) or per-printer:
+    #   bambu.printers.PRINTER_ID.stream.url=http://HOST:8889/PRINTER_ID
+    h2d-camera:
+        image: linuxserver/ffmpeg
+        restart: always
+        depends_on:
+            - mediamtx
+        environment:
+            PRINTER_HOST: FIXME_H2D_IP
+            PRINTER_ACCESS_CODE: FIXME_ACCESS_CODE
+            PRINTER_ID: printer5
+        entrypoint:
+            - "bash"
+            - "-c"
+            - >
+              /usr/local/bin/ffmpeg
+              -timeout 30000000
+              -re -stream_loop -1
+              -i rtsps://bblp:$${PRINTER_ACCESS_CODE}@$${PRINTER_HOST}:322/streaming/live/1
+              -c:v copy -f rtsp -rtsp_transport tcp
+              rtsp://mediamtx:8554/$${PRINTER_ID}

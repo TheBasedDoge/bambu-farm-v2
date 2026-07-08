@@ -184,6 +184,33 @@ bambu.printers.myprinter1.stream.url=ssl://${bambu.printers.myprinter1.ip}:${bam
 bambu.printers.myprinter1.stream.watch-dog=5m
 ```
 
+### Farm extras
+
+```properties
+# Tasmota smart plug powering a printer (adds a plug button to the dashboard card)
+bambu.printers.myprinter1.tasmota=http://192.168.1.50
+
+# Filament cost per kg - when > 0 the History view shows estimated material cost per job
+bambu.cost-per-kg=0
+bambu.currency-symbol=$
+
+# Storage locations (relative to the working directory)
+bambu.maintenance-file=bambu-maintenance.json
+bambu.history-file=bambu-history.json
+bambu.queue-file=bambu-queue.json
+bambu.batch-print.library=bambu-library
+
+# Event notifications (print finish/fail, printer errors, maintenance due)
+# MQTT: published to {topic}/{printer}/{event} as JSON - ideal for Home Assistant
+bambu.notifications.mqtt.url=tcp://192.168.1.10:1883
+bambu.notifications.mqtt.username=user
+bambu.notifications.mqtt.password=pass
+bambu.notifications.mqtt.topic=bambufarm
+# Webhook alternative: format = json / discord / ntfy
+bambu.notifications.webhook-url=https://discord.com/api/webhooks/...
+bambu.notifications.webhook-format=discord
+```
+
 ### Cloud Section
 
 Enable MQTT connection via cloud instead of directly to printer. 
@@ -404,21 +431,20 @@ If you want to modify the CSS, create a file next to the `.jar` file called `sty
 
 #### Changing the display columns
 
-*Display columns is a ratio and scale based on screen width*
+*The dashboard is a CSS grid; the column count is derived from the screen width and a minimum card width (phones get 1 full-width column, ultrawides get many)*
 
 Refer to [bambu.css](/bambu/frontend/themes/bambu-theme/bambu.css#L1-L25)
 
-| Example | value for XXX |
-| -- | -- |
-| always 1 column | 1 |
-| 2 columns with 1080p | 3 |
-| 4 columns with 1080p | 5 |
+To change the density, override the minimum card width - smaller values give more columns:
 
 ```css
+/* wider cards = fewer columns */
 :root {
-  --bambu-default-columns: XXX;
+  --bambu-card-min: 500px;
 }
 ```
+
+Cards can also be resized by dragging their right edge (snaps to grid columns) and reordered by dragging the printer name; use "Reset Layout" in the dashboard header to restore defaults.
 
 
 #### Ordering items inside printer box

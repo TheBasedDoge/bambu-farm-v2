@@ -121,6 +121,8 @@ message UpgradeState {
 }
 
 message Hms {
+  optional int64 attr = 1;
+  optional int64 code = 2;
 }
 
 message Filam {
@@ -247,6 +249,19 @@ message Print {
   optional int32 print_real_action = 94;
   optional Xcam xcam = 95;
   optional string xcam_status = 96;
+
+  // H2D dual-nozzle scalar fallback (kept for forward compat; prefer device.extruder for H2D)
+  optional double nozzle2_temper = 97;
+  optional double nozzle2_target_temper = 98;
+  optional string nozzle2_diameter = 99;
+  optional string nozzle2_type = 100;
+
+  // H2D nested device block: extruder temps + nozzle info
+  optional PrintDevice device = 101;
+
+  // H2D virtual external-spool slots (replaces vt_tray for dual-nozzle printers)
+  // id=254 = slot 0, id=255 = slot 1; each carries tray_type/tray_info_idx/tray_color
+  repeated Tray vir_slot = 102;
 }
 
 message System {
@@ -261,6 +276,53 @@ message System {
 }
 
 
+// H2D extruder entry: id=0 (left/primary), id=1 (right/secondary)
+// temp field: low 16 bits = current °C, high 16 bits = target °C
+message ExtruderInfoEntry {
+  optional int32 id = 1;
+  optional int64 temp = 2;
+}
+
+message ExtruderDevice {
+  repeated ExtruderInfoEntry info = 1;
+  optional int32 state = 2;
+}
+
+// H2D nozzle entry: diameter + type per nozzle id
+message NozzleInfoEntry {
+  optional int32 id = 1;
+  optional string diameter = 2;
+  optional string type = 3;
+}
+
+message NozzleDevice {
+  repeated NozzleInfoEntry info = 1;
+}
+
+// H2D chamber temperature controller (device.ctc.info.temp)
+// Same packed format: low 16 bits = current °C, high 16 bits = target °C
+message CtcInfo {
+  optional int64 temp = 1;
+}
+
+message CtcDevice {
+  optional CtcInfo info = 1;
+}
+
+// H2D build-plate info (device.plate.cur_id)
+message PlateDevice {
+  optional string cur_id = 1;
+  optional int32 mat = 2;
+}
+
+// H2D top-level device block inside print messages
+message PrintDevice {
+  optional ExtruderDevice extruder = 1;
+  optional NozzleDevice nozzle = 2;
+  optional CtcDevice ctc = 3;
+  optional PlateDevice plate = 4;
+}
+
 message Module {
   optional string name = 1;
   optional string project_name = 2;
@@ -268,6 +330,8 @@ message Module {
   optional string hw_ver = 4;
   optional string sn = 5;
   optional int32 flag = 6;
+  // Newer firmware (H2D and later) uses product_name instead of project_name, e.g. "Bambu Lab H2D"
+  optional string product_name = 7;
 }
 
 message Info {

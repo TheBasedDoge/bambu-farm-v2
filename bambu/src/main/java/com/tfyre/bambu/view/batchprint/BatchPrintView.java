@@ -3,9 +3,11 @@ package com.tfyre.bambu.view.batchprint;
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.MainLayout;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.YesNoCancelDialog;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
 import com.tfyre.bambu.printer.BambuPrinters;
+import com.tfyre.bambu.printer.PrintQueueService;
 import com.tfyre.bambu.security.SecurityUtils;
 import com.tfyre.bambu.view.GridHelper;
 import com.tfyre.bambu.view.NotificationHelper;
@@ -40,6 +42,11 @@ import io.quarkus.runtime.configuration.MemorySize;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -76,6 +83,8 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
     MemorySize maxBodySize;
     @Inject
     BambuConfig config;
+    @Inject
+    PrintQueueService queueService;
 
     private final ComboBox<Plate> plateLookup = new ComboBox<>("Plate Id");
     private final Grid<PrinterMapping> grid = new Grid<>();
@@ -96,10 +105,13 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
             newDiv("options", skipSameSize, timelapse, bedLevelling, flowCalibration, vibrationCalibration),
             newDiv("buttons",
                     new Button("Print", VaadinIcon.PRINT.create(), l -> printAll()),
+                    new Button("Queue", VaadinIcon.TIME_FORWARD.create(), l -> queueAll()),
                     new Button("Refresh", VaadinIcon.REFRESH.create(), l -> refresh())
             ));
     private final FileBuffer buffer = new FileBuffer();
     private final Upload upload = new Upload(buffer);
+    private final ComboBox<String> librarySelect = new ComboBox<>("Library");
+    private final Button libraryDelete = new Button(VaadinIcon.TRASH.create(), l -> deleteLibraryFile());
     private ProjectFile projectFile;
     private List<PrinterMapping> printerMappings = List.of();
     private SerializablePredicate<PrinterMapping> predicate = PREDICATE;
@@ -216,6 +228,24 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
         doConfirm(() -> printAll(selected));
     }
 
+    private void queueAll() {
+        final Set<PrinterMapping> selected = grid.getSelectedItems();
+        if (selected.isEmpty()) {
+            showError("Nothing selected");
+            return;
+        }
+        if (!selected.stream().allMatch(PrinterMapping::isMapped)) {
+            showError("Please ensure filaments are mapped");
+            return;
+        }
+        final BambuPrinter.CommandPPF base = new BambuPrinter.CommandPPF("", 0, true, timelapse.getValue(),
+                bedLevelling.getValue(), flowCalibration.getValue(), vibrationCalibration.getValue(), List.of());
+        selected.forEach(pm -> queueService.add(pm.getPrinterDetail().name(),
+                new PrintQueueService.QueueEntry(pm.buildCommand(projectFile, base), pm.getPlateWeight())));
+        showNotification("Queued [%s] on %d printer(s) - start from the dashboard when the bed is clear"
+                .formatted(projectFile.getFilename(), selected.size()));
+    }
+
     private void headerVisible(final boolean isVisible) {
         thumbnail.setVisible(isVisible);
         actions.setVisible(isVisible);
@@ -223,11 +253,90 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
 
     private void configureUpload() {
         upload.setAcceptedFileTypes(BambuConst.FILE_3MF);
-        upload.addSucceededListener(e -> loadProjectFile(e.getFileName()));
+        upload.addSucceededListener(e -> saveToLibrary(e.getFileName()));
         upload.setMaxFileSize((int) maxBodySize.asLongValue());
         upload.setDropLabel(new Span("Drop file here (max size: %dM)".formatted(maxBodySize.asLongValue() / 1_000_000)));
         upload.addFileRejectedListener(l -> {
             showError(l.getErrorMessage());
+        });
+    }
+
+    private Path getLibraryPath() {
+        return Path.of(config.batchPrint().library());
+    }
+
+    private List<String> getLibraryFiles() {
+        final Path path = getLibraryPath();
+        if (!Files.isDirectory(path)) {
+            return List.of();
+        }
+        try (final java.util.stream.Stream<Path> stream = Files.list(path)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .map(p -> p.getFileName().toString())
+                    .filter(name -> name.toLowerCase().endsWith(BambuConst.FILE_3MF))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .toList();
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
+    private void refreshLibrary(final String select) {
+        librarySelect.setItems(getLibraryFiles());
+        librarySelect.setValue(select);
+    }
+
+    private void configureLibrary() {
+        librarySelect.setPlaceholder("Select saved project");
+        librarySelect.setWidth("300px");
+        librarySelect.addValueChangeListener(l -> {
+            libraryDelete.setEnabled(l.getValue() != null);
+            if (!l.isFromClient() || l.getValue() == null) {
+                return;
+            }
+            loadProjectFile(l.getValue(), getLibraryPath().resolve(l.getValue()).toFile());
+        });
+        libraryDelete.setTooltipText("Delete from library");
+        libraryDelete.setEnabled(false);
+        refreshLibrary(null);
+    }
+
+    private void saveToLibrary(final String filename) {
+        try {
+            final Path path = getLibraryPath();
+            Files.createDirectories(path);
+            final Path target = path.resolve(Path.of(filename).getFileName());
+            Files.copy(buffer.getFileData().getFile().toPath(), target, StandardCopyOption.REPLACE_EXISTING);
+            refreshLibrary(target.getFileName().toString());
+            loadProjectFile(target.getFileName().toString(), target.toFile());
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            showError("Cannot save to library: %s".formatted(ex.getMessage()));
+            // fall back to printing straight from the upload buffer
+            loadProjectFile(filename, buffer.getFileData().getFile());
+        }
+    }
+
+    private void deleteLibraryFile() {
+        final String value = librarySelect.getValue();
+        if (value == null) {
+            return;
+        }
+        YesNoCancelDialog.show("Delete [%s] from library?".formatted(value), ync -> {
+            if (!ync.isConfirmed()) {
+                return;
+            }
+            try {
+                Files.deleteIfExists(getLibraryPath().resolve(value));
+            } catch (IOException ex) {
+                Log.error(ex.getMessage(), ex);
+                showError("Cannot delete: %s".formatted(ex.getMessage()));
+            }
+            closeProjectFile();
+            headerVisible(false);
+            refreshLibrary(null);
         });
     }
 
@@ -262,9 +371,10 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
         configurePlateLookup();
         configureGrid();
         configureUpload();
+        configureLibrary();
         configureThumbnail();
         headerVisible(false);
-        add(newDiv("header", thumbnail, actions, newDiv("upload", upload)), grid);
+        add(newDiv("header", thumbnail, actions, newDiv("upload", upload, newDiv("library", librarySelect, libraryDelete))), grid);
         final UI ui = attachEvent.getUI();
         createFuture(() -> ui.access(this::updateBulkStatus), config.refreshInterval());
     }
@@ -275,11 +385,11 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
         closeProjectFile();
     }
 
-    private void loadProjectFile(final String filename) {
+    private void loadProjectFile(final String filename, final File file) {
         closeProjectFile();
         plateLookup.setItems(List.of());
         try {
-            projectFile = projectFileInstance.get().setup(filename, buffer.getFileData().getFile());
+            projectFile = projectFileInstance.get().setup(filename, file);
         } catch (ProjectException ex) {
             showError(ex);
             return;
