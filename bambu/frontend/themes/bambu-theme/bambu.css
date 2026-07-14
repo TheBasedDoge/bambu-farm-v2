@@ -953,6 +953,12 @@ img:fullscreen {
     gap: var(--lumo-space-l);
 }
 
+/* The revamped AI Settings page (snapshots, history grid, prompt editors) needs the full viewport -
+   the 900px cap above stays for the simpler pages that share .ai-settings-view (orders, print queue). */
+.ai-settings-wide {
+    max-width: none;
+}
+
 .ai-settings-section {
     padding: var(--lumo-space-m);
     background-color: var(--lumo-contrast-5pct);

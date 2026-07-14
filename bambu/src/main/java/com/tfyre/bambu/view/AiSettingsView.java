@@ -77,6 +77,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
 
     private void build() {
         addClassName("ai-settings-view");
+        addClassName("ai-settings-wide");
         setPadding(true);
         setSpacing(true);
 
