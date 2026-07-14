@@ -27,7 +27,12 @@ public class PrintHistoryService {
 
     private static final int MAX_JOBS = 1_000;
 
-    public record PrintJob(String printer, String file, OffsetDateTime started, OffsetDateTime ended, long durationSeconds, String result, double grams) {
+    /**
+     * @param trigger how the print was started: "auto-start" (AI-gated auto-start), "queue" (manual Start Next
+     *                from the queue), or {@code null} for direct/untracked starts (SD card, Print Again, slicer,
+     *                and history entries recorded before this field existed)
+     */
+    public record PrintJob(String printer, String file, OffsetDateTime started, OffsetDateTime ended, long durationSeconds, String result, double grams, String trigger) {
 
     }
 
@@ -35,11 +40,11 @@ public class PrintHistoryService {
 
     }
 
-    private record RunningJob(String file, OffsetDateTime started, double grams) {
+    private record RunningJob(String file, OffsetDateTime started, double grams, String trigger) {
 
     }
 
-    private record Pending(String file, double grams, OffsetDateTime expires) {
+    private record Pending(String file, double grams, OffsetDateTime expires, String trigger) {
 
     }
 
@@ -62,15 +67,20 @@ public class PrintHistoryService {
      * Registers the expected filament weight for the next print started on a printer (e.g. from batch print / queue, where the plate weight is known).
      */
     public synchronized void registerExpectedWeight(final String printer, final String file, final double grams) {
-        pending.put(printer, new Pending(file, grams, OffsetDateTime.now().plusMinutes(15)));
+        registerExpectedWeight(printer, file, grams, null);
     }
 
-    private double consumePendingGrams(final String printer) {
+    /** Variant that also records HOW the upcoming print was started ("auto-start" / "queue") for history filtering. */
+    public synchronized void registerExpectedWeight(final String printer, final String file, final double grams, final String trigger) {
+        pending.put(printer, new Pending(file, grams, OffsetDateTime.now().plusMinutes(15), trigger));
+    }
+
+    private Pending consumePending(final String printer) {
         final Pending p = pending.remove(printer);
         if (p == null || p.expires().isBefore(OffsetDateTime.now())) {
-            return 0;
+            return null;
         }
-        return p.grams();
+        return p;
     }
 
     private Path getPath() {
@@ -118,12 +128,16 @@ public class PrintHistoryService {
             if (previous == null || previous == current) {
                 // first observation: pick up a print already in progress
                 if (previous == null && isInJob(current) && !running.containsKey(name)) {
-                    running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(), consumePendingGrams(name)));
+                    final Pending p = consumePending(name);
+                    running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
+                            p == null ? 0 : p.grams(), p == null ? null : p.trigger()));
                 }
                 return;
             }
             if (!isInJob(previous) && isInJob(current)) {
-                running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(), consumePendingGrams(name)));
+                final Pending p = consumePending(name);
+                running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
+                        p == null ? 0 : p.grams(), p == null ? null : p.trigger()));
                 return;
             }
             if (isInJob(previous) && !isInJob(current)) {
@@ -146,7 +160,7 @@ public class PrintHistoryService {
                 final String file = job.file().isEmpty() ? printer.getLastPrintFile().orElse("") : job.file();
                 final OffsetDateTime now = OffsetDateTime.now();
                 addJob(new PrintJob(name, file, job.started(), now,
-                        Duration.between(job.started(), now).toSeconds(), result, job.grams()));
+                        Duration.between(job.started(), now).toSeconds(), result, job.grams(), job.trigger()));
             }
         });
         save(false);

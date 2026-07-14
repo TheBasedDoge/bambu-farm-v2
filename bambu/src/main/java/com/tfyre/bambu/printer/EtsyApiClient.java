@@ -209,6 +209,40 @@ public class EtsyApiClient {
         return result;
     }
 
+    /** An active shop listing, for the Mappings tab's assign-gcodes table. */
+    public record Listing(long listingId, String title, int quantityAvailable) {
+    }
+
+    /**
+     * Fetches ALL active listings in the shop (paginated), so every product can be pre-mapped to gcode before
+     * an order ever arrives. Requires the {@code listings_r} scope, which the connect flow already requests.
+     */
+    public List<Listing> getActiveListings() throws Exception {
+        final Optional<String> shopId = config.etsy().shopId();
+        if (shopId.isEmpty()) {
+            throw new IllegalStateException("bambu.etsy.shop-id is not configured.");
+        }
+        final List<Listing> result = new ArrayList<>();
+        final int pageSize = 100;
+        for (int offset = 0; offset < 1000; offset += pageSize) {
+            final JsonNode root = getOrThrow("/shops/%s/listings/active?limit=%d&offset=%d"
+                    .formatted(shopId.get(), pageSize, offset));
+            int pageCount = 0;
+            for (final JsonNode l : root.path("results")) {
+                pageCount++;
+                result.add(new Listing(
+                        l.path("listing_id").asLong(),
+                        l.path("title").asText(""),
+                        l.path("quantity").asInt(0)));
+            }
+            if (pageCount < pageSize) {
+                break;
+            }
+        }
+        result.sort((a, b) -> a.title().compareToIgnoreCase(b.title()));
+        return result;
+    }
+
     /**
      * Fetches the primary listing image URL for a listing, used to help identify which gcode file to map it to.
      */

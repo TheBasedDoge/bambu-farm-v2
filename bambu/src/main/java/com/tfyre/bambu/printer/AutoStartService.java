@@ -219,7 +219,7 @@ public class AutoStartService {
                     return;
                 }
                 lastStatus.put(name, "bed clear, starting…");
-                queueService.startNext(name,
+                queueService.startNext(name, "auto-start",
                         () -> {
                             lastStatus.put(name, "auto-started at %s".formatted(HHMM.format(LocalTime.now())));
                             final int left = queueService.size(name);

@@ -176,7 +176,15 @@ public class PrintQueueService {
      * Starts the next queued job on the printer. Caller is responsible for user confirmation (bed cleared). Callbacks run on a worker thread - wrap with
      * ui.access().
      */
-    public synchronized void startNext(final String printerName, final Runnable onSuccess, final Consumer<String> onError) {
+    public void startNext(final String printerName, final Runnable onSuccess, final Consumer<String> onError) {
+        startNext(printerName, "queue", onSuccess, onError);
+    }
+
+    /**
+     * @param trigger recorded into print history so runs can be filtered by how they started -
+     *                "queue" (manual Start Next) or "auto-start" (AI-gated auto-start)
+     */
+    public synchronized void startNext(final String printerName, final String trigger, final Runnable onSuccess, final Consumer<String> onError) {
         // synchronized closes the check-then-act race between isBlocked() below and setBlocked(true):
         // two sessions clicking Start Next at the same moment would otherwise both pass the check and
         // double-start the same job. The second caller now sees blocked=true and gets a clean error.
@@ -209,7 +217,7 @@ public class PrintQueueService {
                 }
                 // SD_CARD entries reference a file already resident on the printer's SD card at this path -
                 // nothing to upload, just send the print command directly.
-                historyService.registerExpectedWeight(printerName, entry.command().filename(), entry.grams());
+                historyService.registerExpectedWeight(printerName, entry.command().filename(), entry.grams(), trigger);
                 detail.printer().commandPrintProjectFile(entry.command());
                 removeFirst(printerName, entry);
                 Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, entry.command().filename(), entry.command().plateId());

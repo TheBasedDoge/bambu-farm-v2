@@ -111,4 +111,24 @@ public class EbayMappingService {
         save();
     }
 
+    /** All stored mappings by storage key ("listingKey|variationSignature"), for the Mappings tab. */
+    public synchronized Map<String, MappingEntry> entries() {
+        return Map.copyOf(data);
+    }
+
+    /** Replaces a mapping by its raw storage key (used by the Mappings tab's editor). */
+    public synchronized void putByKey(final String storageKey, final MappingEntry entry) {
+        data.put(storageKey, entry);
+        dirty = true;
+        save();
+    }
+
+    /** Deletes a mapping by its raw storage key (used by the Mappings tab). */
+    public synchronized void removeByKey(final String storageKey) {
+        if (data.remove(storageKey) != null) {
+            dirty = true;
+            save();
+        }
+    }
+
 }

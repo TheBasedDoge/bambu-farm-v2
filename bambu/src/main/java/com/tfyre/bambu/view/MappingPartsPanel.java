@@ -70,6 +70,11 @@ public class MappingPartsPanel extends Div {
         saveBtn.addClickListener(e -> onSave.accept(collectParts()));
         add(saveBtn);
 
+        if (onQueue == null) {
+            // Mapping-only mode (Mappings tab): no printer selection / queue controls
+            return;
+        }
+
         printerSelect.setLabel("Printer(s)");
         printerSelect.addClassName("mapping-printer-select");
         printerSelect.setItems(printerNames);
@@ -84,6 +89,15 @@ public class MappingPartsPanel extends Div {
         queueBtn.addThemeVariants(ButtonVariant.LUMO_SUCCESS);
         queueBtn.addClickListener(e -> onQueue.accept(collectParts(), new ArrayList<>(printerSelect.getValue())));
         add(queueBtn);
+    }
+
+    /** Mapping-only variant for the Mappings tab: edit and save parts, no printer selection or queueing. */
+    public MappingPartsPanel(
+            final Supplier<List<String>> libraryFilesSupplier,
+            final Function<String, List<Integer>> plateIdsSupplier,
+            final List<MappingPart> initialParts,
+            final Consumer<List<MappingPart>> onSave) {
+        this(libraryFilesSupplier, plateIdsSupplier, List.of(), initialParts, 1, onSave, null);
     }
 
     private void addRow(final MappingPart initial) {

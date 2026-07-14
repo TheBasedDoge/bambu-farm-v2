@@ -94,21 +94,27 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     @Inject
     Instance<AiSettingsView> aiSettingsViewInstance;
     @Inject
+    Instance<MappingsView> mappingsViewInstance;
+    @Inject
     ScheduledExecutorService ses;
 
     private final Tab overviewTab = new Tab("Overview");
+    private final Tab mappingsTab = new Tab("Mappings");
     private final Tab queueTab = new Tab("Print Queue");
     private final Tab aiTab = new Tab("AI Settings");
-    private final Tabs tabs = new Tabs(overviewTab, queueTab, aiTab);
+    private final Tabs tabs = new Tabs(overviewTab, mappingsTab, queueTab, aiTab);
     private final Div tabContent = new Div();
     private final Div overview = new Div();
 
     /** Embedded tab views, created lazily on first open and reused (they rebuild themselves on attach). */
     private PrintQueueView queueView;
     private AiSettingsView aiView;
+    private MappingsView mappingsView;
 
     private String overviewKey = "";
     private Optional<ScheduledFuture<?>> future = Optional.empty();
+    /** Fulfillment card filter: "all", "auto" (auto-started prints only) or "manual". */
+    private String fulfillmentFilter = "all";
 
     public AutomationView() {
         // Registered once here, NOT in onAttach - this view can re-attach and listeners would stack
@@ -158,6 +164,11 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                 queueView = printQueueViewInstance.get();
             }
             tabContent.add(queueView);
+        } else if (selected == mappingsTab) {
+            if (mappingsView == null) {
+                mappingsView = mappingsViewInstance.get();
+            }
+            tabContent.add(mappingsView);
         } else if (selected == aiTab) {
             if (aiView == null) {
                 aiView = aiSettingsViewInstance.get();
@@ -420,26 +431,59 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     private Div buildFulfillmentSection(final StringBuilder key) {
         final Div sec = section();
         sec.add(new H4("4 · Fulfillment"));
-        final List<PrintHistoryService.PrintJob> jobs = historyService.getJobs();
-        final List<PrintHistoryService.PrintJob> recent = new ArrayList<>(jobs);
+        key.append(fulfillmentFilter).append('|');
+
+        // Filter: everything / only auto-started prints / only manually started ones
+        final Div filters = flexRow();
+        filters.add(filterButton("All", "all"), filterButton("Auto-started", "auto"), filterButton("Manual", "manual"));
+        sec.add(filters);
+
+        final List<PrintHistoryService.PrintJob> recent = new ArrayList<>(historyService.getJobs());
         recent.sort(Comparator.comparing(PrintHistoryService.PrintJob::ended).reversed());
-        if (recent.isEmpty()) {
-            sec.add(secondary("No completed jobs recorded yet."));
+        final List<PrintHistoryService.PrintJob> filtered = recent.stream()
+                .filter(j -> switch (fulfillmentFilter) {
+                    case "auto" -> "auto-start".equals(j.trigger());
+                    case "manual" -> !"auto-start".equals(j.trigger());
+                    default -> true;
+                })
+                .limit(5)
+                .toList();
+        if (filtered.isEmpty()) {
+            sec.add(secondary("auto".equals(fulfillmentFilter)
+                    ? "No auto-started prints recorded yet (prints started before this feature aren't tagged)."
+                    : "No completed jobs recorded yet."));
         } else {
-            recent.stream().limit(5).forEach(j -> {
+            filtered.forEach(j -> {
                 key.append(j.printer()).append(j.ended()).append(j.result()).append('|');
                 final Span result = new Span(("Finished".equals(j.result()) ? "✓ " : "✗ ") + j.result());
                 result.getStyle().setColor("Finished".equals(j.result())
                         ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
                 final long h = j.durationSeconds() / 3600;
                 final long m = j.durationSeconds() % 3600 / 60;
-                sec.add(line(result, new Span("  %s · %s · %dh %dm · %s".formatted(
-                        j.printer(), j.file(), h, m, TIME_FMT.format(j.ended())))));
+                final String how = "auto-start".equals(j.trigger()) ? " · ⚙ auto"
+                        : "queue".equals(j.trigger()) ? " · queue" : "";
+                sec.add(line(result, new Span("  %s · %s · %dh %dm · %s%s".formatted(
+                        j.printer(), j.file(), h, m, TIME_FMT.format(j.ended()), how))));
             });
         }
         sec.add(secondary("Shipping and marking orders fulfilled stays manual on Etsy/eBay - this app never writes back to the marketplaces."));
         key.append('§');
         return sec;
+    }
+
+    private Button filterButton(final String label, final String value) {
+        final Button b = new Button(label);
+        b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_SMALL);
+        if (value.equals(fulfillmentFilter)) {
+            b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_PRIMARY);
+        } else {
+            b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_TERTIARY);
+        }
+        b.addClickListener(e -> {
+            fulfillmentFilter = value;
+            forceRefresh();
+        });
+        return b;
     }
 
     // -------------------------------------------------------------------------
