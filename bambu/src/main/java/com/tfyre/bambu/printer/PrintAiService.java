@@ -168,7 +168,9 @@ public class PrintAiService {
 
     @Scheduled(every = "${bambu.ollama.failure-check-interval:5m}")
     void watchForFailures() {
-        if (!ollama.isEnabled()) {
+        if (!isEnabled()) {
+            // isEnabled() (not just ollama.isEnabled()) so the /ai-settings runtime kill-switch
+            // actually suspends scheduled checks too, as its Javadoc promises.
             return;
         }
         printers.getPrinters().stream()
@@ -189,7 +191,7 @@ public class PrintAiService {
                         if (result.positive()) {
                             Log.warnf("PrintAiService: %s: failure detected — %s", printer.getName(), result.description());
                             notificationService.notifyEvent("failure_detected", printer.getName(),
-                                    "Possible print failure detected: " + truncate(result.description(), 200));
+                                    "Possible print failure detected: " + truncate(result.description(), 200), bytes);
                         }
                     }));
         } finally {
@@ -203,7 +205,7 @@ public class PrintAiService {
 
     @Scheduled(every = "30s")
     void watchStateTransitions() {
-        if (!ollama.isEnabled()) {
+        if (!isEnabled()) {
             return;
         }
         printers.getPrinters().forEach(printer -> {
@@ -264,7 +266,7 @@ public class PrintAiService {
                             if (!result.positive()) {
                                 Log.warnf("PrintAiService: %s: first layer issue — %s", printerName, result.description());
                                 notificationService.notifyEvent("first_layer_issue", printerName,
-                                        "First layer issue detected: " + truncate(result.description(), 200));
+                                        "First layer issue detected: " + truncate(result.description(), 200), bytes);
                             } else {
                                 Log.infof("PrintAiService: %s: first layer OK — %s", printerName, result.description());
                             }

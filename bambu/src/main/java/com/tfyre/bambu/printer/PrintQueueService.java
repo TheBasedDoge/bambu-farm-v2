@@ -176,7 +176,10 @@ public class PrintQueueService {
      * Starts the next queued job on the printer. Caller is responsible for user confirmation (bed cleared). Callbacks run on a worker thread - wrap with
      * ui.access().
      */
-    public void startNext(final String printerName, final Runnable onSuccess, final Consumer<String> onError) {
+    public synchronized void startNext(final String printerName, final Runnable onSuccess, final Consumer<String> onError) {
+        // synchronized closes the check-then-act race between isBlocked() below and setBlocked(true):
+        // two sessions clicking Start Next at the same moment would otherwise both pass the check and
+        // double-start the same job. The second caller now sees blocked=true and gets a clean error.
         final Optional<BambuPrinters.PrinterDetail> oDetail = printers.getPrinterDetail(printerName);
         if (oDetail.isEmpty()) {
             onError.accept("%s: unknown printer".formatted(printerName));

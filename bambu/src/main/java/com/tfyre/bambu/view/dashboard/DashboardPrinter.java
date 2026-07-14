@@ -573,7 +573,8 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         }
         final BambuConst.GCodeState newState = printer.getGCodeState();
         notifyPrintState(printerName, printer, gcodeState, newState);
-        maybeAutoDry(gcodeState, newState);
+        // Auto-dry on finish is handled server-side by AmsDryService.watchAutoDry() - triggering it from
+        // this UI tick meant it silently didn't run with no browser open, and ran once per open tab.
         if (newState.isIdle() && !gcodeState.isIdle()) {
             // Belt-and-braces: the message that reports "gone idle" doesn't always carry ams/vt_tray data, so
             // processAms/processVtTray might not run again to clear the highlight themselves.
@@ -1634,28 +1635,6 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     }
 
     /** Fire auto-dry when a print completes, if enabled via UI. Called with old/new state before gcodeState is updated. */
-    private void maybeAutoDry(final BambuConst.GCodeState oldState, final BambuConst.GCodeState newState) {
-        if (!oldState.isPrinting()) {
-            return;
-        }
-        // Trigger on FINISH (normal completion) or IDLE (printer went straight past FINISH to idle)
-        if (newState != BambuConst.GCodeState.FINISH && newState != BambuConst.GCodeState.IDLE) {
-            return;
-        }
-        final AmsDryService.DrySetting setting = amsDryService.getSetting(printer.getName());
-        if (!setting.autoOnFinish()) {
-            return;
-        }
-        printer.getModules().stream()
-                .filter(m -> m.getAmsType().isSupportsDrying())
-                .forEach(m -> {
-                    printer.commandAmsDry(m.unitIndex(), setting.temp(), setting.durationHours());
-                    amsDryService.recordDrying(printer.getName(), m.unitIndex(), setting.temp(), setting.durationHours());
-                    showNotification("%s: auto-drying AMS #%d (%d°C / %dh)"
-                            .formatted(printer.getName(), m.unitIndex(), setting.temp(), setting.durationHours()));
-                });
-    }
-
     private void updateAmsDryVisibility() {
         if (amsDryButtons.isEmpty()) {
             return;

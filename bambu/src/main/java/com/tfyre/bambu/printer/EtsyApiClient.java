@@ -185,13 +185,24 @@ public class EtsyApiClient {
         }
         // Sorting is done client-side below - avoids depending on getting Etsy's sort_on/sort_order enum values
         // exactly right, since a rejected query param here fails the whole call.
-        final String path = "/shops/%s/receipts?was_paid=true&was_shipped=false&limit=100".formatted(shopId.get());
-        final JsonNode root = getOrThrow(path);
+        // Paginate via offset: a single page caps at 100 receipts, and while >100 open orders is a good
+        // problem to have, silently hiding the oldest ones would be a bad way to find out.
         final List<Receipt> result = new ArrayList<>();
-        for (final JsonNode r : root.path("results")) {
-            final Receipt receipt = parseReceipt(r);
-            if (receipt.isUnfulfilled()) {
-                result.add(receipt);
+        final int pageSize = 100;
+        for (int offset = 0; offset < 1000; offset += pageSize) {
+            final String path = "/shops/%s/receipts?was_paid=true&was_shipped=false&limit=%d&offset=%d"
+                    .formatted(shopId.get(), pageSize, offset);
+            final JsonNode root = getOrThrow(path);
+            int pageCount = 0;
+            for (final JsonNode r : root.path("results")) {
+                pageCount++;
+                final Receipt receipt = parseReceipt(r);
+                if (receipt.isUnfulfilled()) {
+                    result.add(receipt);
+                }
+            }
+            if (pageCount < pageSize) {
+                break;
             }
         }
         result.sort((a, b) -> b.createTimestamp().compareTo(a.createTimestamp()));

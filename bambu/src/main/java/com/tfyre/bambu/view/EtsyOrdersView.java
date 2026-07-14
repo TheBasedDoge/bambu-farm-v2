@@ -9,6 +9,7 @@ import com.tfyre.bambu.printer.EtsyOAuthService;
 import com.tfyre.bambu.printer.EtsyOrderPollingService;
 import com.tfyre.bambu.printer.GcodeMappingQueuer;
 import com.tfyre.bambu.printer.MappingPart;
+import com.tfyre.bambu.printer.OrderTrackingService;
 import com.tfyre.bambu.view.batchprint.Plate;
 import com.tfyre.bambu.view.batchprint.ProjectFile;
 import com.vaadin.flow.component.AttachEvent;
@@ -70,6 +71,8 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
     GcodeMappingQueuer queuer;
     @Inject
     Instance<ProjectFile> projectFileInstance;
+    @Inject
+    OrderTrackingService tracking;
 
     private final Div content = new Div();
 
@@ -242,6 +245,14 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
             statusBadge.getStyle().setColor("var(--lumo-secondary-text-color)");
             titleRow.add(statusBadge);
         }
+        // "queued ✓" badge - persisted, so it survives restarts and prevents double-printing an order
+        final String orderKey = String.valueOf(receipt.receiptId());
+        final Span queuedBadge = new Span("✓ queued");
+        queuedBadge.getStyle().setColor("var(--lumo-success-text-color)").setFontWeight("bold");
+        tracking.queuedAt("etsy", orderKey).ifPresentOrElse(
+                at -> queuedBadge.setTitle("Print jobs queued " + DATE_FMT.format(at.atZone(ZoneId.systemDefault()))),
+                () -> queuedBadge.setVisible(false));
+        titleRow.add(queuedBadge);
         final Button dismiss = new Button("Dismiss", new Icon(VaadinIcon.EYE_SLASH));
         dismiss.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
         dismiss.setTooltipText("Hide this order from the list (does not mark it shipped on Etsy)");
@@ -252,11 +263,11 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
         titleRow.add(dismiss);
         card.add(titleRow);
 
-        receipt.transactions().forEach(t -> card.add(buildTransactionRow(t)));
+        receipt.transactions().forEach(t -> card.add(buildTransactionRow(t, orderKey, queuedBadge)));
         return card;
     }
 
-    private Div buildTransactionRow(final EtsyApiClient.Transaction t) {
+    private Div buildTransactionRow(final EtsyApiClient.Transaction t, final String orderKey, final Span queuedBadge) {
         final Div row = new Div();
         row.addClassName("etsy-transaction-row");
 
@@ -297,6 +308,9 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
                     final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, t.quantity(), selectedPrinters);
                     if (result.totalQueued() > 0) {
                         showNotification("Queued %d job(s) for listing %d".formatted(result.totalQueued(), t.listingId()));
+                        tracking.markQueued("etsy", orderKey);
+                        queuedBadge.setTitle("Print jobs queued just now");
+                        queuedBadge.setVisible(true);
                     }
                     result.errors().forEach(this::showError);
                 });

@@ -45,8 +45,11 @@ public class EbayOAuthService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    /** Single-use state tokens for in-flight authorization requests, to guard against CSRF. */
-    private final Map<String, Boolean> pendingStates = new ConcurrentHashMap<>();
+    /** How long an in-flight authorization request stays valid before it's purged. */
+    private static final java.time.Duration PENDING_TTL = java.time.Duration.ofMinutes(30);
+
+    /** Single-use state tokens (with creation time) for in-flight authorization requests, to guard against CSRF. */
+    private final Map<String, Instant> pendingStates = new ConcurrentHashMap<>();
 
     public boolean isConfigured() {
         return config.ebay().clientId().isPresent()
@@ -76,8 +79,10 @@ public class EbayOAuthService {
         if (!isConfigured()) {
             return Optional.empty();
         }
+        // Purge abandoned auth attempts so the map can't grow forever
+        pendingStates.values().removeIf(created -> created.isBefore(Instant.now().minus(PENDING_TTL)));
         final String state = randomState();
-        pendingStates.put(state, Boolean.TRUE);
+        pendingStates.put(state, Instant.now());
         final String url = authorizeBase()
                 + "?client_id=" + enc(config.ebay().clientId().get())
                 + "&redirect_uri=" + enc(config.ebay().ruName().get())
@@ -98,7 +103,8 @@ public class EbayOAuthService {
      * @return empty on success, or an error message to show the user
      */
     public Optional<String> handleCallback(final String state, final String code) {
-        if (pendingStates.remove(state) == null) {
+        final Instant created = state == null ? null : pendingStates.remove(state);
+        if (created == null || created.isBefore(Instant.now().minus(PENDING_TTL))) {
             return Optional.of("Unknown or expired authorization request - please try connecting again.");
         }
         if (!isConfigured()) {
@@ -174,8 +180,15 @@ public class EbayOAuthService {
                     .build();
             final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 300) {
-                Log.errorf("EbayOAuthService: refresh HTTP %d: %s - clearing stored tokens", response.statusCode(), response.body());
-                tokenStore.clear();
+                // Only a 4xx means the refresh token itself is bad (revoked/expired) - clearing then is correct
+                // so the UI prompts to reconnect. A 5xx is eBay having a moment; keep the tokens and let the
+                // next poll retry, otherwise a transient blip silently disconnects the account.
+                if (response.statusCode() < 500) {
+                    Log.errorf("EbayOAuthService: refresh HTTP %d: %s - clearing stored tokens", response.statusCode(), response.body());
+                    tokenStore.clear();
+                } else {
+                    Log.errorf("EbayOAuthService: refresh HTTP %d (transient?): %s - keeping tokens, will retry", response.statusCode(), response.body());
+                }
                 return Optional.empty();
             }
             final JsonNode root = mapper.readTree(response.body());

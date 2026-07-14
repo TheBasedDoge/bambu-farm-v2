@@ -1,10 +1,21 @@
 package com.tfyre.bambu.security;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tfyre.bambu.BambuConfig;
 import com.vaadin.flow.server.VaadinServletRequest;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.servlet.http.Cookie;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -27,7 +38,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *  3. On logout:
  *       removeTokensForUser(username) + JS clears the cookie
  *
- * Tokens are stored in-memory only — lost on restart, which is acceptable for a home-lab tool.
+ * Tokens are persisted (as SHA-256 hashes, so the file never contains a usable credential) to a JSON file
+ * next to the other stores — otherwise every server restart/redeploy silently logged out every remembered
+ * device, defeating the point of a 30-day cookie.
  */
 @ApplicationScoped
 public class RememberMeService {
@@ -38,23 +51,79 @@ public class RememberMeService {
     /** 30-day lifetime for both the server-side token and the browser cookie. */
     public static final int MAX_AGE_SECONDS = 30 * 24 * 3600;
 
-    private record RememberToken(String username, Instant expiresAt) {
+    /** Public (Jackson-serialized) so persisted entries round-trip; keyed by token HASH, never the raw token. */
+    public record RememberToken(String username, Instant expiresAt) {
         boolean valid() {
             return Instant.now().isBefore(expiresAt);
         }
     }
 
-    /** token → RememberToken (username + expiry) */
+    private static final String STORE_FILENAME = "bambu-remember-me.json";
+
+    /** SHA-256(token) → RememberToken (username + expiry) */
     private final Map<String, RememberToken> tokens = new ConcurrentHashMap<>();
 
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    @Inject
+    ObjectMapper mapper;
+    @Inject
+    BambuConfig config;
+
+    // -------------------------------------------------------------------------
+    // Persistence
+    // -------------------------------------------------------------------------
+
+    private Path getPath() {
+        final Path parent = Path.of(config.maintenanceFile()).getParent();
+        return parent != null ? parent.resolve(STORE_FILENAME) : Path.of(STORE_FILENAME);
+    }
+
+    @PostConstruct
+    void load() {
+        final Path path = getPath();
+        if (!Files.exists(path)) {
+            return;
+        }
+        try {
+            final Map<String, RememberToken> loaded = mapper.readValue(path.toFile(),
+                    new TypeReference<Map<String, RememberToken>>() {});
+            loaded.forEach((hash, token) -> {
+                if (token.valid()) {
+                    tokens.put(hash, token);
+                }
+            });
+            Log.infof("RememberMeService: restored %d remembered device(s) from %s", tokens.size(), path);
+        } catch (IOException ex) {
+            Log.errorf(ex, "RememberMeService: cannot load %s: %s", path, ex.getMessage());
+        }
+    }
+
+    private void save() {
+        final Path path = getPath();
+        try {
+            mapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), tokens);
+        } catch (IOException ex) {
+            Log.errorf(ex, "RememberMeService: cannot save %s: %s", path, ex.getMessage());
+        }
+    }
+
+    private static String hash(final String token) {
+        try {
+            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(digest.digest(token.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Token lifecycle
     // -------------------------------------------------------------------------
 
     /**
-     * Creates a 256-bit secure random token for {@code username} and stores it.
+     * Creates a 256-bit secure random token for {@code username} and stores its hash.
      *
      * @return the raw token string to embed in the cookie
      */
@@ -62,7 +131,8 @@ public class RememberMeService {
         final byte[] bytes = new byte[32];
         RANDOM.nextBytes(bytes);
         final String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        tokens.put(token, new RememberToken(username, Instant.now().plus(MAX_AGE_SECONDS, ChronoUnit.SECONDS)));
+        tokens.put(hash(token), new RememberToken(username, Instant.now().plus(MAX_AGE_SECONDS, ChronoUnit.SECONDS)));
+        save();
         Log.debugf("RememberMeService: created token for %s (total tokens: %d)", username, tokens.size());
         return token;
     }
@@ -74,7 +144,7 @@ public class RememberMeService {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
-        return Optional.ofNullable(tokens.get(token))
+        return Optional.ofNullable(tokens.get(hash(token)))
                 .filter(RememberToken::valid)
                 .map(RememberToken::username);
     }
@@ -96,6 +166,9 @@ public class RememberMeService {
     public void removeTokensForUser(final String username) {
         final int before = tokens.size();
         tokens.entrySet().removeIf(e -> e.getValue().username().equalsIgnoreCase(username));
+        if (tokens.size() != before) {
+            save();
+        }
         Log.debugf("RememberMeService: removed tokens for %s (%d → %d)", username, before, tokens.size());
     }
 
@@ -149,6 +222,7 @@ public class RememberMeService {
         tokens.entrySet().removeIf(e -> !e.getValue().valid());
         final int removed = before - tokens.size();
         if (removed > 0) {
+            save();
             Log.debugf("RememberMeService: cleaned %d expired tokens", removed);
         }
     }

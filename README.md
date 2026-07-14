@@ -151,7 +151,7 @@ The existing Dark Theme toggle now renders a true-black OLED look: pure black pa
 - **Favicon** at `/favicon.svg`, replaceable at `bambu/src/main/resources/META-INF/resources/favicon.svg`.
 
 ### Dashboard
-- **Overview bar** at the top: colored status dots (blue printing / green available / grey offline / red errors with printer names), plus "Next available: P1S 31% • 1h 40m (~21:38)".
+- **Overview bar** at the top: colored status dots (blue printing / green available / grey offline / red errors with printer names), plus "Next available: P1S 31% • 1h 40m (~21:38)". When Etsy/eBay is connected and there are open orders, amber **"Etsy N" / "eBay N"** chips appear at the end (admin only) - click one to jump to that Sales Orders page. No chip = nothing outstanding.
 - **Responsive card grid**: column count derives from a minimum card width (380px). Phones get one full-width column, ultrawides get many. Override in a custom `styles.css` next to the jar:
 
   ```css
@@ -170,7 +170,7 @@ The existing Dark Theme toggle now renders a true-black OLED look: pure black pa
 All layout preferences are stored in **browser localStorage** (per browser/device, not per account).
 
 ### Remember Me login
-The login page has a "Remember this device" checkbox that stores a secure token (30-day expiry) so you don't have to log in again on that browser. Works alongside normal username/password auth; no configuration needed.
+The login page has a "Remember this device" checkbox that stores a secure token (30-day expiry) so you don't have to log in again on that browser. Works alongside normal username/password auth; no configuration needed. Tokens survive server restarts - they're persisted (SHA-256 hashed, so the file never contains a usable credential) to `bambu-remember-me.json`.
 
 ## Cameras and remote access
 
@@ -309,7 +309,7 @@ Without ffmpeg reachable, AI checks on X1C/X1E/H2D printers keep showing "no sna
 The **Notifications** checkbox in the sidebar enables desktop notifications on print finish/fail (requires an open tab and HTTPS or localhost).
 
 ### Notification Settings page
-The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due - resets on server restart), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
+The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
 
 ### MQTT (recommended for Home Assistant)
 ```properties
@@ -318,7 +318,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, or `maintenance`, with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, or `new_order` (for `new_order` the printer segment is `Etsy` or `eBay`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
@@ -338,6 +338,8 @@ bambu.notifications.webhook-url=https://discord.com/api/webhooks/...
 bambu.notifications.webhook-format=discord   # json | discord | ntfy
 ```
 Both MQTT and webhook can be enabled at once. Printer errors are checked every 30s; maintenance-due every 6h (deduped until the task is marked done).
+
+**AI alerts include the camera frame**: when the AI failure or first-layer check fires an alert, the snapshot it analyzed is attached to the webhook delivery (Discord: image upload in the message; ntfy: attachment) - so you can judge "spaghetti or false positive?" straight from your phone. The generic `json` format and MQTT stay text-only.
 
 ## Tasmota smart plugs
 
@@ -367,6 +369,12 @@ A listing can have multiple parts - useful for kits made of several different gc
 **Queue**: pick one or more printers and click "Queue Print" - jobs are distributed round-robin across the selected printers (`orderedQuantity × copiesPerUnit` jobs per part).
 
 Orders are polled on a schedule and filtered to unfulfilled/open only; poll errors (bad credentials, wrong shop ID, etc.) show directly on the page instead of silently reporting "no orders".
+
+**New-order alerts**: when a poll finds an order it has never seen before, a `new_order` notification fires to your configured channels (Discord/ntfy/MQTT). Seen-order IDs are persisted (`bambu-order-tracking.json`), so restarts don't re-alert, and connecting a shop for the first time doesn't fire one alert per existing order. Toggle on the Notification Settings page.
+
+**Queued badge**: once you queue print jobs for an order, its card shows a green **"✓ queued"** badge (hover for when) - persisted, so you can't accidentally print the same order twice after a restart. Dismissed orders are persisted too and stay hidden.
+
+**Dashboard chips**: open order counts show as clickable "Etsy N / eBay N" chips on the dashboard overview bar.
 
 ```properties
 # Etsy - from https://www.etsy.com/developers/your-apps
@@ -455,7 +463,7 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.ebay.poll-interval` | `10m` | Order polling frequency |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.

@@ -9,6 +9,7 @@ import com.tfyre.bambu.printer.EbayOAuthService;
 import com.tfyre.bambu.printer.EbayOrderPollingService;
 import com.tfyre.bambu.printer.GcodeMappingQueuer;
 import com.tfyre.bambu.printer.MappingPart;
+import com.tfyre.bambu.printer.OrderTrackingService;
 import com.tfyre.bambu.view.batchprint.Plate;
 import com.tfyre.bambu.view.batchprint.ProjectFile;
 import com.vaadin.flow.component.AttachEvent;
@@ -67,6 +68,8 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
     GcodeMappingQueuer queuer;
     @Inject
     Instance<ProjectFile> projectFileInstance;
+    @Inject
+    OrderTrackingService tracking;
 
     private final Div content = new Div();
 
@@ -206,6 +209,13 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
         final Span statusBadge = new Span(order.fulfillmentStatus());
         statusBadge.getStyle().setColor("var(--lumo-secondary-text-color)");
         titleRow.add(statusBadge);
+        // "queued ✓" badge - persisted, so it survives restarts and prevents double-printing an order
+        final Span queuedBadge = new Span("✓ queued");
+        queuedBadge.getStyle().setColor("var(--lumo-success-text-color)").setFontWeight("bold");
+        tracking.queuedAt("ebay", order.orderId()).ifPresentOrElse(
+                at -> queuedBadge.setTitle("Print jobs queued " + DATE_FMT.format(at.atZone(ZoneId.systemDefault()))),
+                () -> queuedBadge.setVisible(false));
+        titleRow.add(queuedBadge);
         final Button dismiss = new Button("Dismiss", new Icon(VaadinIcon.EYE_SLASH));
         dismiss.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
         dismiss.setTooltipText("Hide this order from the list (does not mark it shipped on eBay)");
@@ -216,11 +226,11 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
         titleRow.add(dismiss);
         card.add(titleRow);
 
-        order.lineItems().forEach(li -> card.add(buildLineItemRow(li)));
+        order.lineItems().forEach(li -> card.add(buildLineItemRow(li, order.orderId(), queuedBadge)));
         return card;
     }
 
-    private Div buildLineItemRow(final EbayApiClient.LineItem li) {
+    private Div buildLineItemRow(final EbayApiClient.LineItem li, final String orderId, final Span queuedBadge) {
         final Div row = new Div();
         row.addClassName("etsy-transaction-row");
 
@@ -270,6 +280,9 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
                     final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, li.quantity(), selectedPrinters);
                     if (result.totalQueued() > 0) {
                         showNotification("Queued %d job(s) for %s".formatted(result.totalQueued(), listingKey));
+                        tracking.markQueued("ebay", orderId);
+                        queuedBadge.setTitle("Print jobs queued just now");
+                        queuedBadge.setVisible(true);
                     }
                     result.errors().forEach(this::showError);
                 });

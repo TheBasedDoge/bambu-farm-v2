@@ -8,9 +8,8 @@ import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Periodically polls eBay for open (not-started/in-progress) orders, mirroring {@link EtsyOrderPollingService}.
@@ -18,17 +17,22 @@ import java.util.concurrent.atomic.AtomicReference;
 @ApplicationScoped
 public class EbayOrderPollingService {
 
+    static final String MARKET = "ebay";
+
     @Inject
     EbayApiClient client;
     @Inject
     EbayOAuthService oauth;
     @Inject
     BambuConfig config;
+    @Inject
+    OrderTrackingService tracking;
+    @Inject
+    NotificationService notificationService;
 
     private final AtomicReference<List<EbayApiClient.Order>> lastOrders = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
     private final AtomicReference<String> lastError = new AtomicReference<>();
-    private final Set<String> dismissed = ConcurrentHashMap.newKeySet();
 
     @Scheduled(every = "${bambu.ebay.poll-interval:10m}")
     void poll() {
@@ -45,14 +49,36 @@ public class EbayOrderPollingService {
             lastPolled.set(Instant.now());
             lastError.set(null);
             Log.infof("EbayOrderPollingService: %d open order(s)", orders.size());
+            notifyNewOrders(orders);
         } catch (Exception ex) {
             lastError.set(ex.getMessage());
             Log.errorf(ex, "EbayOrderPollingService: poll failed: %s", ex.getMessage());
         }
     }
 
+    /** Fires a "new_order" notification for orders never seen before (tracked persistently, so no repeats after restart). */
+    private void notifyNewOrders(final List<EbayApiClient.Order> orders) {
+        final List<String> fresh = tracking.recordSeen(MARKET,
+                orders.stream().map(EbayApiClient.Order::orderId).toList());
+        if (fresh.isEmpty()) {
+            return;
+        }
+        orders.stream()
+                .filter(o -> fresh.contains(o.orderId()))
+                .forEach(o -> {
+                    final String items = o.lineItems().stream()
+                            .map(li -> "%dx %s".formatted(li.quantity(), li.title()))
+                            .collect(Collectors.joining(", "));
+                    notificationService.notifyEvent("new_order", "eBay",
+                            "New order %s from %s: %s".formatted(o.orderId(), o.buyerUsername(),
+                                    items.length() > 200 ? items.substring(0, 200) + "…" : items));
+                });
+    }
+
     public List<EbayApiClient.Order> getOrders() {
-        return lastOrders.get().stream().filter(o -> !dismissed.contains(o.orderId())).toList();
+        return lastOrders.get().stream()
+                .filter(o -> !tracking.isDismissed(MARKET, o.orderId()))
+                .toList();
     }
 
     public Optional<Instant> getLastPolled() {
@@ -64,11 +90,11 @@ public class EbayOrderPollingService {
     }
 
     public void dismiss(final String orderId) {
-        dismissed.add(orderId);
+        tracking.dismiss(MARKET, orderId);
     }
 
     public void undismiss(final String orderId) {
-        dismissed.remove(orderId);
+        tracking.undismiss(MARKET, orderId);
     }
 
 }

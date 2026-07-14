@@ -7,9 +7,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Periodically polls Etsy for paid-but-unshipped receipts so the Etsy Sales Orders view can show them without
@@ -19,17 +18,22 @@ import java.util.concurrent.atomic.AtomicReference;
 @ApplicationScoped
 public class EtsyOrderPollingService {
 
+    static final String MARKET = "etsy";
+
     @Inject
     EtsyApiClient client;
     @Inject
     EtsyOAuthService oauth;
     @Inject
     BambuConfig config;
+    @Inject
+    OrderTrackingService tracking;
+    @Inject
+    NotificationService notificationService;
 
     private final AtomicReference<List<EtsyApiClient.Receipt>> lastReceipts = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
     private final AtomicReference<String> lastError = new AtomicReference<>();
-    private final Set<Long> dismissed = ConcurrentHashMap.newKeySet();
 
     @Scheduled(every = "${bambu.etsy.poll-interval:10m}")
     void poll() {
@@ -47,15 +51,37 @@ public class EtsyOrderPollingService {
             lastPolled.set(Instant.now());
             lastError.set(null);
             Log.infof("EtsyOrderPollingService: %d unfulfilled receipt(s)", receipts.size());
+            notifyNewOrders(receipts);
         } catch (Exception ex) {
             lastError.set(ex.getMessage());
             Log.errorf(ex, "EtsyOrderPollingService: poll failed: %s", ex.getMessage());
         }
     }
 
-    /** Unfulfilled receipts, excluding any the user has locally dismissed. */
+    /** Fires a "new_order" notification for receipts never seen before (tracked persistently, so no repeats after restart). */
+    private void notifyNewOrders(final List<EtsyApiClient.Receipt> receipts) {
+        final List<String> fresh = tracking.recordSeen(MARKET,
+                receipts.stream().map(r -> String.valueOf(r.receiptId())).toList());
+        if (fresh.isEmpty()) {
+            return;
+        }
+        receipts.stream()
+                .filter(r -> fresh.contains(String.valueOf(r.receiptId())))
+                .forEach(r -> {
+                    final String items = r.transactions().stream()
+                            .map(t -> "%dx %s".formatted(t.quantity(), t.title()))
+                            .collect(Collectors.joining(", "));
+                    notificationService.notifyEvent("new_order", "Etsy",
+                            "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
+                                    items.length() > 200 ? items.substring(0, 200) + "…" : items));
+                });
+    }
+
+    /** Unfulfilled receipts, excluding any the user has dismissed. */
     public List<EtsyApiClient.Receipt> getReceipts() {
-        return lastReceipts.get().stream().filter(r -> !dismissed.contains(r.receiptId())).toList();
+        return lastReceipts.get().stream()
+                .filter(r -> !tracking.isDismissed(MARKET, String.valueOf(r.receiptId())))
+                .toList();
     }
 
     public java.util.Optional<Instant> getLastPolled() {
@@ -67,11 +93,11 @@ public class EtsyOrderPollingService {
     }
 
     public void dismiss(final long receiptId) {
-        dismissed.add(receiptId);
+        tracking.dismiss(MARKET, String.valueOf(receiptId));
     }
 
     public void undismiss(final long receiptId) {
-        dismissed.remove(receiptId);
+        tracking.undismiss(MARKET, String.valueOf(receiptId));
     }
 
 }

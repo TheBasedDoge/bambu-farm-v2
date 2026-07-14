@@ -37,6 +37,8 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
 
     /** Known event types that can be suppressed individually. */
     private static final List<EventDef> EVENTS = List.of(
+            new EventDef("new_order", "New Order",
+                    "A new unfulfilled order appeared on Etsy or eBay"),
             new EventDef("failure_detected", "AI Failure Detected",
                     "Spaghetti / blob / detach detected by the AI failure check"),
             new EventDef("first_layer_issue", "AI First Layer Issue",
@@ -44,7 +46,13 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("error", "Printer Error",
                     "Non-zero print error code reported by a printer"),
             new EventDef("maintenance", "Maintenance Due",
-                    "A maintenance task is overdue on a printer")
+                    "A maintenance task is overdue on a printer"),
+            new EventDef("finish", "Print Finished",
+                    "A print job completed successfully"),
+            new EventDef("fail", "Print Failed",
+                    "A print job ended in a failed state"),
+            new EventDef("stopped", "Print Stopped",
+                    "A print job was stopped/cancelled before finishing")
     );
 
     @Inject
@@ -112,7 +120,7 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
         final Div section = new Div();
         section.addClassName("ai-settings-section");
         section.add(new H4("Event Filters"));
-        section.add(new Span("Toggle events on or off at runtime without restarting. Resets on server restart."));
+        section.add(new Span("Toggle events on or off at runtime without restarting. Choices are saved and survive restarts."));
 
         final Div list = new Div();
         list.getStyle()

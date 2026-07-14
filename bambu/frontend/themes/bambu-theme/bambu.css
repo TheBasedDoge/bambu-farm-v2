@@ -208,6 +208,11 @@ vaadin-app-layout.drawer-rail [slot="drawer"].drawer-controls {
     background-color: var(--lumo-error-color);
 }
 
+/* Open marketplace order chips (Etsy / eBay) - amber to stand out as "action needed" */
+.dashboard-overview .dot.orders {
+    background-color: var(--lumo-warning-color, #e8a33d);
+}
+
 .dashboard-overview .ov-error {
     color: var(--lumo-error-text-color);
 }

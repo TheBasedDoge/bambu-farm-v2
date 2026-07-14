@@ -3,6 +3,8 @@ package com.tfyre.bambu.view.dashboard;
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
+import com.tfyre.bambu.printer.EbayOrderPollingService;
+import com.tfyre.bambu.printer.EtsyOrderPollingService;
 import com.tfyre.bambu.MainLayout;
 import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.security.SecurityUtils;
@@ -39,6 +41,8 @@ import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import com.tfyre.bambu.printer.BambuPrinters;
+import com.tfyre.bambu.view.EbayOrdersView;
+import com.tfyre.bambu.view.EtsyOrdersView;
 import com.tfyre.bambu.view.PrinterView;
 import com.tfyre.bambu.view.PushDiv;
 import com.tfyre.bambu.view.UpdateHeader;
@@ -78,6 +82,10 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
     Instance<DashboardPrinter> cardInstance;
     @Inject
     BambuConfig config;
+    @Inject
+    EtsyOrderPollingService etsyPolling;
+    @Inject
+    EbayOrderPollingService ebayPolling;
 
     private final Div overview = new Div();
     private final Select<String> sortSelect = new Select<>();
@@ -410,7 +418,12 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
                     percent(next).map("%d%% •"::formatted).orElse("in"),
                     compactTime(minutes), HHMM.format(LocalTime.now().plusMinutes(minutes)));
         }
-        final String key = "%d|%d|%d|%s|%s".formatted(printing, available, offline, errors, nextText);
+        // Open marketplace orders (already excludes dismissed ones) - a quick "anything outstanding?" glance.
+        // Admin-only, matching the Sales Orders pages the chips link to.
+        final boolean ordersVisible = SecurityUtils.userHasAccess(SystemRoles.ROLE_ADMIN);
+        final int etsyOrders = ordersVisible ? etsyPolling.getReceipts().size() : 0;
+        final int ebayOrders = ordersVisible ? ebayPolling.getOrders().size() : 0;
+        final String key = "%d|%d|%d|%s|%s|%d|%d".formatted(printing, available, offline, errors, nextText, etsyOrders, ebayOrders);
         if (overviewText.equals(key)) {
             return;
         }
@@ -430,6 +443,25 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
         final Span nextSpan = new Span(nextText);
         nextSpan.addClassName("next");
         overview.add(nextSpan);
+        if (etsyOrders > 0) {
+            overview.add(orderItem("Etsy %d".formatted(etsyOrders),
+                    "%d open Etsy order%s - click to view".formatted(etsyOrders, etsyOrders == 1 ? "" : "s"),
+                    EtsyOrdersView.class));
+        }
+        if (ebayOrders > 0) {
+            overview.add(orderItem("eBay %d".formatted(ebayOrders),
+                    "%d open eBay order%s - click to view".formatted(ebayOrders, ebayOrders == 1 ? "" : "s"),
+                    EbayOrdersView.class));
+        }
+    }
+
+    /** Overview chip for open marketplace orders - clickable, jumps to the matching Sales Orders page. */
+    private Span orderItem(final String text, final String tooltip, final Class<? extends Component> target) {
+        final Span item = statusItem("orders", text);
+        item.setTitle(tooltip);
+        item.getStyle().setCursor("pointer");
+        item.addClickListener(e -> UI.getCurrent().navigate(target));
+        return item;
     }
 
     private void applySavedSizes() {

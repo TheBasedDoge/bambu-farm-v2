@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tfyre.bambu.BambuConfig;
 import io.quarkus.logging.Log;
 import io.quarkus.runtime.Shutdown;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,6 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class AmsDryService {
 
     private static final String DEFAULT_FILENAME = "bambu-ams-dry.json";
+    private static final String SESSIONS_FILENAME = "bambu-ams-dry-sessions.json";
 
     public static final int DEFAULT_TEMP = 55;
     public static final int DEFAULT_DURATION_HOURS = 4;
@@ -57,6 +59,9 @@ public class AmsDryService {
 
     @Inject
     BambuConfig config;
+
+    @Inject
+    BambuPrinters printers;
 
     /**
      * Tracks a single active drying session started from the app.
@@ -88,6 +93,7 @@ public class AmsDryService {
         final List<DryingSession> sessions = activeSessions.computeIfAbsent(printerName, k -> new CopyOnWriteArrayList<>());
         sessions.removeIf(s -> s.amsId() == amsId); // replace any existing session for this unit
         sessions.add(new DryingSession(amsId, Instant.now(), durationHours, temp));
+        saveSessions();
     }
 
     /**
@@ -97,6 +103,7 @@ public class AmsDryService {
         final List<DryingSession> sessions = activeSessions.get(printerName);
         if (sessions != null) {
             sessions.removeIf(s -> s.amsId() == amsId);
+            saveSessions();
         }
     }
 
@@ -123,6 +130,7 @@ public class AmsDryService {
 
     @PostConstruct
     void load() {
+        loadSessions();
         final Path path = getPath();
         if (!Files.exists(path)) {
             return;
@@ -158,6 +166,84 @@ public class AmsDryService {
     public void setSetting(final String printerName, final DrySetting setting) {
         settings.put(printerName, setting);
         save(); // write immediately so a crash doesn't lose the setting
+    }
+
+    // -------------------------------------------------------------------------
+    // Session persistence - so the "drying, Xm remaining" status chip survives a
+    // server restart (the AMS keeps drying regardless; this is just our bookkeeping)
+    // -------------------------------------------------------------------------
+
+    private Path getSessionsPath() {
+        final Path parent = Path.of(config.maintenanceFile()).getParent();
+        return parent != null ? parent.resolve(SESSIONS_FILENAME) : Path.of(SESSIONS_FILENAME);
+    }
+
+    private void loadSessions() {
+        final Path path = getSessionsPath();
+        if (!Files.exists(path)) {
+            return;
+        }
+        try {
+            final Map<String, List<DryingSession>> loaded = mapper.readValue(path.toFile(),
+                    new TypeReference<Map<String, List<DryingSession>>>() {});
+            loaded.forEach((printer, sessions) -> {
+                final List<DryingSession> active = sessions.stream().filter(DryingSession::isActive).toList();
+                if (!active.isEmpty()) {
+                    activeSessions.put(printer, new CopyOnWriteArrayList<>(active));
+                }
+            });
+            Log.infof("AmsDryService: restored %d active drying session list(s) from %s", activeSessions.size(), path);
+        } catch (IOException ex) {
+            Log.errorf(ex, "AmsDryService: cannot load %s: %s", path, ex.getMessage());
+        }
+    }
+
+    private void saveSessions() {
+        final Path path = getSessionsPath();
+        try {
+            mapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), activeSessions);
+        } catch (IOException ex) {
+            Log.errorf(ex, "AmsDryService: cannot save %s: %s", path, ex.getMessage());
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Auto-dry on print finish - server-side watcher
+    // -------------------------------------------------------------------------
+
+    /** Last known GCodeState per printer, used to detect printing → finished transitions. */
+    private final ConcurrentHashMap<String, BambuConst.GCodeState> lastStates = new ConcurrentHashMap<>();
+
+    /**
+     * Fires auto-dry when a print finishes. Lives here (server-side, like PrintAiService's state watcher)
+     * rather than in the dashboard UI tick, so it works with no browser open - the whole point of
+     * "auto on finish" - and fires exactly once per transition instead of once per open browser tab.
+     */
+    @Scheduled(every = "30s")
+    void watchAutoDry() {
+        printers.getPrinters().forEach(printer -> {
+            final BambuConst.GCodeState current = printer.getGCodeState();
+            final BambuConst.GCodeState previous = lastStates.put(printer.getName(), current);
+            if (previous == null || previous == current || !previous.isPrinting()) {
+                return;
+            }
+            // FINISH = normal completion; IDLE = printer went straight past FINISH to idle
+            if (current != BambuConst.GCodeState.FINISH && current != BambuConst.GCodeState.IDLE) {
+                return;
+            }
+            final DrySetting setting = getSetting(printer.getName());
+            if (!setting.autoOnFinish()) {
+                return;
+            }
+            printer.getModules().stream()
+                    .filter(m -> m.getAmsType().isSupportsDrying())
+                    .forEach(m -> {
+                        printer.commandAmsDry(m.unitIndex(), setting.temp(), setting.durationHours());
+                        recordDrying(printer.getName(), m.unitIndex(), setting.temp(), setting.durationHours());
+                        Log.infof("AmsDryService: %s: auto-drying AMS #%d (%d°C / %dh)",
+                                printer.getName(), m.unitIndex(), setting.temp(), setting.durationHours());
+                    });
+        });
     }
 
 }

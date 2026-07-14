@@ -47,8 +47,14 @@ public class EtsyOAuthService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    /** state -> code_verifier, for in-flight authorization requests. Entries are single-use and short-lived. */
-    private final Map<String, String> pending = new ConcurrentHashMap<>();
+    /** How long an in-flight authorization request stays valid before it's purged. */
+    private static final Duration PENDING_TTL = Duration.ofMinutes(30);
+
+    private record PendingAuth(String verifier, Instant created) {
+    }
+
+    /** state -> PKCE verifier + creation time, for in-flight authorization requests. Single-use, purged after {@link #PENDING_TTL}. */
+    private final Map<String, PendingAuth> pending = new ConcurrentHashMap<>();
 
     public boolean isConfigured() {
         return config.etsy().clientId().isPresent()
@@ -81,9 +87,11 @@ public class EtsyOAuthService {
         if (!isConfigured()) {
             return Optional.empty();
         }
+        // Purge abandoned auth attempts so the map can't grow forever
+        pending.values().removeIf(p -> p.created().isBefore(Instant.now().minus(PENDING_TTL)));
         final String state = randomUrlSafe(24);
         final String verifier = randomUrlSafe(48);
-        pending.put(state, verifier);
+        pending.put(state, new PendingAuth(verifier, Instant.now()));
         final String challenge = codeChallenge(verifier);
         final String url = AUTHORIZE_URL
                 + "?response_type=code"
@@ -107,10 +115,11 @@ public class EtsyOAuthService {
      * @return empty on success, or an error message to show the user
      */
     public Optional<String> handleCallback(final String state, final String code) {
-        final String verifier = pending.remove(state);
-        if (verifier == null) {
+        final PendingAuth pendingAuth = state == null ? null : pending.remove(state);
+        if (pendingAuth == null || pendingAuth.created().isBefore(Instant.now().minus(PENDING_TTL))) {
             return Optional.of("Unknown or expired authorization request - please try connecting again.");
         }
+        final String verifier = pendingAuth.verifier();
         if (!isConfigured()) {
             return Optional.of("Etsy is not configured (missing client id / secret / shop id / redirect uri).");
         }
@@ -184,8 +193,15 @@ public class EtsyOAuthService {
                     .build();
             final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 300) {
-                Log.errorf("EtsyOAuthService: refresh HTTP %d: %s - clearing stored tokens", response.statusCode(), response.body());
-                tokenStore.clear();
+                // Only a 4xx means the refresh token itself is bad (revoked/expired) - clearing then is correct
+                // so the UI prompts to reconnect. A 5xx is Etsy having a moment; keep the tokens and let the
+                // next poll retry, otherwise a transient blip silently disconnects the shop.
+                if (response.statusCode() < 500) {
+                    Log.errorf("EtsyOAuthService: refresh HTTP %d: %s - clearing stored tokens", response.statusCode(), response.body());
+                    tokenStore.clear();
+                } else {
+                    Log.errorf("EtsyOAuthService: refresh HTTP %d (transient?): %s - keeping tokens, will retry", response.statusCode(), response.body());
+                }
                 return Optional.empty();
             }
             saveTokenResponse(response.body());
