@@ -159,30 +159,34 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         section.addClassName("ai-settings-section");
         section.add(new H4("Last Check Results per Printer"));
 
-        grid.addColumn(PrinterAiRow::printerName).setHeader("Printer").setAutoWidth(true);
-        grid.addColumn(PrinterAiRow::checkType).setHeader("Check").setAutoWidth(true);
-        grid.addComponentColumn(row -> {
-            final Span s = new Span(row.resultText());
-            s.getStyle().setColor(switch (row.severity()) {
-                case OK -> "var(--lumo-success-text-color)";
-                case WARN -> "#856404";
-                case FAIL -> "var(--lumo-error-text-color)";
-            });
-            return s;
-        }).setHeader("Result").setFlexGrow(1);
-        grid.addColumn(PrinterAiRow::timeAgo).setHeader("When").setAutoWidth(true);
-        grid.addComponentColumn(row -> {
-            final Button btn = new Button("Check Now", new Icon(VaadinIcon.EYE));
-            btn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-            btn.setTooltipText("Run a failure detection check on this printer now");
-            btn.setEnabled(aiService.isEnabled());
-            btn.addClickListener(e -> doManualCheck(row.printerName()));
-            return btn;
-        }).setHeader("Action").setAutoWidth(true);
+        if (grid.getColumns().isEmpty()) {
+            // Guard: this view can be re-attached (it lives inside the Automation page's tabs) and the grids
+            // are fields - reconfiguring columns on every attach would duplicate them.
+            grid.addColumn(PrinterAiRow::printerName).setHeader("Printer").setAutoWidth(true);
+            grid.addColumn(PrinterAiRow::checkType).setHeader("Check").setAutoWidth(true);
+            grid.addComponentColumn(row -> {
+                final Span s = new Span(row.resultText());
+                s.getStyle().setColor(switch (row.severity()) {
+                    case OK -> "var(--lumo-success-text-color)";
+                    case WARN -> "#856404";
+                    case FAIL -> "var(--lumo-error-text-color)";
+                });
+                return s;
+            }).setHeader("Result").setFlexGrow(1);
+            grid.addColumn(PrinterAiRow::timeAgo).setHeader("When").setAutoWidth(true);
+            grid.addComponentColumn(row -> {
+                final Button btn = new Button("Check Now", new Icon(VaadinIcon.EYE));
+                btn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+                btn.setTooltipText("Run a failure detection check on this printer now");
+                btn.setEnabled(aiService.isEnabled());
+                btn.addClickListener(e -> doManualCheck(row.printerName()));
+                return btn;
+            }).setHeader("Action").setAutoWidth(true);
 
-        grid.setWidth("100%");
-        grid.setAllRowsVisible(true);
-        grid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES);
+            grid.setWidth("100%");
+            grid.setAllRowsVisible(true);
+            grid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES);
+        }
 
         section.add(grid);
 
@@ -252,16 +256,19 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         section.add(new H4("Check History"));
         section.add(new Span("The last %d check attempts across the farm, newest first (in-memory - resets on restart). Click a row to see the analyzed snapshot.".formatted(50)));
 
-        historyGrid.addColumn(rec -> TIME_FMT.format(rec.at().atZone(ZoneId.systemDefault()))).setHeader("When").setAutoWidth(true);
-        historyGrid.addColumn(PrintAiService.CheckRecord::printer).setHeader("Printer").setAutoWidth(true);
-        historyGrid.addColumn(rec -> checkTypeLabel(rec.checkType())).setHeader("Check").setAutoWidth(true);
-        historyGrid.addComponentColumn(rec -> triggerChip(rec.trigger())).setHeader("Trigger").setAutoWidth(true);
-        historyGrid.addComponentColumn(this::resultSpan).setHeader("Result").setAutoWidth(true);
-        historyGrid.addColumn(PrintAiService.CheckRecord::description).setHeader("Description").setFlexGrow(1);
-        historyGrid.setWidth("100%");
-        historyGrid.setAllRowsVisible(true);
-        historyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
-        historyGrid.addItemClickListener(e -> showSnapshotDialog(e.getItem()));
+        if (historyGrid.getColumns().isEmpty()) {
+            // Same re-attach guard as the results grid above
+            historyGrid.addColumn(rec -> TIME_FMT.format(rec.at().atZone(ZoneId.systemDefault()))).setHeader("When").setAutoWidth(true);
+            historyGrid.addColumn(PrintAiService.CheckRecord::printer).setHeader("Printer").setAutoWidth(true);
+            historyGrid.addColumn(rec -> checkTypeLabel(rec.checkType())).setHeader("Check").setAutoWidth(true);
+            historyGrid.addComponentColumn(rec -> triggerChip(rec.trigger())).setHeader("Trigger").setAutoWidth(true);
+            historyGrid.addComponentColumn(this::resultSpan).setHeader("Result").setAutoWidth(true);
+            historyGrid.addColumn(PrintAiService.CheckRecord::description).setHeader("Description").setFlexGrow(1);
+            historyGrid.setWidth("100%");
+            historyGrid.setAllRowsVisible(true);
+            historyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
+            historyGrid.addItemClickListener(e -> showSnapshotDialog(e.getItem()));
+        }
         historyGrid.setItems(aiService.getHistory());
 
         section.add(historyGrid);

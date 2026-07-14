@@ -9,11 +9,10 @@ import com.tfyre.bambu.view.MaintenanceView;
 import com.tfyre.bambu.view.PrinterView;
 import com.tfyre.bambu.view.SdCardView;
 import com.tfyre.bambu.security.RememberMeService;
-import com.tfyre.bambu.view.AiSettingsView;
+import com.tfyre.bambu.view.AutomationView;
 import com.tfyre.bambu.view.EbayOrdersView;
 import com.tfyre.bambu.view.EtsyOrdersView;
 import com.tfyre.bambu.view.NotificationSettingsView;
-import com.tfyre.bambu.view.PrintQueueView;
 import com.tfyre.bambu.view.TasmotaSettingsView;
 import com.tfyre.bambu.view.UpdateHeader;
 import com.tfyre.bambu.view.dashboard.Dashboard;
@@ -62,11 +61,10 @@ public class MainLayout extends AppLayout {
             SdCardView.class,
             PrinterView.class,
             BatchPrintView.class,
-            PrintQueueView.class,
+            AutomationView.class,
             HistoryView.class,
             LogsView.class,
             MaintenanceView.class,
-            AiSettingsView.class,
             NotificationSettingsView.class,
             TasmotaSettingsView.class,
             EtsyOrdersView.class,
@@ -78,12 +76,11 @@ public class MainLayout extends AppLayout {
             Map.entry(CameraView.class, VaadinIcon.CAMERA),
             Map.entry(PrinterView.class, VaadinIcon.PRINT),
             Map.entry(BatchPrintView.class, VaadinIcon.COPY),
-            Map.entry(PrintQueueView.class, VaadinIcon.TIME_FORWARD),
+            Map.entry(AutomationView.class, VaadinIcon.AUTOMATION),
             Map.entry(SdCardView.class, VaadinIcon.ARCHIVE),
             Map.entry(HistoryView.class, VaadinIcon.CLOCK),
             Map.entry(LogsView.class, VaadinIcon.CLIPBOARD_TEXT),
             Map.entry(MaintenanceView.class, VaadinIcon.WRENCH),
-            Map.entry(AiSettingsView.class, VaadinIcon.EYE),
             Map.entry(NotificationSettingsView.class, VaadinIcon.BELL),
             Map.entry(TasmotaSettingsView.class, VaadinIcon.PLUG),
             Map.entry(EtsyOrdersView.class, VaadinIcon.SHOP),
@@ -241,12 +238,11 @@ public class MainLayout extends AppLayout {
                 CameraView.class,
                 PrinterView.class,
                 BatchPrintView.class,
-                PrintQueueView.class,
+                AutomationView.class,
                 SdCardView.class,
                 HistoryView.class,
                 LogsView.class,
                 MaintenanceView.class,
-                AiSettingsView.class,
                 NotificationSettingsView.class,
                 TasmotaSettingsView.class,
                 EtsyOrdersView.class,

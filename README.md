@@ -210,11 +210,16 @@ bambu.batch-print.library=bambu-library
 - When a printer is idle (not printing/paused/etc.) with queued jobs, its dashboard card shows a **"Start Next (N queued): file"** button. This button is deliberately hidden while the printer is busy - there's nothing to start until the current job finishes, so don't be alarmed if you queue jobs and don't see a Start button right away; it appears once the printer goes idle. Clicking it asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing auto-starts unless you explicitly enable AI-gated auto-start for that printer (below).
 - The queue icon in the card toolbar opens a per-printer queue dialog (view/remove entries) - or see **Print Queue** below for all printers at once.
 
-### Print Queue page
-The **Print Queue** page (`/print-queue`, sidebar) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
+### Automation page
+The **Automation** page (`/automation`, sidebar) is the control center for the whole order-to-print pipeline, with three tabs:
+- **Overview** - a live pipeline dashboard: summary chips (open orders, queued jobs, printers printing, auto-queue/auto-start/AI status, and a "fully automatic" indicator when the whole chain is on), then one section per stage: *Orders in* (Etsy/eBay connection + open/unqueued counts + last poll + recently queued orders + the auto-queue toggle), *Queue & auto-start* (per-printer state, queue size, next file, auto-start status), *Printing & AI watch* (what's printing, last AI verdict per printer, recent AI flags), and *Fulfillment* (last completed jobs; shipping stays manual on the marketplaces).
+- **Print Queue** and **AI Settings** - the full pages below, embedded as tabs. Their old direct routes (`/print-queue`, `/ai-settings`) still work as deep links.
+
+### Print Queue tab
+The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
 
 ### AI-gated auto-start (lights-out mode)
-Per-printer opt-in on the Print Queue page: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
+Per-printer opt-in on the Print Queue tab: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
 - **Bed clear** → starts the next queued job and sends an `auto_start` notification.
 - **Bed not clear** → does NOT start, sends one `auto_start_blocked` notification **with the camera frame attached**, then silently re-checks every 15 minutes (clearing the bed doesn't change printer state, so the periodic recheck is what picks it up). You're only notified once per situation, not every retry.
 - **Fails closed**: if AI checks are disabled/unavailable or no snapshot can be grabbed, nothing starts - you get an `auto_start_blocked` notification instead. No AI answer = no start, ever.
@@ -264,7 +269,7 @@ The **Backup** button in Maintenance downloads a zip of all state files (mainten
 
 ## AI Print Monitoring
 
-The **AI Settings** page (`/ai-settings`, sidebar). Uses a self-hosted [Ollama](https://ollama.com/) instance with a vision-capable model to watch printer camera snapshots and catch problems automatically:
+The **AI Settings** tab on the Automation page (also `/ai-settings` directly). Uses a self-hosted [Ollama](https://ollama.com/) instance with a vision-capable model to watch printer camera snapshots and catch problems automatically:
 - **Failure detection**: actively-printing printers are checked periodically for spaghetti/detached prints.
 - **First-layer quality check**: fires once, a configurable delay after a print starts.
 - **Bed-clear check**: gates the dashboard's "Start Next" queue action - it asks the AI to confirm the bed looks clear before letting the next queued job start (in addition to the "Is the bed clear?" prompt).

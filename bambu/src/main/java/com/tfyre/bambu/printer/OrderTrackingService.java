@@ -145,4 +145,9 @@ public class OrderTrackingService {
         return Optional.ofNullable(state(market).queued.get(orderId));
     }
 
+    /** All queued-order markers for a marketplace (orderId → when), for the Automation overview. */
+    public synchronized Map<String, Instant> queuedOrders(final String market) {
+        return Map.copyOf(state(market).queued);
+    }
+
 }
