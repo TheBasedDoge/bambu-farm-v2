@@ -33,11 +33,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EbayOAuthService {
 
     /**
-     * Scopes requested at consent: order fulfillment (the orders page), inventory read (listing pull on the
-     * Mappings tab) and the base scope (required for Trading API calls like GetMyeBaySelling, which is what
-     * actually returns ALL active listings - the Inventory API only knows listings created through it).
-     * Users who connected before the extra scopes were added must Disconnect + Connect once to grant them;
-     * until then orders keep working and only the listing pull reports a permissions error.
+     * Scopes requested at consent: order fulfillment (the orders page), inventory read and the base scope.
+     * Note: the legacy Trading API (GetMyeBaySelling, used for the Mappings tab's listing pull) accepts any
+     * valid user token from the app WITHOUT enforcing these granular REST scopes - confirmed in practice with
+     * a fulfillment-only token. The broader scopes are requested anyway so future REST Inventory API use
+     * doesn't need a reconnect.
      */
     private static final String SCOPE = "https://api.ebay.com/oauth/api_scope"
             + " https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly"
