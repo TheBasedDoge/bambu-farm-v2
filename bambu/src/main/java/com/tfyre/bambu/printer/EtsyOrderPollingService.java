@@ -30,6 +30,10 @@ public class EtsyOrderPollingService {
     OrderTrackingService tracking;
     @Inject
     NotificationService notificationService;
+    @Inject
+    EtsyMappingService mappingService;
+    @Inject
+    AutoQueueService autoQueue;
 
     private final AtomicReference<List<EtsyApiClient.Receipt>> lastReceipts = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -74,6 +78,16 @@ public class EtsyOrderPollingService {
                     notificationService.notifyEvent("new_order", "Etsy",
                             "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
+                    autoQueue.processOrder(MARKET, String.valueOf(r.receiptId()),
+                            "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName()),
+                            r.transactions().stream()
+                                    .map(t -> new AutoQueueService.AutoQueueItem(
+                                            "%dx %s".formatted(t.quantity(), t.title()),
+                                            t.quantity(),
+                                            mappingService.find(t.listingId(), t.variations())
+                                                    .map(EtsyMappingService.MappingEntry::parts)
+                                                    .orElse(java.util.List.of())))
+                                    .toList());
                 });
     }
 

@@ -29,6 +29,10 @@ public class EbayOrderPollingService {
     OrderTrackingService tracking;
     @Inject
     NotificationService notificationService;
+    @Inject
+    EbayMappingService mappingService;
+    @Inject
+    AutoQueueService autoQueue;
 
     private final AtomicReference<List<EbayApiClient.Order>> lastOrders = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -72,6 +76,16 @@ public class EbayOrderPollingService {
                     notificationService.notifyEvent("new_order", "eBay",
                             "New order %s from %s: %s".formatted(o.orderId(), o.buyerUsername(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
+                    autoQueue.processOrder(MARKET, o.orderId(),
+                            "eBay order %s (%s)".formatted(o.orderId(), o.buyerUsername()),
+                            o.lineItems().stream()
+                                    .map(li -> new AutoQueueService.AutoQueueItem(
+                                            "%dx %s".formatted(li.quantity(), li.title()),
+                                            li.quantity(),
+                                            mappingService.find(li.listingKey(), li.variationAspects())
+                                                    .map(EbayMappingService.MappingEntry::parts)
+                                                    .orElse(java.util.List.of())))
+                                    .toList());
                 });
     }
 

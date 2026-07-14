@@ -39,6 +39,10 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     private static final List<EventDef> EVENTS = List.of(
             new EventDef("new_order", "New Order",
                     "A new unfulfilled order appeared on Etsy or eBay"),
+            new EventDef("auto_queue", "Auto-Queue",
+                    "A new order's print jobs were queued automatically across the farm"),
+            new EventDef("auto_queue_skipped", "Auto-Queue Skipped",
+                    "A new order could NOT be auto-queued (unmapped listing, missing file, or no printer with the required filament)"),
             new EventDef("auto_start", "Auto-Start",
                     "A queued print was started automatically after the AI confirmed the bed was clear"),
             new EventDef("auto_start_blocked", "Auto-Start Blocked",

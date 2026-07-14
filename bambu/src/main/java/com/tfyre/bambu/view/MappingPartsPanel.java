@@ -122,6 +122,7 @@ public class MappingPartsPanel extends Div {
         final IntegerField sdPlateField = new IntegerField("Plate");
         final IntegerField copiesField = new IntegerField("Copies/unit");
         final ComboBox<Integer> amsSlotSelect = new ComboBox<>("AMS slot");
+        final ComboBox<String> filamentSelect = new ComboBox<>("Filament");
         final Button removeBtn = new Button(new Icon(VaadinIcon.TRASH));
 
         PartRow(final MappingPart initial) {
@@ -170,6 +171,17 @@ public class MappingPartsPanel extends Div {
                     + "external spool) instead of using whatever the printer currently has loaded. Leave blank to "
                     + "use the printer's current/default filament.");
 
+            filamentSelect.setItems("PLA", "PETG", "ASA", "ABS", "TPU", "PC", "PA", "PVA", "PET-CF", "PA-CF", "PLA-CF");
+            filamentSelect.setAllowCustomValue(true);
+            filamentSelect.addCustomValueSetListener(e -> filamentSelect.setValue(e.getDetail().toUpperCase()));
+            filamentSelect.setWidth("120px");
+            filamentSelect.setClearButtonVisible(true);
+            filamentSelect.setPlaceholder("Any");
+            filamentSelect.setTooltipText("Filament this part must print in, matched against each printer's live "
+                    + "AMS telemetry. Auto-queue only sends this part to a printer that actually has this material "
+                    + "loaded (in the specific AMS slot if one is set, otherwise any tray - the job is then pinned "
+                    + "to that tray). Leave blank for no material requirement.");
+
             removeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
             removeBtn.setTooltipText("Remove this part");
             removeBtn.addClickListener(e -> removeRow(this));
@@ -186,11 +198,12 @@ public class MappingPartsPanel extends Div {
                 }
                 copiesField.setValue(initial.copiesPerUnit());
                 amsSlotSelect.setValue(initial.amsSlot());
+                filamentSelect.setValue(initial.filamentType());
             }
             applyVisibility();
 
             container.add(sourceSelect, gcodeSelect, plateSelect, sdPathField, sdPlateField, copiesField,
-                    amsSlotSelect, removeBtn);
+                    amsSlotSelect, filamentSelect, removeBtn);
         }
 
         private void applyVisibility() {
@@ -205,17 +218,18 @@ public class MappingPartsPanel extends Div {
             final GcodeSource source = sourceSelect.getValue();
             final int copies = copiesField.getValue() == null ? 1 : copiesField.getValue();
             final Integer amsSlot = amsSlotSelect.getValue();
+            final String filamentType = filamentSelect.getValue();
             if (source == GcodeSource.LIBRARY) {
                 if (gcodeSelect.getValue() == null || plateSelect.getValue() == null) {
                     return null;
                 }
-                return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies, amsSlot);
+                return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies, amsSlot, filamentType);
             }
             if (sdPathField.getValue() == null || sdPathField.getValue().isBlank()) {
                 return null;
             }
             final int plate = sdPlateField.getValue() == null ? 1 : sdPlateField.getValue();
-            return new MappingPart(GcodeSource.SD_CARD, sdPathField.getValue().trim(), plate, copies, amsSlot);
+            return new MappingPart(GcodeSource.SD_CARD, sdPathField.getValue().trim(), plate, copies, amsSlot, filamentType);
         }
     }
 

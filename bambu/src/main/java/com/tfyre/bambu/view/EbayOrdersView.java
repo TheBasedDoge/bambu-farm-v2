@@ -70,6 +70,8 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
     Instance<ProjectFile> projectFileInstance;
     @Inject
     OrderTrackingService tracking;
+    @Inject
+    com.tfyre.bambu.printer.AutoQueueService autoQueue;
 
     private final Div content = new Div();
 
@@ -158,7 +160,18 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
                 oauth.disconnect();
                 render();
             });
-            row.add(status, refresh, disconnect);
+            final com.vaadin.flow.component.checkbox.Checkbox autoQueueToggle
+                    = new com.vaadin.flow.component.checkbox.Checkbox("Auto-queue new orders");
+            autoQueueToggle.setValue(autoQueue.isEnabled());
+            autoQueueToggle.setTooltipText("When a poll finds a new order whose line items are all mapped, queue "
+                    + "the print jobs automatically - each part goes to a printer that currently has its required "
+                    + "filament loaded (idle printers first, then shortest queue). Orders with unmapped items or "
+                    + "no filament match are skipped with a notification. One global switch, shared with Etsy.");
+            autoQueueToggle.addValueChangeListener(e -> {
+                autoQueue.setEnabled(Boolean.TRUE.equals(e.getValue()));
+                showNotification("Auto-queue " + (autoQueue.isEnabled() ? "enabled" : "disabled"));
+            });
+            row.add(status, refresh, disconnect, autoQueueToggle);
         }
         bar.add(row);
         return bar;

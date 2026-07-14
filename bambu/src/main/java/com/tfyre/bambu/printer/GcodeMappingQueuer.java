@@ -70,14 +70,38 @@ public class GcodeMappingQueuer {
 
     /**
      * Builds the AMS tray-mapping list to send with a print, forcing every filament slot in the file to the same
-     * physical tray - {@code amsSlot() == null} means "leave the printer's current/default filament assignment
+     * physical tray - a {@code null} slot means "leave the printer's current/default filament assignment
      * alone", which is signalled to {@link BambuPrinter.CommandPPF} via an empty list (useAms=false).
      */
-    private static List<Integer> buildAmsMapping(final MappingPart part, final int filamentCount) {
-        if (part.amsSlot() == null) {
+    private static List<Integer> buildAmsMapping(final Integer amsSlot, final int filamentCount) {
+        if (amsSlot == null) {
             return List.of();
         }
-        return Collections.nCopies(Math.max(1, filamentCount), part.amsSlot());
+        return Collections.nCopies(Math.max(1, filamentCount), amsSlot);
+    }
+
+    /**
+     * Queues a single job for {@code part} on {@code printerName}, optionally overriding the part's mapped AMS
+     * slot (auto-queue resolves the slot per printer from live filament telemetry - the tray holding PETG on one
+     * printer isn't necessarily the same index on another). Returns an error message, or empty on success.
+     */
+    public Optional<String> queuePart(final MappingPart part, final String printerName, final Integer amsSlotOverride) {
+        if (part.source() == GcodeSource.LIBRARY) {
+            final Path file = Path.of(config.batchPrint().library()).resolve(part.path());
+            if (!Files.isRegularFile(file)) {
+                return Optional.of("Not in library: %s".formatted(part.path()));
+            }
+        }
+        final Integer slot = amsSlotOverride != null ? amsSlotOverride : part.amsSlot();
+        final PlateInfo plateInfo = loadPlateInfo(part);
+        final List<Integer> amsMapping = buildAmsMapping(slot, plateInfo.filamentCount());
+        final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
+        final BambuPrinter.CommandPPF command = new BambuPrinter.CommandPPF(
+                part.path(), part.plateId(), useAms,
+                config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
+                config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
+        queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source()));
+        return Optional.empty();
     }
 
     /**
@@ -103,7 +127,7 @@ public class GcodeMappingQueuer {
                 }
             }
             final PlateInfo plateInfo = loadPlateInfo(part);
-            final List<Integer> amsMapping = buildAmsMapping(part, plateInfo.filamentCount());
+            final List<Integer> amsMapping = buildAmsMapping(part.amsSlot(), plateInfo.filamentCount());
             // Mirrors PrinterMapping's rule: only turn on AMS routing when every mapped slot is a real AMS tray -
             // BambuConst.AMS_TRAY_VIRTUAL (external spool) means "feed from the spool holder", not the AMS unit.
             final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);

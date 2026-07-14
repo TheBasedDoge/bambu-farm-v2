@@ -377,6 +377,7 @@ Two sidebar pages - **Etsy Sales Orders** (`/etsy-orders`) and **eBay Sales Orde
 - **Plate**: which plate/plate index to print.
 - **Copies/unit**: how many times this part must print per 1 unit ordered (e.g. a part that only fits once per bed needs `copies=2` for a 2x order).
 - **AMS slot** (optional): force this part onto one AMS tray or the external spool - see [AMS Slot Override](#ams-slot-override).
+- **Filament** (optional): the material this part must print in (PETG, ASA, ...). Used by auto-queue to pick a printer that actually has it loaded (see below); manual queueing ignores it.
 
 A listing can have multiple parts - useful for kits made of several different gcode files/plates. Mappings are keyed by listing + variation, so different color/size variations of the same listing can map to different files.
 
@@ -385,6 +386,14 @@ A listing can have multiple parts - useful for kits made of several different gc
 Orders are polled on a schedule and filtered to unfulfilled/open only; poll errors (bad credentials, wrong shop ID, etc.) show directly on the page instead of silently reporting "no orders".
 
 **New-order alerts**: when a poll finds an order it has never seen before, a `new_order` notification fires to your configured channels (Discord/ntfy/MQTT). Seen-order IDs are persisted (`bambu-order-tracking.json`), so restarts don't re-alert, and connecting a shop for the first time doesn't fire one alert per existing order. Toggle on the Notification Settings page.
+
+**Auto-queue (zero-click repeat orders)**: an opt-in "Auto-queue new orders" toggle on either Sales Orders page (one global switch, persisted to `bambu-auto-queue.json`). When a poll finds a NEW order whose line items are all mapped, the print jobs are queued automatically:
+- Each mapped part can specify a required **filament type** (e.g. PETG, ASA) next to its AMS slot in the mapping editor. Auto-queue matches this against each printer's **live AMS telemetry**: with a slot also set, that exact tray must currently hold that material (catches a swapped spool); with type only, any tray with that material qualifies and the job is pinned to it per printer.
+- Among qualifying printers: idle with an empty queue wins, then shortest queue.
+- **All-or-nothing per order**: an unmapped line item, a missing library file, or a part no printer has filament for skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
+- Queued orders get the "✓ queued" badge and are never auto-queued twice. Success fires an `auto_queue` notification with the job distribution (e.g. "6 jobs → P1S×3, P1P×3").
+
+Combined with [AI-gated auto-start](#ai-gated-auto-start-lights-out-mode), a repeat order goes from purchase to printing with zero clicks: poll finds it → jobs queue to printers with the right filament → auto-start begins each one after the AI confirms the bed is clear.
 
 **Queued badge**: once you queue print jobs for an order, its card shows a green **"✓ queued"** badge (hover for when) - persisted, so you can't accidentally print the same order twice after a restart. Dismissed orders are persisted too and stay hidden.
 
@@ -478,7 +487,7 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.auto-start-settle` | `3m` | How long a printer must sit ready before AI-gated auto-start attempts it |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-ai-prompts.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.

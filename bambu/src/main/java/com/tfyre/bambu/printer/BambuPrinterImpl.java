@@ -75,6 +75,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private ProducerTemplate producerTemplate;
     private int printerError;
     private List<String> activeHmsErrors = List.of();
+    private volatile java.util.Map<Integer, String> amsTrayTypes = java.util.Map.of();
     private int totalLayerNum;
     private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.IDLE;
     private PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
@@ -117,6 +118,52 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         }
         if (print.hasGcodeFile()) {
             trackLastPrintFile(print.getGcodeFile());
+        }
+        updateAmsTrayTypes(print);
+    }
+
+    /**
+     * Sticky tray-type map for {@link #getAmsTrayTypes()} - only replaced when this message actually carries
+     * AMS data (Bambu's partial delta pushes frequently omit the whole ams block; absence ≠ "AMS removed").
+     */
+    private void updateAmsTrayTypes(final Print print) {
+        if (!print.hasAms() || print.getAms().getAmsCount() == 0) {
+            // Still pick up an external-spool-only update when present
+            if (print.hasVtTray() && print.getVtTray().hasTrayType() && !print.getVtTray().getTrayType().isBlank()) {
+                final java.util.Map<Integer, String> merged = new java.util.HashMap<>(amsTrayTypes);
+                merged.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayType().toUpperCase());
+                amsTrayTypes = java.util.Map.copyOf(merged);
+            }
+            return;
+        }
+        final java.util.Map<Integer, String> types = new java.util.HashMap<>();
+        print.getAms().getAmsList().forEach(single -> {
+            final int amsId = parseIntSafe(single.getId(), -1);
+            if (amsId < 0) {
+                return;
+            }
+            single.getTrayList().forEach(tray -> {
+                final int trayId = parseIntSafe(tray.getId(), -1);
+                if (trayId < 0 || !tray.hasTrayType() || tray.getTrayType().isBlank()) {
+                    return;
+                }
+                types.put(amsId * 4 + trayId, tray.getTrayType().toUpperCase());
+            });
+        });
+        if (print.hasVtTray() && print.getVtTray().hasTrayType() && !print.getVtTray().getTrayType().isBlank()) {
+            types.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayType().toUpperCase());
+        } else if (amsTrayTypes.containsKey(BambuConst.AMS_TRAY_VIRTUAL)) {
+            // vt_tray often rides in separate pushes - keep the last known external-spool type
+            types.put(BambuConst.AMS_TRAY_VIRTUAL, amsTrayTypes.get(BambuConst.AMS_TRAY_VIRTUAL));
+        }
+        amsTrayTypes = java.util.Map.copyOf(types);
+    }
+
+    private static int parseIntSafe(final String value, final int fallback) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ex) {
+            return fallback;
         }
     }
 
@@ -221,6 +268,11 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public List<String> getActiveHmsErrors() {
         return activeHmsErrors;
+    }
+
+    @Override
+    public java.util.Map<Integer, String> getAmsTrayTypes() {
+        return amsTrayTypes;
     }
 
     @Override

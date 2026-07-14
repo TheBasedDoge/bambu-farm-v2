@@ -6,6 +6,7 @@ import com.vaadin.flow.server.StreamResource;
 import java.time.OffsetDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -78,6 +79,15 @@ public interface BambuPrinter {
      * that omit the field.
      */
     List<String> getActiveHmsErrors();
+
+    /**
+     * Filament type currently loaded per AMS tray, from the latest telemetry that carried AMS data.
+     * Key = global tray index ({@code amsId*4 + trayId}, A1=0…D4=15, plus {@link BambuConst#AMS_TRAY_VIRTUAL}
+     * for the external spool when reported); value = upper-cased tray type (e.g. "PETG", "ASA"). Empty trays
+     * are absent. Sticky across Bambu's partial delta pushes (only replaced when a message actually carries
+     * AMS data). Used by auto-queue to find a printer with the right filament loaded.
+     */
+    Map<Integer, String> getAmsTrayTypes();
 
     void commandFilamentLoad(final int amsTrayId);
 
