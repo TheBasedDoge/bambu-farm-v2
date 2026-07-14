@@ -213,7 +213,7 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
             if (aiService.isEnabled()) {
                 showNotification("%s: checking bed…".formatted(printerName));
                 final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-                aiService.checkBedClear(printerName).thenAccept(result ->
+                aiService.checkBedClear(printerName, "start-next").thenAccept(result ->
                         ui.ifPresent(u -> u.access(() -> {
                             if (result.isEmpty()) {
                                 // no snapshot yet or Ollama error - fall through to manual confirmation

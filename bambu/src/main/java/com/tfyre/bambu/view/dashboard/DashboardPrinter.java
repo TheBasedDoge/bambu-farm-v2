@@ -715,8 +715,8 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 printing ? "checking print status with AI" : "checking bed with AI"));
         final Optional<UI> ui = printerName.getUI();
         final var future = printing
-                ? aiService.checkFailure(printer.getName())
-                : aiService.checkBedClear(printer.getName());
+                ? aiService.checkFailure(printer.getName(), "manual")
+                : aiService.checkBedClear(printer.getName(), "manual");
         future.thenAccept(result ->
                 ui.ifPresent(u -> u.access(() -> {
                     if (result.isEmpty()) {
@@ -783,7 +783,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             if (aiService.isEnabled()) {
                 showNotification("%s: checking bed…".formatted(printer.getName()));
                 final Optional<UI> ui = printerName.getUI();
-                aiService.checkBedClear(printer.getName()).thenAccept(result ->
+                aiService.checkBedClear(printer.getName(), "start-next").thenAccept(result ->
                         ui.ifPresent(u -> u.access(() -> {
                             if (result.isEmpty()) {
                                 // no snapshot yet or Ollama error - fall through to manual check
@@ -1288,8 +1288,13 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         }
         aiCheckDot.addClassName("ai-check-dot");
         aiCheckDot.setVisible(false);
-        // Put the dot inside the name div so it doesn't disrupt the flex centering of printerName
-        printerName.add(new Div(new Span(printer.getName()), aiCheckDot), newButton("", VaadinIcon.INFO, l -> showStatus()), maintenanceDue, buildHmsBadge(), buildFailureBadge());
+        // Put the dot inside the name div so it doesn't disrupt the flex centering of printerName.
+        // The info button + alert badges live in an absolutely-positioned .name-controls span (see bambu.css)
+        // so they don't eat into the flex row's width - otherwise the "centered" title sits left of true
+        // center by half the controls' width.
+        final Span nameControls = new Span(newButton("", VaadinIcon.INFO, l -> showStatus()), maintenanceDue, buildHmsBadge(), buildFailureBadge());
+        nameControls.addClassName("name-controls");
+        printerName.add(new Div(new Span(printer.getName()), aiCheckDot), nameControls);
         setupCheckBed();
         if (isAdmin) {
             result.add(

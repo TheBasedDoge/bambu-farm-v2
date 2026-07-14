@@ -6,7 +6,9 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -50,6 +52,57 @@ public class PrintAiService {
      */
     public record AiCheckResult(boolean good, OllamaService.Severity severity, String description,
             String checkType, Instant checkedAt) {}
+
+    /**
+     * Full record of a single check attempt, kept in a bounded in-memory history for the AI Settings page.
+     *
+     * @param at        when the check ran
+     * @param printer   printer name
+     * @param checkType "bed-clear", "failure" or "first-layer"
+     * @param trigger   why it ran: "manual", "scheduled", "start-next" (queue gate) or "auto-start"
+     * @param context   the HMS/print-error hint fed to the model, or null when the printer had no active issues
+     * @param good      outcome (true = no problem found); null when the check couldn't complete
+     * @param severity  display severity; null when the check couldn't complete
+     * @param description the model's explanation, or the reason the check couldn't complete
+     * @param snapshot  the exact JPEG frame that was analyzed; null when no snapshot could be grabbed
+     */
+    public record CheckRecord(Instant at, String printer, String checkType, String trigger, String context,
+            Boolean good, OllamaService.Severity severity, String description, byte[] snapshot) {}
+
+    private static final int MAX_HISTORY = 50;
+
+    /** Newest-first bounded history of check attempts. In-memory only (images included) - resets on restart. */
+    private final Deque<CheckRecord> history = new ArrayDeque<>();
+
+    /** Most recent CheckRecord per printer (kept even for no-snapshot attempts). */
+    private final Map<String, CheckRecord> lastChecks = new ConcurrentHashMap<>();
+
+    private void record(final CheckRecord rec) {
+        lastChecks.put(rec.printer(), rec);
+        // Keep scheduled "couldn't run" noise (no snapshot every 5 minutes) out of the bounded history,
+        // but always keep real results and anything a human or the queue explicitly asked for.
+        if (rec.good() == null && "scheduled".equals(rec.trigger())) {
+            return;
+        }
+        synchronized (history) {
+            history.addFirst(rec);
+            while (history.size() > MAX_HISTORY) {
+                history.removeLast();
+            }
+        }
+    }
+
+    /** Newest-first copy of the recent check history. */
+    public List<CheckRecord> getHistory() {
+        synchronized (history) {
+            return List.copyOf(history);
+        }
+    }
+
+    /** The most recent check attempt for a printer, including the analyzed snapshot. */
+    public Optional<CheckRecord> getLastCheck(final String printerName) {
+        return Optional.ofNullable(lastChecks.get(printerName));
+    }
 
     /** Last known GCodeState per printer, used to detect IDLE → RUNNING transitions. */
     private final Map<String, BambuConst.GCodeState> lastStates = new ConcurrentHashMap<>();
@@ -104,19 +157,16 @@ public class PrintAiService {
      * Stores the result in {@link #lastResults} and tracks in-progress state.
      */
     public CompletableFuture<Optional<OllamaService.AiResult>> checkBedClear(final String printerName) {
+        return checkBedClear(printerName, "manual");
+    }
+
+    public CompletableFuture<Optional<OllamaService.AiResult>> checkBedClear(final String printerName, final String trigger) {
         return CompletableFuture.supplyAsync(() -> {
             checksInProgress.add(printerName);
             try {
-                final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
-                final Optional<OllamaService.AiResult> result = getSnapshot(printerName)
-                        .flatMap(bytes -> ollama.checkBedClear(bytes, context));
                 // positive = bed IS clear = good
-                result.ifPresent(r -> {
-                    final boolean good = r.positive();
-                    lastResults.put(printerName, new AiCheckResult(good,
-                            OllamaService.severityFor(good, r.description()), r.description(), "bed-clear", Instant.now()));
-                });
-                return result;
+                return runCheck(printerName, "bed-clear", trigger,
+                        (bytes, context) -> ollama.checkBedClear(bytes, context), true, true);
             } finally {
                 checksInProgress.remove(printerName);
             }
@@ -129,19 +179,16 @@ public class PrintAiService {
      * Stores the result in {@link #lastResults} and tracks in-progress state.
      */
     public CompletableFuture<Optional<OllamaService.AiResult>> checkFailure(final String printerName) {
+        return checkFailure(printerName, "manual");
+    }
+
+    public CompletableFuture<Optional<OllamaService.AiResult>> checkFailure(final String printerName, final String trigger) {
         return CompletableFuture.supplyAsync(() -> {
             checksInProgress.add(printerName);
             try {
-                final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
-                final Optional<OllamaService.AiResult> result = getSnapshot(printerName)
-                        .flatMap(bytes -> ollama.checkFailure(bytes, context));
                 // positive = failure IS detected = bad (good = !positive)
-                result.ifPresent(r -> {
-                    final boolean good = !r.positive();
-                    lastResults.put(printerName, new AiCheckResult(good,
-                            OllamaService.severityFor(good, r.description()), r.description(), "failure", Instant.now()));
-                });
-                return result;
+                return runCheck(printerName, "failure", trigger,
+                        (bytes, context) -> ollama.checkFailure(bytes, context), false, true);
             } finally {
                 checksInProgress.remove(printerName);
             }
@@ -152,10 +199,44 @@ public class PrintAiService {
      * Asynchronously checks first-layer quality on the named printer.
      */
     public CompletableFuture<Optional<OllamaService.AiResult>> checkFirstLayer(final String printerName) {
-        return CompletableFuture.supplyAsync(() -> {
-            final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
-            return getSnapshot(printerName).flatMap(bytes -> ollama.checkFirstLayer(bytes, context));
-        }, executor);
+        return CompletableFuture.supplyAsync(() ->
+                runCheck(printerName, "first-layer", "manual",
+                        (bytes, context) -> ollama.checkFirstLayer(bytes, context), true, false), executor);
+    }
+
+    /**
+     * Shared body of every check: grab snapshot → ask the model → record the attempt (including the exact
+     * frame analyzed, the trigger, and the HMS context hint) for the AI Settings page's last-check/history views.
+     *
+     * @param positiveMeansGood whether a positive model answer is a good outcome (bed-clear/first-layer: yes;
+     *                          failure detection: no - positive means a failure WAS seen)
+     * @param updateLastResult  whether to also update the dashboard status-chip result map
+     */
+    private Optional<OllamaService.AiResult> runCheck(final String printerName, final String checkType, final String trigger,
+            final java.util.function.BiFunction<byte[], Optional<String>, Optional<OllamaService.AiResult>> check,
+            final boolean positiveMeansGood, final boolean updateLastResult) {
+        final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+        final Optional<byte[]> snapshot = getSnapshot(printerName);
+        if (snapshot.isEmpty()) {
+            record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
+                    null, null, "No camera snapshot available", null));
+            return Optional.empty();
+        }
+        final Optional<OllamaService.AiResult> result = check.apply(snapshot.get(), context);
+        if (result.isEmpty()) {
+            record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
+                    null, null, "AI did not answer (Ollama error or timeout)", snapshot.get()));
+            return result;
+        }
+        final OllamaService.AiResult r = result.get();
+        final boolean good = positiveMeansGood == r.positive();
+        final OllamaService.Severity severity = OllamaService.severityFor(good, r.description());
+        if (updateLastResult) {
+            lastResults.put(printerName, new AiCheckResult(good, severity, r.description(), checkType, Instant.now()));
+        }
+        record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
+                good, severity, r.description(), snapshot.get()));
+        return result;
     }
 
     public boolean isEnabled() {
@@ -179,23 +260,20 @@ public class PrintAiService {
     }
 
     private void runFailureCheck(final BambuPrinter printer) {
-        checksInProgress.add(printer.getName());
+        final String name = printer.getName();
+        checksInProgress.add(name);
         try {
-            final Optional<String> context = buildContext(printer);
-            getSnapshot(printer.getName()).ifPresent(bytes ->
-                    ollama.checkFailure(bytes, context).ifPresent(result -> {
-                        // positive = failure detected = bad
-                        final boolean good = !result.positive();
-                        lastResults.put(printer.getName(),
-                                new AiCheckResult(good, OllamaService.severityFor(good, result.description()), result.description(), "failure", Instant.now()));
-                        if (result.positive()) {
-                            Log.warnf("PrintAiService: %s: failure detected — %s", printer.getName(), result.description());
-                            notificationService.notifyEvent("failure_detected", printer.getName(),
-                                    "Possible print failure detected: " + truncate(result.description(), 200), bytes);
-                        }
-                    }));
+            // positive = failure detected = bad
+            runCheck(name, "failure", "scheduled", (bytes, context) -> ollama.checkFailure(bytes, context), false, true)
+                    .filter(OllamaService.AiResult::positive)
+                    .ifPresent(result -> {
+                        Log.warnf("PrintAiService: %s: failure detected — %s", name, result.description());
+                        notificationService.notifyEvent("failure_detected", name,
+                                "Possible print failure detected: " + truncate(result.description(), 200),
+                                getLastCheck(name).map(CheckRecord::snapshot).orElse(null));
+                    });
         } finally {
-            checksInProgress.remove(printer.getName());
+            checksInProgress.remove(name);
         }
     }
 
@@ -256,21 +334,19 @@ public class PrintAiService {
 
             checksInProgress.add(printerName);
             try {
-                final Optional<String> context = buildContext(stillPrinting.get());
-                getSnapshot(printerName).ifPresent(bytes ->
-                        ollama.checkFirstLayer(bytes, context).ifPresent(result -> {
-                            // positive = first layer is good
-                            final boolean good = result.positive();
-                            lastResults.put(printerName,
-                                    new AiCheckResult(good, OllamaService.severityFor(good, result.description()), result.description(), "first-layer", Instant.now()));
+                // positive = first layer is good
+                runCheck(printerName, "first-layer", "scheduled",
+                        (bytes, context) -> ollama.checkFirstLayer(bytes, context), true, true)
+                        .ifPresent(result -> {
                             if (!result.positive()) {
                                 Log.warnf("PrintAiService: %s: first layer issue — %s", printerName, result.description());
                                 notificationService.notifyEvent("first_layer_issue", printerName,
-                                        "First layer issue detected: " + truncate(result.description(), 200), bytes);
+                                        "First layer issue detected: " + truncate(result.description(), 200),
+                                        getLastCheck(printerName).map(CheckRecord::snapshot).orElse(null));
                             } else {
                                 Log.infof("PrintAiService: %s: first layer OK — %s", printerName, result.description());
                             }
-                        }));
+                        });
             } finally {
                 checksInProgress.remove(printerName);
             }

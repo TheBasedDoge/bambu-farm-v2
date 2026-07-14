@@ -47,40 +47,6 @@ public class OllamaService {
             "seems like", "looks like it might", "suspect"
     );
 
-    private static final String BED_CLEAR_PROMPT =
-            "Is this 3D printer bed completely empty and clear?\n"
-            + "Look for any printed parts, failed prints, filament blobs, or debris on the bed surface.\n"
-            + "Answer YES if the bed is clear and ready for the next print, "
-            + "or NO if anything is still on the bed.\n"
-            + "After YES or NO, briefly describe what you see.";
-
-    private static final String FAILURE_PROMPT =
-            "Is this 3D print actively failing right now?\n\n"
-            + "Only answer YES if you see clear evidence of one of these specific failures:\n"
-            + "- SPAGHETTI: loose filament strands floating or tangled in the air that are clearly "
-            + "NOT attached to the main print structure\n"
-            + "- BLOB: a large unintended mass of melted filament building up in the wrong place\n"
-            + "- DETACHED PRINT: the printed object has come off the bed and is being dragged by the nozzle\n\n"
-            + "Do NOT answer YES for any of these normal print features:\n"
-            + "- Supports, brims, rafts, skirts, or support interfaces (these are intentional structures)\n"
-            + "- Dense lattice infill, gyroid, or honeycomb patterns visible through the walls\n"
-            + "- Complex overhangs, organic shapes, or intricate geometry\n"
-            + "- Rough textures, layer lines, seams, or minor surface variations\n"
-            + "- Multiple objects printing together\n\n"
-            + "Answer NO if the print looks like it is progressing normally even if it looks complex or unusual.\n"
-            + "Answer with YES or NO first, then briefly describe what you observe.";
-
-    private static final String FIRST_LAYER_PROMPT =
-            "Examine the first layer of this 3D print on the printer bed.\n\n"
-            + "Answer GOOD if:\n"
-            + "- Filament lines are laying flat and sticking down evenly\n"
-            + "- The lines look smooth and consistent\n\n"
-            + "Answer POOR if:\n"
-            + "- Lines are peeling up, curling, or not sticking to the bed\n"
-            + "- Visible gaps between lines (under-extrusion)\n"
-            + "- No filament being deposited at all\n\n"
-            + "Answer GOOD or POOR first, then briefly describe what you see.";
-
     /**
      * Result of an AI image analysis.
      *
@@ -94,6 +60,8 @@ public class OllamaService {
     BambuConfig config;
     @Inject
     ObjectMapper mapper;
+    @Inject
+    AiPromptService prompts;
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -220,7 +188,8 @@ public class OllamaService {
      * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
     public Optional<AiResult> checkBedClear(final byte[] imageJpeg, final Optional<String> context) {
-        return analyze(imageJpeg, BED_CLEAR_PROMPT, "YES", context);
+        return analyze(imageJpeg, prompts.getPrompt(AiPromptService.PromptType.BED_CLEAR),
+                AiPromptService.PromptType.BED_CLEAR.positiveKeyword(), context);
     }
 
     /**
@@ -229,7 +198,8 @@ public class OllamaService {
      * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
     public Optional<AiResult> checkFailure(final byte[] imageJpeg, final Optional<String> context) {
-        return analyze(imageJpeg, FAILURE_PROMPT, "YES", context);
+        return analyze(imageJpeg, prompts.getPrompt(AiPromptService.PromptType.FAILURE),
+                AiPromptService.PromptType.FAILURE.positiveKeyword(), context);
     }
 
     /**
@@ -238,7 +208,8 @@ public class OllamaService {
      * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
     public Optional<AiResult> checkFirstLayer(final byte[] imageJpeg, final Optional<String> context) {
-        return analyze(imageJpeg, FIRST_LAYER_PROMPT, "GOOD", context);
+        return analyze(imageJpeg, prompts.getPrompt(AiPromptService.PromptType.FIRST_LAYER),
+                AiPromptService.PromptType.FIRST_LAYER.positiveKeyword(), context);
     }
 
 }

@@ -271,7 +271,11 @@ The **AI Settings** page (`/ai-settings`, sidebar). Uses a self-hosted [Ollama](
 
 Every check is **context-aware**: if the printer currently has an active HMS alert (e.g. a nozzle clog) or a legacy print-error code, that's passed to the model as a hint alongside the image, so a check can correlate what it sees with what the printer's own firmware is already reporting. It's framed as a hint, not an instruction - a stale or unrelated alert (e.g. an AMS calibration reminder) won't force a false positive on its own.
 
-Results show as a status chip on each dashboard card (with an animated "checking" dot) and in a table on the AI Settings page, which also has a runtime on/off toggle (no restart needed) and a "Check Now" button per printer.
+Results show as a status chip on each dashboard card (with an animated "checking" dot) and on the AI Settings page, which has:
+- a runtime on/off toggle (no restart needed) and a "Check Now" button per printer;
+- **the last analyzed snapshot per printer** - the exact camera frame the AI looked at, why the check ran (manual / scheduled / Start Next gate / auto-start gate), what HMS/error hint was fed to the model, and what it concluded (click to enlarge);
+- **check history** - the last 50 check attempts across the farm with trigger, result, and description; click any row to see that check's snapshot (in-memory, resets on restart);
+- **editable prompts** - the exact text sent to the model for each of the three checks, editable at runtime and saved to `bambu-ai-prompts.json` (blank or default-identical text reverts to the built-in default, so future stock-prompt improvements still reach you). Keep the leading YES/NO/GOOD answer-keyword instructions intact - result parsing depends on that first word.
 
 ```properties
 # Base URL of your Ollama server - AI checks are fully skipped when this is unset
@@ -474,7 +478,7 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.auto-start-settle` | `3m` | How long a printer must sit ready before AI-gated auto-start attempts it |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-ai-prompts.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.

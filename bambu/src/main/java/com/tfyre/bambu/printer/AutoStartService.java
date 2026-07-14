@@ -198,7 +198,7 @@ public class AutoStartService {
         inFlight.add(name);
         lastStatus.put(name, "checking bed…");
         Log.infof("AutoStartService: %s: attempting auto-start (%d queued), running bed-clear check", name, queueSize);
-        aiService.checkBedClear(name).whenComplete((result, throwable) -> {
+        aiService.checkBedClear(name, "auto-start").whenComplete((result, throwable) -> {
             try {
                 if (throwable != null) {
                     hold(name, queueSize, "paused: bed check failed",

@@ -283,6 +283,20 @@ vaadin-app-layout.drawer-rail [slot="drawer"].drawer-controls {
     display: flex;
     width: 100%;
     justify-content: center;
+    position: relative;
+}
+
+/* Info button + alert badges: absolutely positioned so they don't consume flex width -
+   keeps the printer name truly centered on the card instead of offset by half their width. */
+.dashboard-printer .name .name-controls {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    width: auto;
 }
 
 .dashboard-printer .name vaadin-button {
