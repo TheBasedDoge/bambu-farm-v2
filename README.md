@@ -323,7 +323,7 @@ Without ffmpeg reachable, AI checks on X1C/X1E/H2D printers keep showing "no sna
 The **Notifications** checkbox in the sidebar enables desktop notifications on print finish/fail (requires an open tab and HTTPS or localhost).
 
 ### Notification Settings page
-The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
+The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, Auto-Queue, Auto-Queue Skipped, Auto-Start, Auto-Start Blocked, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
 
 ### MQTT (recommended for Home Assistant)
 ```properties
@@ -332,7 +332,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, or `new_order` (for `new_order` the printer segment is `Etsy` or `eBay`), with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `new_order`, `auto_queue`, or `auto_queue_skipped` (for the order events the printer segment is the marketplace, `Etsy`/`eBay`/`etsy`/`ebay`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
