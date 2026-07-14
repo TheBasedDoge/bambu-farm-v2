@@ -287,7 +287,11 @@ public class PrintAiService {
                 .findFirst();
     }
 
-    private Optional<byte[]> getSnapshot(final String printerName) {
+    /**
+     * Current camera frame for a printer (port-6000 cache, or an ffmpeg RTSPS grab on X1C/X1E/H2D).
+     * Public so AutoStartService can attach the frame to its "blocked: bed not clear" notification.
+     */
+    public Optional<byte[]> getSnapshot(final String printerName) {
         final Optional<BambuPrinters.PrinterDetail> detail = printers.getPrintersDetail().stream()
                 .filter(pd -> pd.name().equals(printerName))
                 .findFirst();

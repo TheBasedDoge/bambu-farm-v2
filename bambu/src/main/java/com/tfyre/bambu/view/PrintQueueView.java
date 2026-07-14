@@ -2,6 +2,7 @@ package com.tfyre.bambu.view;
 
 import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.YesNoCancelDialog;
+import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
 import com.tfyre.bambu.printer.BambuPrinters;
@@ -14,6 +15,7 @@ import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
+import com.vaadin.flow.component.checkbox.Checkbox;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.html.H3;
 import com.vaadin.flow.component.html.H4;
@@ -54,6 +56,8 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
     PrintQueueService queueService;
     @Inject
     PrintAiService aiService;
+    @Inject
+    AutoStartService autoStartService;
     @Inject
     BambuConfig config;
     @Inject
@@ -119,6 +123,21 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         startNext.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
         section.add(startNext);
 
+        // AI-gated auto-start: opt-in per printer, with a live status line showing the watcher's last decision
+        final Checkbox autoStart = new Checkbox("Auto-start next when bed is clear (AI-checked)");
+        autoStart.setValue(autoStartService.isEnabled(detail.name()));
+        autoStart.setTooltipText("When idle with jobs queued, run the AI bed-clear check and start the next job "
+                + "automatically if the bed is confirmed clear. Fails closed: no AI answer = no start.");
+        final Span autoStartStatus = new Span();
+        autoStartStatus.getStyle().setColor("var(--lumo-secondary-text-color)");
+        autoStart.addValueChangeListener(e -> {
+            autoStartService.setEnabled(detail.name(), Boolean.TRUE.equals(e.getValue()));
+            autoStartStatus.setText("auto-start: " + autoStartService.getStatus(detail.name()));
+        });
+        final HorizontalLayout autoStartRow = new HorizontalLayout(autoStart, autoStartStatus);
+        autoStartRow.setDefaultVerticalComponentAlignment(FlexLayout.Alignment.CENTER);
+        section.add(autoStartRow);
+
         // Self-referencing refresh callback: reloads the state badge, the queue list (whose remove buttons
         // also call back into this same refresh), and the Start Next button's label/enabled state. Also runs
         // on every telemetry tick (see onAttach), so the queue list only rebuilds its DOM when the queue
@@ -133,6 +152,7 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
                 reloadQueueList(list, detail, queue, refresh[0]);
             }
             updateStartNextButton(startNext, detail);
+            autoStartStatus.setText("auto-start: " + autoStartService.getStatus(detail.name()));
         };
         startNext.addClickListener(l -> doStartNext(detail, refresh[0]));
         refresh[0].run();

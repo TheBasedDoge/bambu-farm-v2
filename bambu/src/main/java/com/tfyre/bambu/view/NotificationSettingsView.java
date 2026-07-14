@@ -39,6 +39,10 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     private static final List<EventDef> EVENTS = List.of(
             new EventDef("new_order", "New Order",
                     "A new unfulfilled order appeared on Etsy or eBay"),
+            new EventDef("auto_start", "Auto-Start",
+                    "A queued print was started automatically after the AI confirmed the bed was clear"),
+            new EventDef("auto_start_blocked", "Auto-Start Blocked",
+                    "Auto-start held back: bed not clear, AI unavailable, or the start failed"),
             new EventDef("failure_detected", "AI Failure Detected",
                     "Spaghetti / blob / detach detected by the AI failure check"),
             new EventDef("first_layer_issue", "AI First Layer Issue",

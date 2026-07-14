@@ -207,14 +207,24 @@ bambu.batch-print.library=bambu-library
 
 ### Print queue
 - In Batch Print, select printers (they may be busy - only filament mapping is required) and click **Queue**. The job stores file, plate, options, and per-printer AMS mapping in `bambu-queue.json`.
-- When a printer is idle (not printing/paused/etc.) with queued jobs, its dashboard card shows a **"Start Next (N queued): file"** button. This button is deliberately hidden while the printer is busy - there's nothing to start until the current job finishes, so don't be alarmed if you queue jobs and don't see a Start button right away; it appears once the printer goes idle. Clicking it asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing ever auto-starts.
+- When a printer is idle (not printing/paused/etc.) with queued jobs, its dashboard card shows a **"Start Next (N queued): file"** button. This button is deliberately hidden while the printer is busy - there's nothing to start until the current job finishes, so don't be alarmed if you queue jobs and don't see a Start button right away; it appears once the printer goes idle. Clicking it asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing auto-starts unless you explicitly enable AI-gated auto-start for that printer (below).
 - The queue icon in the card toolbar opens a per-printer queue dialog (view/remove entries) - or see **Print Queue** below for all printers at once.
 
 ### Print Queue page
-The **Print Queue** page (`/print-queue`, sidebar) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, and the same AI-gated **Start Next** button as the dashboard card.
+The **Print Queue** page (`/print-queue`, sidebar) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
+
+### AI-gated auto-start (lights-out mode)
+Per-printer opt-in on the Print Queue page: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
+- **Bed clear** → starts the next queued job and sends an `auto_start` notification.
+- **Bed not clear** → does NOT start, sends one `auto_start_blocked` notification **with the camera frame attached**, then silently re-checks every 15 minutes (clearing the bed doesn't change printer state, so the periodic recheck is what picks it up). You're only notified once per situation, not every retry.
+- **Fails closed**: if AI checks are disabled/unavailable or no snapshot can be grabbed, nothing starts - you get an `auto_start_blocked` notification instead. No AI answer = no start, ever.
+
+A failed print counts as ready: if the AI confirms the bed is clear after a failure, the queue keeps moving. The status line next to the toggle shows the watcher's last decision (e.g. "waiting: settle", "blocked: bed not clear (12:03)", "auto-started at 03:41"). Settings persist in `bambu-auto-start.json`.
 
 ```properties
 bambu.queue-file=bambu-queue.json
+# How long a printer must sit ready before auto-start attempts it (default 3m)
+bambu.auto-start-settle=3m
 ```
 
 ## AMS Slot Override
@@ -461,9 +471,10 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.ebay.marketplace-id` | `EBAY_US` | eBay marketplace |
 | `bambu.ebay.sandbox` | `false` | Use eBay sandbox environment |
 | `bambu.ebay.poll-interval` | `10m` | Order polling frequency |
+| `bambu.auto-start-settle` | `3m` | How long a printer must sit ready before AI-gated auto-start attempts it |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.

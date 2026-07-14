@@ -61,6 +61,14 @@ public interface BambuConfig {
      */
     Optional<String> mediamtxRtspUrl();
 
+    /**
+     * How long a printer must sit in a ready state (finished/idle/failed) before AI-gated auto-start will
+     * attempt to start the next queued job on it - a small buffer so we're not racing end-of-print telemetry
+     * or a person who's mid-way through clearing the bed. See {@link com.tfyre.bambu.printer.AutoStartService}.
+     */
+    @WithDefault("3m")
+    Duration autoStartSettle();
+
     @WithDefault("bambu-maintenance.json")
     String maintenanceFile();
 
