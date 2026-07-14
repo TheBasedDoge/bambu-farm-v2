@@ -2,7 +2,9 @@ package com.tfyre.bambu.view;
 
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.printer.EbayApiClient;
 import com.tfyre.bambu.printer.EbayMappingService;
+import com.tfyre.bambu.printer.EbayOAuthService;
 import com.tfyre.bambu.printer.EbayOrderPollingService;
 import com.tfyre.bambu.printer.EtsyApiClient;
 import com.tfyre.bambu.printer.EtsyMappingService;
@@ -73,6 +75,10 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     @Inject
     EbayMappingService ebayMapping;
     @Inject
+    EbayOAuthService ebayOauth;
+    @Inject
+    EbayApiClient ebayClient;
+    @Inject
     EbayOrderPollingService ebayPolling;
     @Inject
     Instance<ProjectFile> projectFileInstance;
@@ -99,8 +105,10 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     private final Grid<SavedRow> savedGrid = new Grid<>();
     private final Span etsyStatus = new Span();
 
-    /** Fetched on demand via the button; kept for re-renders while the view lives. */
+    /** Fetched on demand via the buttons; kept for re-renders while the view lives. */
     private List<EtsyApiClient.Listing> etsyListings = List.of();
+    private List<EbayApiClient.EbayListing> ebayListings = List.of();
+    private final Span ebayStatus = new Span();
 
     @Override
     protected void onAttach(final AttachEvent attachEvent) {
@@ -226,12 +234,46 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         final Div sec = new Div();
         sec.addClassName("ai-settings-section");
         sec.add(new H4("eBay listings"));
-        sec.add(new Span("eBay's fulfillment-only API scope can't pull your listings, so this table shows every "
-                + "listing key (SKU or item id) already mapped or currently appearing in an open order."));
+
+        final Button load = new Button("Load active listings from eBay", new Icon(VaadinIcon.REFRESH));
+        load.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        load.setEnabled(ebayOauth.isConnected());
+        if (!ebayOauth.isConnected()) {
+            sec.add(new Span("Connect eBay on the eBay Sales Orders page first."));
+        }
+        load.addClickListener(e -> {
+            load.setEnabled(false);
+            ebayStatus.setText("Loading…");
+            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+            new Thread(() -> {
+                try {
+                    final List<EbayApiClient.EbayListing> listings = ebayClient.getActiveListings();
+                    ui.ifPresent(u -> u.access(() -> {
+                        ebayListings = listings;
+                        ebayStatus.setText("%d active listing(s)".formatted(listings.size()));
+                        renderEbay();
+                        load.setEnabled(true);
+                    }));
+                } catch (Exception ex) {
+                    Log.errorf(ex, "MappingsView: eBay listing fetch failed: %s", ex.getMessage());
+                    ui.ifPresent(u -> u.access(() -> {
+                        ebayStatus.setText("");
+                        showError("Could not load eBay listings: " + ex.getMessage());
+                        load.setEnabled(true);
+                    }));
+                }
+            }).start();
+        });
+        final Div bar = new Div(load, ebayStatus);
+        bar.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center");
+        sec.add(bar);
+        sec.add(new Span("Rows also include every listing key already mapped or appearing in an open order. "
+                + "If loading reports a permissions error, Disconnect and reconnect eBay once - the listing "
+                + "permission was added after your original connection."));
 
         if (ebayGrid.getColumns().isEmpty()) {
             ebayGrid.addColumn(EbayRow::listingKey).setHeader("SKU / item id").setAutoWidth(true);
-            ebayGrid.addColumn(EbayRow::title).setHeader("Title (from open orders)").setFlexGrow(1);
+            ebayGrid.addColumn(EbayRow::title).setHeader("Title").setFlexGrow(1);
             ebayGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
             ebayGrid.addComponentColumn(row -> {
                 final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
@@ -256,8 +298,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
 
     private void renderEbay() {
         final Map<String, EbayMappingService.MappingEntry> saved = ebayMapping.entries();
-        // Known keys: everything mapped + everything in open orders (with a title when we have one)
+        // Known keys: fetched active listings first (best titles), then open orders, then bare mapped keys
         final Map<String, String> titles = new LinkedHashMap<>();
+        ebayListings.forEach(l -> titles.putIfAbsent(l.listingKey(), l.title()));
         ebayPolling.getOrders().forEach(o -> o.lineItems().forEach(li -> {
             final String key = li.listingKey();
             if (key != null && !key.isBlank()) {

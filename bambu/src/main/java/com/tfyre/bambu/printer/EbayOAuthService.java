@@ -32,7 +32,16 @@ import java.util.concurrent.ConcurrentHashMap;
 @ApplicationScoped
 public class EbayOAuthService {
 
-    private static final String SCOPE = "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly";
+    /**
+     * Scopes requested at consent: order fulfillment (the orders page), inventory read (listing pull on the
+     * Mappings tab) and the base scope (required for Trading API calls like GetMyeBaySelling, which is what
+     * actually returns ALL active listings - the Inventory API only knows listings created through it).
+     * Users who connected before the extra scopes were added must Disconnect + Connect once to grant them;
+     * until then orders keep working and only the listing pull reports a permissions error.
+     */
+    private static final String SCOPE = "https://api.ebay.com/oauth/api_scope"
+            + " https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly"
+            + " https://api.ebay.com/oauth/api_scope/sell.inventory.readonly";
 
     @Inject
     BambuConfig config;
@@ -171,7 +180,11 @@ public class EbayOAuthService {
             return Optional.empty();
         }
         try {
-            final String form = "grant_type=refresh_token&refresh_token=" + enc(latest.refreshToken()) + "&scope=" + enc(SCOPE);
+            // NO scope param on refresh: scopes are bound at consent, and requesting the (now broader) SCOPE
+            // against a token consented with the old narrower set would fail with invalid_scope - which would
+            // clear the stored tokens and silently disconnect the shop. Omitting it returns a token with
+            // whatever scopes were originally granted.
+            final String form = "grant_type=refresh_token&refresh_token=" + enc(latest.refreshToken());
             final HttpRequest request = HttpRequest.newBuilder(URI.create(tokenUrl()))
                     .timeout(config.ebay().timeout())
                     .header("Content-Type", "application/x-www-form-urlencoded")

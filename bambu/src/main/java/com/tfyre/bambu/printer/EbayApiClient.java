@@ -84,6 +84,115 @@ public class EbayApiClient {
         return s == null ? "" : (s.length() > 300 ? s.substring(0, 300) + "…" : s);
     }
 
+    // -------------------------------------------------------------------------
+    // Active listings - Trading API GetMyeBaySelling
+    // -------------------------------------------------------------------------
+
+    /** An active listing, for the Mappings tab. {@link #listingKey()} matches {@link LineItem#listingKey()}. */
+    public record EbayListing(String itemId, String sku, String title, int quantity) {
+
+        /** Stable identity for mapping: SKU if present, else the item id - same rule as order line items. */
+        public String listingKey() {
+            return (sku != null && !sku.isBlank()) ? sku : itemId;
+        }
+    }
+
+    private String tradingApiUrl() {
+        return config.ebay().sandbox() ? "https://api.sandbox.ebay.com/ws/api.dll" : "https://api.ebay.com/ws/api.dll";
+    }
+
+    /**
+     * Fetches ALL active listings via the Trading API's {@code GetMyeBaySelling} (paginated). The modern
+     * Inventory API only returns listings created through it, so for shops managed via the eBay website this
+     * legacy XML call is the one that actually sees everything. Requires the base + inventory scopes added to
+     * the consent flow - accounts connected before that must Disconnect + Connect once on the orders page.
+     */
+    public List<EbayListing> getActiveListings() throws Exception {
+        final Optional<String> token = oauth.getValidAccessToken();
+        if (token.isEmpty()) {
+            throw new IllegalStateException("Not connected to eBay - connect on the eBay Sales Orders page.");
+        }
+        final List<EbayListing> result = new ArrayList<>();
+        int page = 1;
+        int totalPages = 1;
+        while (page <= totalPages && page <= 10) {
+            final String body = """
+                    <?xml version="1.0" encoding="utf-8"?>
+                    <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+                      <ActiveList>
+                        <Include>true</Include>
+                        <Pagination>
+                          <EntriesPerPage>200</EntriesPerPage>
+                          <PageNumber>%d</PageNumber>
+                        </Pagination>
+                      </ActiveList>
+                      <DetailLevel>ReturnAll</DetailLevel>
+                    </GetMyeBaySellingRequest>
+                    """.formatted(page);
+            final HttpRequest request = HttpRequest.newBuilder(URI.create(tradingApiUrl()))
+                    .timeout(config.ebay().timeout())
+                    .header("X-EBAY-API-COMPATIBILITY-LEVEL", "1193")
+                    .header("X-EBAY-API-CALL-NAME", "GetMyeBaySelling")
+                    .header("X-EBAY-API-SITEID", "0")
+                    .header("X-EBAY-API-IAF-TOKEN", token.get())
+                    .header("Content-Type", "text/xml")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 300) {
+                Log.errorf("EbayApiClient: GetMyeBaySelling -> HTTP %d: %s", response.statusCode(), response.body());
+                throw new IllegalStateException("eBay Trading API returned HTTP %d: %s"
+                        .formatted(response.statusCode(), truncate(response.body())));
+            }
+            final org.w3c.dom.Document doc = parseXml(response.body());
+            final String ack = firstText(doc, "Ack");
+            if ("Failure".equalsIgnoreCase(ack)) {
+                final String error = Optional.ofNullable(firstText(doc, "LongMessage"))
+                        .orElse(Optional.ofNullable(firstText(doc, "ShortMessage")).orElse("unknown error"));
+                final boolean scopeIssue = error.toLowerCase().contains("token") || error.toLowerCase().contains("scope")
+                        || error.toLowerCase().contains("iaf") || error.toLowerCase().contains("auth");
+                throw new IllegalStateException("eBay listing fetch failed: %s%s".formatted(error, scopeIssue
+                        ? " - if you connected before the listing permission was added, Disconnect and reconnect eBay on the Sales Orders page."
+                        : ""));
+            }
+            totalPages = Optional.ofNullable(firstText(doc, "TotalNumberOfPages")).map(Integer::parseInt).orElse(1);
+            final org.w3c.dom.NodeList items = doc.getElementsByTagName("Item");
+            for (int i = 0; i < items.getLength(); i++) {
+                final org.w3c.dom.Element item = (org.w3c.dom.Element) items.item(i);
+                final String itemId = childText(item, "ItemID");
+                if (itemId.isBlank()) {
+                    continue;
+                }
+                final int quantity = Optional.of(childText(item, "QuantityAvailable")).filter(s -> !s.isBlank())
+                        .or(() -> Optional.of(childText(item, "Quantity")).filter(s -> !s.isBlank()))
+                        .map(Integer::parseInt).orElse(0);
+                result.add(new EbayListing(itemId, childText(item, "SKU"), childText(item, "Title"), quantity));
+            }
+            page++;
+        }
+        result.sort((a, b) -> a.title().compareToIgnoreCase(b.title()));
+        return result;
+    }
+
+    private static org.w3c.dom.Document parseXml(final String xml) throws Exception {
+        final javax.xml.parsers.DocumentBuilderFactory factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+        // XXE hardening - we only ever parse eBay's response envelope
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        return factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    private static String firstText(final org.w3c.dom.Document doc, final String tag) {
+        final org.w3c.dom.NodeList nodes = doc.getElementsByTagName(tag);
+        return nodes.getLength() == 0 ? null : nodes.item(0).getTextContent().trim();
+    }
+
+    private static String childText(final org.w3c.dom.Element parent, final String tag) {
+        final org.w3c.dom.NodeList nodes = parent.getElementsByTagName(tag);
+        return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent().trim();
+    }
+
     /** Swallowing variant for non-critical calls. */
     private Optional<JsonNode> get(final String path) {
         try {
