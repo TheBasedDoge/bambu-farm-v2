@@ -8,6 +8,7 @@ import com.tfyre.bambu.printer.EtsyApiClient;
 import com.tfyre.bambu.printer.EtsyMappingService;
 import com.tfyre.bambu.printer.EtsyOAuthService;
 import com.tfyre.bambu.printer.MappingPart;
+import com.tfyre.bambu.printer.OrderTrackingService;
 import com.tfyre.bambu.view.batchprint.Plate;
 import com.tfyre.bambu.view.batchprint.ProjectFile;
 import com.vaadin.flow.component.AttachEvent;
@@ -75,14 +76,19 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     EbayOrderPollingService ebayPolling;
     @Inject
     Instance<ProjectFile> projectFileInstance;
+    @Inject
+    OrderTrackingService tracking;
 
     /** One row in the Etsy listings table. */
-    public record EtsyRow(long listingId, String title, int quantity, String mappedState) {
+    public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden) {
     }
 
     /** One row in the eBay listing-keys table. */
-    public record EbayRow(String listingKey, String title, String mappedState) {
+    public record EbayRow(String listingKey, String title, String mappedState, boolean hidden) {
     }
+
+    /** Whether hidden (never-printed) listings are shown in the tables. */
+    private boolean showHidden;
 
     /** One row in the all-saved-mappings table. */
     public record SavedRow(String market, String storageKey, String listing, String variations, String summary) {
@@ -108,7 +114,18 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         add(new H3("Listing → GCODE Mappings"));
         add(new Span("Assign print jobs to your shop listings here, before orders arrive - a mapped listing is "
                 + "what lets auto-queue handle an order with zero clicks. Mappings saved here are listing-wide "
-                + "(they apply to every variation); per-variation overrides can still be saved from the order pages."));
+                + "(they apply to every variation); per-variation overrides can still be saved from the order pages. "
+                + "Hide listings that are never printed (digital items, add-ons) - hidden, unmapped listings are "
+                + "silently ignored by auto-queue instead of blocking orders with a 'not mapped' alert."));
+
+        final com.vaadin.flow.component.checkbox.Checkbox showHiddenToggle
+                = new com.vaadin.flow.component.checkbox.Checkbox("Show hidden listings");
+        showHiddenToggle.setValue(showHidden);
+        showHiddenToggle.addValueChangeListener(e -> {
+            showHidden = Boolean.TRUE.equals(e.getValue());
+            renderAll();
+        });
+        add(showHiddenToggle);
 
         add(buildEtsySection());
         add(buildEbaySection());
@@ -180,7 +197,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for listing %d".formatted(row.listingId()));
                             renderAll();
                         }));
-                return edit;
+                return new Div(edit, hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             etsyGrid.setWidth("100%");
             etsyGrid.setAllRowsVisible(true);
@@ -193,7 +210,10 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     private void renderEtsy() {
         final Map<String, EtsyMappingService.MappingEntry> saved = etsyMapping.entries();
         etsyGrid.setItems(etsyListings.stream()
-                .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(), mappedState(saved, String.valueOf(l.listingId()))))
+                .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(),
+                        mappedState(saved, String.valueOf(l.listingId())),
+                        tracking.isListingHidden("etsy", String.valueOf(l.listingId()))))
+                .filter(r -> showHidden || !r.hidden())
                 .toList());
         etsyGrid.setVisible(!etsyListings.isEmpty());
     }
@@ -224,7 +244,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for %s".formatted(row.listingKey()));
                             renderAll();
                         }));
-                return edit;
+                return new Div(edit, hideButton("ebay", row.listingKey(), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             ebayGrid.setWidth("100%");
             ebayGrid.setAllRowsVisible(true);
@@ -248,7 +268,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .map(k -> k.substring(0, k.indexOf('|') < 0 ? k.length() : k.indexOf('|')))
                 .forEach(k -> titles.putIfAbsent(k, ""));
         ebayGrid.setItems(titles.entrySet().stream()
-                .map(e -> new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey())))
+                .map(e -> new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey()),
+                        tracking.isListingHidden("ebay", e.getKey())))
+                .filter(r -> showHidden || !r.hidden())
                 .sorted((a, b) -> a.listingKey().compareToIgnoreCase(b.listingKey()))
                 .toList());
         ebayGrid.setVisible(!titles.isEmpty());
@@ -354,6 +376,26 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             return "%d variation%s only".formatted(variations, variations == 1 ? "" : "s");
         }
         return "—";
+    }
+
+    /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */
+    private Button hideButton(final String market, final String listingKey, final boolean hidden) {
+        final Button b = new Button(new Icon(hidden ? VaadinIcon.EYE : VaadinIcon.EYE_SLASH));
+        b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        b.setTooltipText(hidden
+                ? "Unhide this listing"
+                : "Hide this listing (not a printed product) - auto-queue will silently ignore it");
+        b.addClickListener(e -> {
+            if (hidden) {
+                tracking.unhideListing(market, listingKey);
+                showNotification("Listing unhidden");
+            } else {
+                tracking.hideListing(market, listingKey);
+                showNotification("Listing hidden - auto-queue will ignore it");
+            }
+            renderAll();
+        });
+        return b;
     }
 
     private Span mappedBadge(final String state) {

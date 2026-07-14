@@ -45,8 +45,11 @@ public class AutoQueueService {
 
     private static final String STORE_FILENAME = "bambu-auto-queue.json";
 
-    /** One order line item as the marketplace-agnostic input: label for messages, ordered qty, mapped parts (empty = unmapped). */
-    public record AutoQueueItem(String label, int quantity, List<MappingPart> parts) {
+    /**
+     * One order line item as the marketplace-agnostic input: listing key (Etsy listing id / eBay SKU or item
+     * id, used for the hidden-listing check), label for messages, ordered qty, mapped parts (empty = unmapped).
+     */
+    public record AutoQueueItem(String listingKey, String label, int quantity, List<MappingPart> parts) {
     }
 
     @Inject
@@ -117,9 +120,19 @@ public class AutoQueueService {
             return;
         }
 
+        // Hidden + unmapped listings are products that are never printed (digital items, add-ons) - drop them
+        // from consideration entirely. A hidden listing the user DID map is still printed (the mapping wins).
+        final List<AutoQueueItem> relevant = items.stream()
+                .filter(i -> !(i.parts().isEmpty() && tracking.isListingHidden(market, i.listingKey())))
+                .toList();
+        if (relevant.isEmpty()) {
+            Log.infof("AutoQueueService: %s: all line items are hidden non-printed listings - nothing to queue", orderLabel);
+            return;
+        }
+
         // ---- Pre-validate everything before queueing anything (all-or-nothing) ----
         final List<String> problems = new ArrayList<>();
-        for (final AutoQueueItem item : items) {
+        for (final AutoQueueItem item : relevant) {
             if (item.parts().isEmpty()) {
                 problems.add("'%s' is not mapped to a print job yet".formatted(item.label()));
                 continue;
@@ -150,7 +163,7 @@ public class AutoQueueService {
         final Map<String, Integer> assignedThisRun = new HashMap<>();
         final Map<String, Integer> perPrinter = new LinkedHashMap<>();
         int total = 0;
-        for (final AutoQueueItem item : items) {
+        for (final AutoQueueItem item : relevant) {
             for (final MappingPart part : item.parts()) {
                 final int copies = Math.max(1, item.quantity()) * part.copiesPerUnit();
                 for (int i = 0; i < copies; i++) {

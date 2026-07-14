@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.apache.commons.net.ftp.FTPFile;
@@ -143,7 +144,16 @@ public class PrintQueueService {
         save();
     }
 
-    private void uploadIfNeeded(final BambuPrinters.PrinterDetail detail, final String filename, final File file) throws IOException {
+    /** SD-card system folders that can't contain user project files - skipped by the subfolder scan. */
+    private static final Set<String> SYSTEM_DIRS = Set.of("image", "ipcam", "logger", "recorder", "timelapse", "cache", "verify_job");
+
+    /**
+     * Ensures {@code filename} is available on the printer's SD card, uploading it only when necessary, and
+     * returns the SD path the print should actually use. An identical file (same name and size) already
+     * present at the root <b>or in a first-level subfolder</b> (e.g. a hand-organized {@code _Audi/part.3mf})
+     * is reused in place instead of re-uploading a duplicate copy to the root.
+     */
+    private String uploadIfNeeded(final BambuPrinters.PrinterDetail detail, final String filename, final File file) throws IOException {
         final BambuFtp client = clientInstance.get().setup(detail, (total, bytes, stream) -> {
         });
         try {
@@ -151,18 +161,34 @@ public class PrintQueueService {
             if (!client.doLogin()) {
                 throw new IOException("FTP login failed");
             }
-            final Optional<FTPFile> oFile = Stream.of(client.listFiles())
+            final FTPFile[] rootEntries = client.listFiles();
+            final Optional<FTPFile> atRoot = Stream.of(rootEntries)
                     .filter(f -> f.isFile() && filename.equals(f.getName()))
                     .findAny();
-            if (oFile.isPresent() && oFile.get().getSize() == file.length()) {
+            if (atRoot.isPresent() && atRoot.get().getSize() == file.length()) {
                 Log.debugf("%s: queue file already on SD card: %s", detail.name(), filename);
-                return;
+                return filename;
+            }
+            // Not at the root - check first-level subfolders before uploading a duplicate
+            for (final FTPFile dir : rootEntries) {
+                if (!dir.isDirectory() || dir.getName().startsWith(".") || SYSTEM_DIRS.contains(dir.getName().toLowerCase())) {
+                    continue;
+                }
+                final Optional<FTPFile> inDir = Stream.of(client.listFiles(dir.getName()))
+                        .filter(f -> f.isFile() && filename.equals(f.getName()) && f.getSize() == file.length())
+                        .findAny();
+                if (inDir.isPresent()) {
+                    final String path = dir.getName() + "/" + filename;
+                    Log.infof("%s: queue file already on SD card in a subfolder, printing from there: %s", detail.name(), path);
+                    return path;
+                }
             }
             try (final FileInputStream stream = new FileInputStream(file)) {
                 if (!client.doUpload(filename, stream)) {
                     throw new IOException("upload failed");
                 }
             }
+            return filename;
         } finally {
             try {
                 client.doClose();
@@ -207,20 +233,27 @@ public class PrintQueueService {
         detail.printer().setBlocked(true);
         executor.submit(() -> {
             try {
+                BambuPrinter.CommandPPF command = entry.command();
                 if (entry.source() == GcodeSource.LIBRARY) {
-                    final File file = Path.of(config.batchPrint().library()).resolve(entry.command().filename()).toFile();
+                    final File file = Path.of(config.batchPrint().library()).resolve(command.filename()).toFile();
                     if (!file.isFile()) {
-                        onError.accept("%s: not in library: %s".formatted(printerName, entry.command().filename()));
+                        onError.accept("%s: not in library: %s".formatted(printerName, command.filename()));
                         return;
                     }
-                    uploadIfNeeded(detail, entry.command().filename(), file);
+                    final String sdPath = uploadIfNeeded(detail, command.filename(), file);
+                    if (!sdPath.equals(command.filename())) {
+                        // Identical file found in an SD subfolder - print from there instead of the root copy
+                        command = new BambuPrinter.CommandPPF(sdPath, command.plateId(), command.useAms(),
+                                command.timelapse(), command.bedLevelling(), command.flowCalibration(),
+                                command.vibrationCalibration(), command.amsMapping());
+                    }
                 }
                 // SD_CARD entries reference a file already resident on the printer's SD card at this path -
                 // nothing to upload, just send the print command directly.
-                historyService.registerExpectedWeight(printerName, entry.command().filename(), entry.grams(), trigger);
-                detail.printer().commandPrintProjectFile(entry.command());
+                historyService.registerExpectedWeight(printerName, command.filename(), entry.grams(), trigger);
+                detail.printer().commandPrintProjectFile(command);
                 removeFirst(printerName, entry);
-                Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, entry.command().filename(), entry.command().plateId());
+                Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, command.filename(), command.plateId());
                 onSuccess.run();
             } catch (Throwable ex) {
                 Log.errorf(ex, "PrintQueueService: %s: %s", printerName, ex.getMessage());

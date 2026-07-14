@@ -80,6 +80,7 @@ public class EbayOrderPollingService {
                             "eBay order %s (%s)".formatted(o.orderId(), o.buyerUsername()),
                             o.lineItems().stream()
                                     .map(li -> new AutoQueueService.AutoQueueItem(
+                                            li.listingKey(),
                                             "%dx %s".formatted(li.quantity(), li.title()),
                                             li.quantity(),
                                             mappingService.find(li.listingKey(), li.variationAspects())

@@ -82,6 +82,7 @@ public class EtsyOrderPollingService {
                             "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName()),
                             r.transactions().stream()
                                     .map(t -> new AutoQueueService.AutoQueueItem(
+                                            String.valueOf(t.listingId()),
                                             "%dx %s".formatted(t.quantity(), t.title()),
                                             t.quantity(),
                                             mappingService.find(t.listingId(), t.variations())

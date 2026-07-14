@@ -43,6 +43,8 @@ public class OrderTrackingService {
         public Set<String> seen = new HashSet<>();
         public Set<String> dismissed = new HashSet<>();
         public Map<String, Instant> queued = new HashMap<>();
+        /** Listing IDs/keys the user hid on the Mappings tab (products that are never printed). */
+        public Set<String> hiddenListings = new HashSet<>();
     }
 
     @Inject
@@ -148,6 +150,34 @@ public class OrderTrackingService {
     /** All queued-order markers for a marketplace (orderId → when), for the Automation overview. */
     public synchronized Map<String, Instant> queuedOrders(final String market) {
         return Map.copyOf(state(market).queued);
+    }
+
+    // -------------------------------------------------------------------------
+    // Hidden listings - products that are never printed (digital items, add-ons, ...).
+    // Hidden + unmapped listings are silently ignored by auto-queue instead of raising
+    // an "auto_queue_skipped: not mapped" alert on every order containing one.
+    // -------------------------------------------------------------------------
+
+    public synchronized boolean isListingHidden(final String market, final String listingKey) {
+        return state(market).hiddenListings.contains(listingKey);
+    }
+
+    public synchronized void hideListing(final String market, final String listingKey) {
+        if (state(market).hiddenListings.add(listingKey)) {
+            dirty = true;
+            save();
+        }
+    }
+
+    public synchronized void unhideListing(final String market, final String listingKey) {
+        if (state(market).hiddenListings.remove(listingKey)) {
+            dirty = true;
+            save();
+        }
+    }
+
+    public synchronized Set<String> hiddenListings(final String market) {
+        return Set.copyOf(state(market).hiddenListings);
     }
 
 }
