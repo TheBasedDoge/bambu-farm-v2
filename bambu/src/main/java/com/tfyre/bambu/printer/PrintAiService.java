@@ -6,6 +6,8 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -36,6 +38,8 @@ public class PrintAiService {
     ManagedExecutor executor;
     @Inject
     BambuConfig config;
+    @Inject
+    RtspSnapshotService rtspSnapshotService;
 
     /**
      * Snapshot of the last AI check result per printer.
@@ -103,7 +107,9 @@ public class PrintAiService {
         return CompletableFuture.supplyAsync(() -> {
             checksInProgress.add(printerName);
             try {
-                final Optional<OllamaService.AiResult> result = getSnapshot(printerName).flatMap(ollama::checkBedClear);
+                final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+                final Optional<OllamaService.AiResult> result = getSnapshot(printerName)
+                        .flatMap(bytes -> ollama.checkBedClear(bytes, context));
                 // positive = bed IS clear = good
                 result.ifPresent(r -> {
                     final boolean good = r.positive();
@@ -126,7 +132,9 @@ public class PrintAiService {
         return CompletableFuture.supplyAsync(() -> {
             checksInProgress.add(printerName);
             try {
-                final Optional<OllamaService.AiResult> result = getSnapshot(printerName).flatMap(ollama::checkFailure);
+                final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+                final Optional<OllamaService.AiResult> result = getSnapshot(printerName)
+                        .flatMap(bytes -> ollama.checkFailure(bytes, context));
                 // positive = failure IS detected = bad (good = !positive)
                 result.ifPresent(r -> {
                     final boolean good = !r.positive();
@@ -144,8 +152,10 @@ public class PrintAiService {
      * Asynchronously checks first-layer quality on the named printer.
      */
     public CompletableFuture<Optional<OllamaService.AiResult>> checkFirstLayer(final String printerName) {
-        return CompletableFuture.supplyAsync(() ->
-                getSnapshot(printerName).flatMap(ollama::checkFirstLayer), executor);
+        return CompletableFuture.supplyAsync(() -> {
+            final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+            return getSnapshot(printerName).flatMap(bytes -> ollama.checkFirstLayer(bytes, context));
+        }, executor);
     }
 
     public boolean isEnabled() {
@@ -169,8 +179,9 @@ public class PrintAiService {
     private void runFailureCheck(final BambuPrinter printer) {
         checksInProgress.add(printer.getName());
         try {
+            final Optional<String> context = buildContext(printer);
             getSnapshot(printer.getName()).ifPresent(bytes ->
-                    ollama.checkFailure(bytes).ifPresent(result -> {
+                    ollama.checkFailure(bytes, context).ifPresent(result -> {
                         // positive = failure detected = bad
                         final boolean good = !result.positive();
                         lastResults.put(printer.getName(),
@@ -243,8 +254,9 @@ public class PrintAiService {
 
             checksInProgress.add(printerName);
             try {
+                final Optional<String> context = buildContext(stillPrinting.get());
                 getSnapshot(printerName).ifPresent(bytes ->
-                        ollama.checkFirstLayer(bytes).ifPresent(result -> {
+                        ollama.checkFirstLayer(bytes, context).ifPresent(result -> {
                             // positive = first layer is good
                             final boolean good = result.positive();
                             lastResults.put(printerName,
@@ -267,11 +279,41 @@ public class PrintAiService {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private Optional<byte[]> getSnapshot(final String printerName) {
+    private Optional<BambuPrinter> findPrinter(final String printerName) {
         return printers.getPrinters().stream()
                 .filter(p -> p.getName().equals(printerName))
-                .findFirst()
-                .flatMap(BambuPrinter::getSnapshotBytes);
+                .findFirst();
+    }
+
+    private Optional<byte[]> getSnapshot(final String printerName) {
+        final Optional<BambuPrinters.PrinterDetail> detail = printers.getPrintersDetail().stream()
+                .filter(pd -> pd.name().equals(printerName))
+                .findFirst();
+        final Optional<byte[]> cached = detail.flatMap(pd -> pd.printer().getSnapshotBytes());
+        if (cached.isPresent()) {
+            return cached;
+        }
+        // X1C/X1E/H2D don't push raw JPEGs over the port-6000 mechanism that populates the above (see
+        // BambuPrinterStream's warning) - fall back to grabbing a frame via ffmpeg instead (RtspSnapshotService
+        // picks the internal mediamtx relay vs. a direct printer connection - see its class Javadoc for why
+        // that routing matters), unless remote view is disabled for this printer entirely.
+        return detail.filter(pd -> config.remoteView() && pd.config().stream().enabled())
+                .flatMap(pd -> rtspSnapshotService.grabFrame(pd.id(), pd.name(), pd.config()));
+    }
+
+    /**
+     * Builds a short status-context string (active HMS alerts + any legacy printer error code) to feed the
+     * AI prompt as a hint, e.g. so a nozzle-clog HMS alert nudges the failure check to weight what it sees
+     * accordingly. Empty when the printer has no active issues.
+     */
+    private Optional<String> buildContext(final BambuPrinter printer) {
+        final List<String> issues = new ArrayList<>(printer.getActiveHmsErrors());
+        if (printer.getPrintError() != 0) {
+            BambuErrors.getPrinterError(printer.getPrintError())
+                    .filter(s -> !s.isBlank())
+                    .ifPresent(issues::add);
+        }
+        return issues.isEmpty() ? Optional.empty() : Optional.of(String.join("; ", issues));
     }
 
     private static String truncate(final String s, final int max) {

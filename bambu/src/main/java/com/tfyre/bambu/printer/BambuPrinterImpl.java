@@ -74,6 +74,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private Endpoint endpoint;
     private ProducerTemplate producerTemplate;
     private int printerError;
+    private List<String> activeHmsErrors = List.of();
     private int totalLayerNum;
     private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.IDLE;
     private PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
@@ -96,6 +97,18 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         if (print.hasPrintError()) {
             printerError = print.getPrintError();
         }
+        // Mirrors the dashboard's HMS badge filter: severity 1 (fatal) or 2 (serious) only. Recomputed from
+        // this message's hms list (not sticky) - matches the existing, already-working badge behaviour.
+        activeHmsErrors = print.getHmsList().stream()
+                .filter(h -> {
+                    final int severity = (int) ((h.getCode() >> 16) & 0xFFFFL);
+                    return severity <= 2 && severity > 0;
+                })
+                .map(h -> BambuErrors.getPrinterError((int) h.getAttr())
+                        .filter(s -> !s.isBlank())
+                        .orElse("HMS 0x%08X".formatted(h.getAttr())))
+                .distinct()
+                .toList();
         if (print.hasTotalLayerNum()) {
             totalLayerNum = print.getTotalLayerNum();
         }
@@ -203,6 +216,11 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     public void setFullStatus(final BambuPrinter.Message fullStatus) {
         setStatus(fullStatus);
         this.fullStatus = Optional.of(fullStatus);
+    }
+
+    @Override
+    public List<String> getActiveHmsErrors() {
+        return activeHmsErrors;
     }
 
     @Override

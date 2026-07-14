@@ -114,14 +114,24 @@ public class PrintQueueService {
         save();
     }
 
-    public synchronized void remove(final String printer, final int index) {
+    /**
+     * Removes the given entry (matched by identity, so safe against the queue having shifted since the UI
+     * rendered it - a render-time index could silently delete a different job). No-op if the entry is no
+     * longer queued (e.g. already started or removed elsewhere).
+     */
+    public synchronized void removeEntry(final String printer, final QueueEntry entry) {
         final List<QueueEntry> queue = data.get(printer);
-        if (queue == null || index < 0 || index >= queue.size()) {
+        if (queue == null) {
             return;
         }
-        queue.remove(index);
-        dirty = true;
-        save();
+        for (int i = 0; i < queue.size(); i++) {
+            if (queue.get(i) == entry) {
+                queue.remove(i);
+                dirty = true;
+                save();
+                return;
+            }
+        }
     }
 
     private synchronized void removeFirst(final String printer, final QueueEntry entry) {

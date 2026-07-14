@@ -109,8 +109,10 @@ public class OllamaService {
      * @param imageJpeg      raw JPEG bytes
      * @param prompt         the question to ask the model
      * @param positiveKeyword the word that, when found at the start of the response, means positive=true
+     * @param context        optional printer status context (e.g. active HMS alerts) to prepend to the
+     *                       prompt as a hint - see {@link #withContext(String, Optional)}
      */
-    private Optional<AiResult> analyze(final byte[] imageJpeg, final String prompt, final String positiveKeyword) {
+    private Optional<AiResult> analyze(final byte[] imageJpeg, final String prompt, final String positiveKeyword, final Optional<String> context) {
         final Optional<String> urlOpt = config.ollama().url();
         if (urlOpt.isEmpty()) {
             return Optional.empty();
@@ -119,7 +121,7 @@ public class OllamaService {
             final String base64 = Base64.getEncoder().encodeToString(imageJpeg);
             final Map<String, Object> body = Map.of(
                     "model", config.ollama().model(),
-                    "prompt", prompt,
+                    "prompt", withContext(prompt, context),
                     "images", List.of(base64),
                     "stream", false
             );
@@ -148,6 +150,20 @@ public class OllamaService {
             Log.errorf(ex, "OllamaService: analyze failed: %s", ex.getMessage());
             return Optional.empty();
         }
+    }
+
+    /**
+     * Prepends printer status context (e.g. active HMS alerts, a printer error code) to a prompt as a hint,
+     * when present. Phrased so the model treats it as a clue to correlate with the image rather than an
+     * instruction to override what it actually sees - a stale or unrelated HMS code (e.g. an AMS calibration
+     * reminder) shouldn't force a false-positive failure/poor-bed-clear result.
+     */
+    private static String withContext(final String prompt, final Optional<String> context) {
+        return context.filter(c -> !c.isBlank())
+                .map(c -> "Context: the printer's control board is currently reporting: " + c + ". "
+                        + "This may or may not be visible in the image or relevant to this specific question - "
+                        + "use it only as a hint, and base your answer primarily on what you actually observe.\n\n" + prompt)
+                .orElse(prompt);
     }
 
     /**
@@ -200,23 +216,29 @@ public class OllamaService {
 
     /**
      * Checks whether the print bed is clear. positive=true means the bed IS clear.
+     *
+     * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
-    public Optional<AiResult> checkBedClear(final byte[] imageJpeg) {
-        return analyze(imageJpeg, BED_CLEAR_PROMPT, "YES");
+    public Optional<AiResult> checkBedClear(final byte[] imageJpeg, final Optional<String> context) {
+        return analyze(imageJpeg, BED_CLEAR_PROMPT, "YES", context);
     }
 
     /**
      * Checks whether a print is failing (spaghetti, detached layers, blobs). positive=true means a failure IS detected.
+     *
+     * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
-    public Optional<AiResult> checkFailure(final byte[] imageJpeg) {
-        return analyze(imageJpeg, FAILURE_PROMPT, "YES");
+    public Optional<AiResult> checkFailure(final byte[] imageJpeg, final Optional<String> context) {
+        return analyze(imageJpeg, FAILURE_PROMPT, "YES", context);
     }
 
     /**
      * Checks first-layer quality. positive=true means the first layer looks GOOD.
+     *
+     * @param context optional printer status context (e.g. active HMS alerts) - see {@link #withContext}
      */
-    public Optional<AiResult> checkFirstLayer(final byte[] imageJpeg) {
-        return analyze(imageJpeg, FIRST_LAYER_PROMPT, "GOOD");
+    public Optional<AiResult> checkFirstLayer(final byte[] imageJpeg, final Optional<String> context) {
+        return analyze(imageJpeg, FIRST_LAYER_PROMPT, "GOOD", context);
     }
 
 }

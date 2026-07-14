@@ -207,8 +207,11 @@ bambu.batch-print.library=bambu-library
 
 ### Print queue
 - In Batch Print, select printers (they may be busy - only filament mapping is required) and click **Queue**. The job stores file, plate, options, and per-printer AMS mapping in `bambu-queue.json`.
-- When a printer is idle with queued jobs, its dashboard card shows **"Start Next (N queued): file"**. Clicking asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing ever auto-starts.
-- The queue icon in the card toolbar opens the queue dialog (view/remove entries).
+- When a printer is idle (not printing/paused/etc.) with queued jobs, its dashboard card shows a **"Start Next (N queued): file"** button. This button is deliberately hidden while the printer is busy - there's nothing to start until the current job finishes, so don't be alarmed if you queue jobs and don't see a Start button right away; it appears once the printer goes idle. Clicking it asks *"Is the bed clear?"* (backed by the AI bed-clear check when configured - see [AI Print Monitoring](#ai-print-monitoring)) then uploads from the library (skipped when already on SD) and starts the print. Nothing ever auto-starts.
+- The queue icon in the card toolbar opens a per-printer queue dialog (view/remove entries) - or see **Print Queue** below for all printers at once.
+
+### Print Queue page
+The **Print Queue** page (`/print-queue`, sidebar) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, and the same AI-gated **Start Next** button as the dashboard card.
 
 ```properties
 bambu.queue-file=bambu-queue.json
@@ -256,6 +259,8 @@ The **AI Settings** page (`/ai-settings`, sidebar). Uses a self-hosted [Ollama](
 - **First-layer quality check**: fires once, a configurable delay after a print starts.
 - **Bed-clear check**: gates the dashboard's "Start Next" queue action - it asks the AI to confirm the bed looks clear before letting the next queued job start (in addition to the "Is the bed clear?" prompt).
 
+Every check is **context-aware**: if the printer currently has an active HMS alert (e.g. a nozzle clog) or a legacy print-error code, that's passed to the model as a hint alongside the image, so a check can correlate what it sees with what the printer's own firmware is already reporting. It's framed as a hint, not an instruction - a stale or unrelated alert (e.g. an AMS calibration reminder) won't force a false positive on its own.
+
 Results show as a status chip on each dashboard card (with an animated "checking" dot) and in a table on the AI Settings page, which also has a runtime on/off toggle (no restart needed) and a "Check Now" button per printer.
 
 ```properties
@@ -267,6 +272,36 @@ bambu.ollama.failure-check-interval=5m
 bambu.ollama.first-layer-delay=8m
 bambu.ollama.timeout=60s
 ```
+
+### Snapshots on X1C / X1E / H2D
+
+P1S/A1/A1mini/P1P push raw JPEG frames over the port-6000 stream the app already uses for camera snapshots, so AI checks work with no extra setup. **X1C, X1E, and H2D don't push that stream** - their firmware only exposes the camera over RTSPS on port 322 - so on those models the app instead grabs a single frame on demand using **ffmpeg** (frames are cached a few seconds so back-to-back checks don't re-grab). This needs an `ffmpeg` binary reachable by the `bambuweb` process itself:
+
+- **Bare metal / systemd**: install ffmpeg normally (`apt install ffmpeg`, `choco install ffmpeg`, ...) and make sure it's on `PATH`.
+- **Docker**: the `bambuweb` service currently runs the stock `azul/zulu-openjdk:21-latest` image, which doesn't include ffmpeg. Build a small custom image on top of it, e.g.
+  ```dockerfile
+  FROM azul/zulu-openjdk:21-latest
+  RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+  ```
+  then point `bambuweb` at it (`build: .` instead of `image: azul/zulu-openjdk:21-latest` in your compose file).
+
+```properties
+# Only needed if ffmpeg isn't already on PATH
+bambu.ffmpeg-path=/usr/bin/ffmpeg
+```
+
+**Where the frame actually comes from matters.** Bambu's camera firmware only accepts one RTSPS client at a time. If you're using `stream.live-view=true` for a printer (the usual setup for X1C/X1E/H2D, so the dashboard camera view works at all via `docker/bambu-liveview`'s WHEP/HLS pipeline), a persistent ffmpeg bridge container already holds that printer's single RTSPS connection permanently. Connecting a second time straight to the printer for an AI-check snapshot will either fail outright or **knock the existing live view offline** - this actually happened during development, not just a theoretical risk.
+
+To avoid that, set `bambu.mediamtx-rtsp-url` to your mediamtx instance's internal RTSP address - AI checks then pull the frame from the same already-open relay instead of connecting to the printer again:
+
+```properties
+# For the shipped docker/bambu-liveview setup, this is the mediamtx service's RTSP port
+bambu.mediamtx-rtsp-url=rtsp://mediamtx:8554
+```
+
+With this set, a printer with `stream.live-view=true` gets its AI-check frames from `<mediamtx-rtsp-url>/<printer-key>` (the same path its "liveview" bridge container publishes to, e.g. `rtsp://mediamtx:8554/printer5` for a printer configured as `bambu.printers.printer5.*`) - safe to pull from repeatedly, no effect on the printer or the live view. Leave `bambu.mediamtx-rtsp-url` unset only if a printer has no live-view bridge already connected to it (then a direct RTSPS connection is safe, since nothing else is using it).
+
+Without ffmpeg reachable, AI checks on X1C/X1E/H2D printers keep showing "no snapshot available yet" (a warning is logged once per printer, not spammed on every check) - everything else in the app is unaffected.
 
 ## Notifications
 
@@ -407,6 +442,8 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.ollama.failure-check-interval` | `5m` | How often actively-printing printers are checked |
 | `bambu.ollama.first-layer-delay` | `8m` | Delay before the first-layer quality check |
 | `bambu.ollama.timeout` | `60s` | Per-request Ollama timeout |
+| `bambu.ffmpeg-path` | `ffmpeg` | ffmpeg binary, used to grab AI-check snapshots on X1C/X1E/H2D |
+| `bambu.mediamtx-rtsp-url` | - | Internal mediamtx RTSP relay for AI-check snapshots on live-view printers (avoids conflicting with the live-view bridge's own RTSPS connection) |
 | `bambu.etsy.client-id` / `shared-secret` | - | Etsy app credentials |
 | `bambu.etsy.shop-id` | - | Numeric Etsy shop ID |
 | `bambu.etsy.redirect-uri` | - | OAuth callback URL |

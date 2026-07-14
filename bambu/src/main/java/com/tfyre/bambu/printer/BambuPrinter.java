@@ -71,6 +71,14 @@ public interface BambuPrinter {
      */
     Optional<byte[]> getSnapshotBytes();
 
+    /**
+     * Human-readable descriptions of currently active, serious HMS (Health Management System) alerts -
+     * e.g. "Nozzle clog detected". Empty when the printer has none. Recomputed from whatever the most
+     * recent status message reported (mirrors the dashboard's HMS badge), not sticky across messages
+     * that omit the field.
+     */
+    List<String> getActiveHmsErrors();
+
     void commandFilamentLoad(final int amsTrayId);
 
     void commandFilamentUnload();

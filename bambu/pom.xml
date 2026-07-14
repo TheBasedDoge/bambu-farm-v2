@@ -120,10 +120,38 @@
                             </execution>
                         </executions>
                     </plugin>
+                    <plugin>
+                        <!--
+                            Quarkus's uber-jar output is named ${quarkus.package.output-name}-runner.jar
+                            (bambu-web-runner.jar, set below) - this copies it to a plain bambu-web.jar right
+                            next to it, so the file you copy into your deployment folder (which docker-compose
+                            mounts as ./bambu-web.jar) never needs to be renamed by hand.
+                        -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>copy-deployable-jar</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <copy file="${project.build.directory}/bambu-web-runner.jar"
+                                              tofile="${project.build.directory}/bambu-web.jar"
+                                              overwrite="true" />
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                 </plugins>
             </build>
             <properties>
                 <quarkus.package.jar.type>uber-jar</quarkus.package.jar.type>
+                <quarkus.package.output-name>bambu-web</quarkus.package.output-name>
             </properties>
         </profile>
         <profile>

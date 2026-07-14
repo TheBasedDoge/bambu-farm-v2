@@ -37,6 +37,30 @@ public interface BambuConfig {
     @WithDefault("true")
     boolean remoteView();
 
+    /**
+     * Path to the ffmpeg binary, used by {@link com.tfyre.bambu.printer.RtspSnapshotService} to grab AI-check
+     * snapshots directly from a printer's RTSPS camera stream on models (X1C, X1E, H2D) that don't push raw
+     * JPEGs over the usual port-6000 mechanism. Defaults to relying on PATH.
+     */
+    @WithDefault("ffmpeg")
+    String ffmpegPath();
+
+    /**
+     * Base RTSP URL of an internal camera relay (e.g. {@code rtsp://mediamtx:8554} for the shipped
+     * {@code docker/bambu-liveview} setup) that {@link com.tfyre.bambu.printer.RtspSnapshotService} should pull
+     * AI-check snapshots from - instead of connecting to the printer's RTSPS port directly - for any printer
+     * with {@code stream.live-view=true} (X1C/X1E/H2D). The printer's config key (the map key under
+     * {@code bambu.printers.*}) is appended as the path, e.g. {@code rtsp://mediamtx:8554/printer5}, which
+     * matches the {@code PRINTER_ID} used by that printer's "liveview" bridge container.
+     * <p>
+     * Bambu's camera firmware only tolerates one RTSPS client at a time. If a persistent bridge (like the
+     * "liveview" container) already holds that connection, a second direct connection from this app will
+     * either fail or - worse - can knock the existing one offline, breaking the live view. Setting this
+     * property routes AI-check snapshots through the same already-open relay instead. Leave unset to connect
+     * directly to the printer (fine when nothing else is already holding a connection to it).
+     */
+    Optional<String> mediamtxRtspUrl();
+
     @WithDefault("bambu-maintenance.json")
     String maintenanceFile();
 

@@ -925,10 +925,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             return;
         }
         for (int i = 0; i < queue.size(); i++) {
-            final int index = i;
             final PrintQueueService.QueueEntry entry = queue.get(i);
             final Button remove = new Button(new Icon(VaadinIcon.TRASH), l -> {
-                queueService.remove(printer.getName(), index);
+                queueService.removeEntry(printer.getName(), entry);
                 reloadQueue(list);
             });
             remove.setTooltipText("Remove from queue");
@@ -1255,6 +1254,13 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             list.add(buildAms());
             list.add(buildProgressBar());
             list.add(progressBar);
+            if (isAdmin) {
+                // Wide action buttons pinned to the bottom of the card (see .print-again in bambu.css) -
+                // built and kept up to date by buildPrintAgain()/updatePrintAgain() and
+                // buildStartNext()/updateStartNext(), but were never actually attached to the card here.
+                list.add(buildPrintAgain());
+                list.add(buildStartNext());
+            }
             return createContent(list);
         } finally {
             built = true;
