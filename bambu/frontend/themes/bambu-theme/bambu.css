@@ -959,6 +959,39 @@ img:fullscreen {
     max-width: none;
 }
 
+/* Automation overview: responsive grid of stage cards */
+.automation-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: var(--lumo-space-l);
+    width: 100%;
+    align-items: start;
+}
+
+.automation-grid .automation-full {
+    grid-column: 1 / -1;
+}
+
+.automation-grid .ai-settings-section {
+    height: 100%;
+    box-sizing: border-box;
+}
+
+/* Roomier, larger content rows inside the stage cards */
+.automation-line {
+    padding: 4px 0;
+    font-size: 1.05em;
+    line-height: 1.6;
+}
+
+/* The big pipeline toggle buttons (auto-queue is the headline control) */
+.automation-toggle {
+    font-size: 1.1em;
+    font-weight: 600;
+    padding: 0.4em 1.2em;
+    cursor: pointer;
+}
+
 .ai-settings-section {
     padding: var(--lumo-space-m);
     background-color: var(--lumo-contrast-5pct);

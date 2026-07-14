@@ -290,7 +290,10 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
     }
 
     private boolean hasError(final BambuPrinter printer) {
-        return printer.getPrintError() != 0 || printer.getGCodeState() == BambuConst.GCodeState.FAILED;
+        // FAILED alone is NOT an error condition: it just means the last print was cancelled/failed, and the
+        // state only clears when the next print starts - the printer is fully usable (and auto-start treats it
+        // as ready). Only an active non-zero print-error code counts as a real error.
+        return printer.getPrintError() != 0;
     }
 
     private int statusRank(final BambuPrinter printer) {

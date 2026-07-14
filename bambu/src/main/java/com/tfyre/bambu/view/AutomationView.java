@@ -11,6 +11,7 @@ import com.tfyre.bambu.printer.EbayOAuthService;
 import com.tfyre.bambu.printer.EbayOrderPollingService;
 import com.tfyre.bambu.printer.EtsyOAuthService;
 import com.tfyre.bambu.printer.EtsyOrderPollingService;
+import com.tfyre.bambu.printer.OllamaService;
 import com.tfyre.bambu.printer.OrderTrackingService;
 import com.tfyre.bambu.printer.PrintAiService;
 import com.tfyre.bambu.printer.PrintHistoryService;
@@ -19,7 +20,7 @@ import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.UI;
-import com.vaadin.flow.component.checkbox.Checkbox;
+import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.html.Anchor;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.html.H3;
@@ -70,6 +71,8 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     PrintQueueService queueService;
     @Inject
     PrintAiService aiService;
+    @Inject
+    OllamaService ollama;
     @Inject
     AutoStartService autoStartService;
     @Inject
@@ -126,7 +129,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         tabContent.setWidthFull();
         add(tabContent);
 
-        overview.getStyle().set("display", "flex").set("flex-direction", "column").set("gap", "var(--lumo-space-l)");
+        overview.addClassName("automation-grid");
         overviewKey = "";
         showTab(tabs.getSelectedTab());
 
@@ -174,7 +177,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     private void refreshOverview() {
         final List<Component> sections = new ArrayList<>();
         final StringBuilder key = new StringBuilder();
-        sections.add(buildSummaryStrip(key));
+        sections.add(buildControlsSection(key));
         sections.add(buildOrdersSection(key));
         sections.add(buildQueueSection(key));
         sections.add(buildPrintingSection(key));
@@ -187,7 +190,8 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         sections.forEach(overview::add);
     }
 
-    private Div buildSummaryStrip(final StringBuilder key) {
+    /** Full-width card at the top: the big pipeline switches plus the at-a-glance chips. */
+    private Div buildControlsSection(final StringBuilder key) {
         final List<BambuPrinters.PrinterDetail> details = sortedPrinters();
         final int openEtsy = etsyPolling.getReceipts().size();
         final int openEbay = ebayPolling.getOrders().size();
@@ -199,22 +203,48 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         final long printing = details.stream().filter(d -> d.printer().getGCodeState().isPrinting()).count();
         final long autoStartOn = details.stream().filter(d -> autoStartService.isEnabled(d.name())).count();
         final boolean aq = autoQueueService.isEnabled();
+        final boolean aiConfigured = ollama.isEnabled();
         final boolean ai = aiService.isEnabled();
         key.append(openEtsy).append('|').append(openEbay).append('|').append(unqueued).append('|')
                 .append(queuedJobs).append('|').append(printing).append('|').append(autoStartOn).append('|')
                 .append(aq).append('|').append(ai).append('§');
 
         final Div strip = section();
+        strip.addClassName("automation-full");
+
+        // The headline controls - big, obvious, one click
+        final Div controls = flexRow();
+        final Button aqBtn = bigToggle("Auto-Queue", aq,
+                aq ? "New mapped orders queue themselves to filament-matching printers. Click to turn OFF."
+                        : "New orders wait for a manual Queue Print. Click to turn ON.");
+        aqBtn.addClickListener(e -> {
+            autoQueueService.setEnabled(!autoQueueService.isEnabled());
+            showNotification("Auto-queue " + (autoQueueService.isEnabled() ? "enabled" : "disabled"));
+            forceRefresh();
+        });
+        final Button aiBtn = bigToggle("AI Checks", ai,
+                !aiConfigured ? "Set bambu.ollama.url to enable AI checks"
+                        : ai ? "Failure/first-layer/bed-clear checks are running. Click to suspend."
+                                : "All AI checks (and auto-start's bed gate) are suspended. Click to resume.");
+        aiBtn.setEnabled(aiConfigured);
+        aiBtn.addClickListener(e -> {
+            aiService.setRuntimeEnabled(!aiService.isRuntimeEnabled());
+            showNotification("AI checks " + (aiService.isRuntimeEnabled() ? "enabled" : "disabled"));
+            forceRefresh();
+        });
+        final Button asBtn = bigToggle("Auto-Start %d/%d".formatted(autoStartOn, details.size()), autoStartOn > 0,
+                "Per-printer setting - click to manage on the Print Queue tab");
+        asBtn.addClickListener(e -> tabs.setSelectedTab(queueTab));
+        controls.add(aqBtn, aiBtn, asBtn);
+        strip.add(controls);
+
         final Div row = flexRow();
+        row.getStyle().set("margin-top", "10px");
         row.add(chip("%d open order%s%s".formatted(openEtsy + openEbay, openEtsy + openEbay == 1 ? "" : "s",
                 unqueued > 0 ? " (%d not queued)".formatted(unqueued) : ""),
                 unqueued > 0 ? "var(--lumo-warning-color, #e8a33d)" : "var(--lumo-success-color)"));
         row.add(chip("%d job%s queued".formatted(queuedJobs, queuedJobs == 1 ? "" : "s"), "var(--lumo-primary-color)"));
         row.add(chip("%d printing".formatted(printing), "var(--lumo-primary-color)"));
-        row.add(chip("Auto-queue %s".formatted(aq ? "ON" : "OFF"), aq ? "var(--lumo-success-color)" : "var(--lumo-contrast-40pct)"));
-        row.add(chip("Auto-start on %d/%d printers".formatted(autoStartOn, details.size()),
-                autoStartOn > 0 ? "var(--lumo-success-color)" : "var(--lumo-contrast-40pct)"));
-        row.add(chip("AI checks %s".formatted(ai ? "ON" : "OFF"), ai ? "var(--lumo-success-color)" : "var(--lumo-error-color)"));
         strip.add(row);
 
         final boolean lightsOut = aq && ai && autoStartOn == details.size() && !details.isEmpty();
@@ -224,9 +254,28 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                         .formatted(aq ? "" : " (OFF - manual Queue Print)",
                                 autoStartOn == 0 ? " (OFF everywhere - manual Start Next)" : ""));
         pipeline.getStyle().setColor(lightsOut ? "var(--lumo-success-text-color)" : "var(--lumo-secondary-text-color)");
-        strip.add(new Div(pipeline));
+        final Div pipelineLine = new Div(pipeline);
+        pipelineLine.addClassName("automation-line");
+        strip.add(pipelineLine);
         key.append(lightsOut).append('§');
         return strip;
+    }
+
+    private Button bigToggle(final String label, final boolean on, final String tooltip) {
+        final Button b = new Button("%s: %s".formatted(label, on ? "ON" : "OFF"));
+        b.addClassName("automation-toggle");
+        b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_LARGE);
+        if (on) {
+            b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_PRIMARY,
+                    com.vaadin.flow.component.button.ButtonVariant.LUMO_SUCCESS);
+        }
+        b.setTooltipText(tooltip);
+        return b;
+    }
+
+    private void forceRefresh() {
+        overviewKey = "";
+        refreshOverview();
     }
 
     private Div buildOrdersSection(final StringBuilder key) {
@@ -240,16 +289,6 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                 (int) ebayPolling.getOrders().stream().filter(o -> tracking.queuedAt("ebay", o.orderId()).isEmpty()).count(),
                 ebayPolling.getLastPolled(), ebayPolling.getLastError(), "ebay-orders", key));
 
-        final Checkbox aqToggle = new Checkbox("Auto-queue new orders (filament-aware printer selection)");
-        aqToggle.setValue(autoQueueService.isEnabled());
-        aqToggle.addValueChangeListener(e -> {
-            autoQueueService.setEnabled(Boolean.TRUE.equals(e.getValue()));
-            showNotification("Auto-queue " + (autoQueueService.isEnabled() ? "enabled" : "disabled"));
-            overviewKey = "";
-            refreshOverview();
-        });
-        sec.add(aqToggle);
-
         // Recently queued orders (either by auto-queue or manually), newest first
         final List<Map.Entry<String, Instant>> recent = new ArrayList<>();
         tracking.queuedOrders("etsy").forEach((id, at) -> recent.add(Map.entry("Etsy #" + id, at)));
@@ -259,7 +298,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             final Div list = new Div();
             list.add(secondary("Recently queued orders:"));
             recent.stream().limit(5).forEach(e -> {
-                list.add(new Div(new Span("✓ %s — queued %s (%s)".formatted(e.getKey(),
+                list.add(line(new Span("✓ %s — queued %s (%s)".formatted(e.getKey(),
                         TIME_FMT.format(e.getValue().atZone(ZoneId.systemDefault())), ago(e.getValue())))));
                 key.append(e.getKey()).append(e.getValue().getEpochSecond()).append('|');
             });
@@ -274,6 +313,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         key.append(name).append(connected).append(open).append(unqueued)
                 .append(lastPolled.map(Instant::getEpochSecond).orElse(0L)).append(lastError.orElse("")).append('|');
         final Div row = new Div();
+        row.addClassName("automation-line");
         final Span dot = new Span("● ");
         dot.getStyle().setColor(connected ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
         final Anchor link = new Anchor(route, name);
@@ -306,6 +346,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             key.append(name).append(state).append(size).append(next).append(auto).append('|');
 
             final Div row = new Div();
+            row.addClassName("automation-line");
             final Span n = new Span(name + "  ");
             n.getStyle().setFontWeight("bold");
             final Span st = new Span("● %s  ".formatted(state.getDescription()));
@@ -342,6 +383,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                 final String file = printer.getLastPrintFile().orElse("(unknown file)");
                 key.append(detail.name()).append(file).append(last.map(r -> r.description() + r.checkedAt()).orElse("")).append('|');
                 final Div row = new Div();
+                row.addClassName("automation-line");
                 final Span n = new Span(detail.name() + "  ");
                 n.getStyle().setFontWeight("bold");
                 row.add(n, new Span("printing %s  ".formatted(file)));
@@ -364,7 +406,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             sec.add(secondary("Recent AI flags:"));
             problems.forEach(r -> {
                 key.append(r.printer()).append(r.at().getEpochSecond()).append('|');
-                sec.add(new Div(new Span("⚠ %s · %s · %s — %s".formatted(
+                sec.add(line(new Span("⚠ %s · %s · %s — %s".formatted(
                         TIME_FMT.format(r.at().atZone(ZoneId.systemDefault())), r.printer(), r.checkType(),
                         truncate(r.description(), 120)))));
             });
@@ -391,7 +433,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                         ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
                 final long h = j.durationSeconds() / 3600;
                 final long m = j.durationSeconds() % 3600 / 60;
-                sec.add(new Div(result, new Span("  %s · %s · %dh %dm · %s".formatted(
+                sec.add(line(result, new Span("  %s · %s · %dh %dm · %s".formatted(
                         j.printer(), j.file(), h, m, TIME_FMT.format(j.ended())))));
             });
         }
@@ -413,6 +455,13 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     private static Div section() {
         final Div div = new Div();
         div.addClassName("ai-settings-section");
+        return div;
+    }
+
+    /** A content row with the roomier .automation-line styling. */
+    private static Div line(final Component... components) {
+        final Div div = new Div(components);
+        div.addClassName("automation-line");
         return div;
     }
 
