@@ -93,6 +93,12 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
     private final Map<Component, BambuPrinter> cardMap = new LinkedHashMap<>();
     private List<BambuPrinter> overviewPrinters = List.of();
     private String overviewText = "";
+    /**
+     * Cached on attach (request thread). MUST NOT be checked per-tick via SecurityUtils inside ui.access():
+     * VaadinServletRequest.getCurrent() is null on the scheduler thread, so the check silently returns false
+     * there - which made the Etsy/eBay order chips vanish on the first background refresh.
+     */
+    private boolean isAdmin;
     /** The currently active sort mode — re-applied every tick for live sorts (Status / Next Available). */
     private String currentSort = SORT_CUSTOM;
 
@@ -100,6 +106,7 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
     protected void onAttach(final AttachEvent attachEvent) {
         super.onAttach(attachEvent);
         final UI ui = attachEvent.getUI();
+        isAdmin = SecurityUtils.userHasAccess(SystemRoles.ROLE_ADMIN);
         overviewPrinters = printers.getPrinters().stream()
                 .sorted(Comparator.comparing(BambuPrinter::getName))
                 .toList();
@@ -419,10 +426,9 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
                     compactTime(minutes), HHMM.format(LocalTime.now().plusMinutes(minutes)));
         }
         // Open marketplace orders (already excludes dismissed ones) - a quick "anything outstanding?" glance.
-        // Admin-only, matching the Sales Orders pages the chips link to.
-        final boolean ordersVisible = SecurityUtils.userHasAccess(SystemRoles.ROLE_ADMIN);
-        final int etsyOrders = ordersVisible ? etsyPolling.getReceipts().size() : 0;
-        final int ebayOrders = ordersVisible ? ebayPolling.getOrders().size() : 0;
+        // Admin-only, matching the Sales Orders pages the chips link to. isAdmin is cached on attach - see field doc.
+        final int etsyOrders = isAdmin ? etsyPolling.getReceipts().size() : 0;
+        final int ebayOrders = isAdmin ? ebayPolling.getOrders().size() : 0;
         final String key = "%d|%d|%d|%s|%s|%d|%d".formatted(printing, available, offline, errors, nextText, etsyOrders, ebayOrders);
         if (overviewText.equals(key)) {
             return;
