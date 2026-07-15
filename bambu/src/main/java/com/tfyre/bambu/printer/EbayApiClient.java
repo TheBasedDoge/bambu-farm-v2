@@ -89,7 +89,7 @@ public class EbayApiClient {
     // -------------------------------------------------------------------------
 
     /** An active listing, for the Mappings tab. {@link #listingKey()} matches {@link LineItem#listingKey()}. */
-    public record EbayListing(String itemId, String sku, String title, int quantity) {
+    public record EbayListing(String itemId, String sku, String title, int quantity, String imageUrl) {
 
         /** Stable identity for mapping: SKU if present, else the item id - same rule as order line items. */
         public String listingKey() {
@@ -166,7 +166,8 @@ public class EbayApiClient {
                 final int quantity = Optional.of(childText(item, "QuantityAvailable")).filter(s -> !s.isBlank())
                         .or(() -> Optional.of(childText(item, "Quantity")).filter(s -> !s.isBlank()))
                         .map(Integer::parseInt).orElse(0);
-                result.add(new EbayListing(itemId, childText(item, "SKU"), childText(item, "Title"), quantity));
+                result.add(new EbayListing(itemId, childText(item, "SKU"), childText(item, "Title"), quantity,
+                        childText(item, "GalleryURL")));
             }
             page++;
         }

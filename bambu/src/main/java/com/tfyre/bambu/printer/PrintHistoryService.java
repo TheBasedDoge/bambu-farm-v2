@@ -28,11 +28,12 @@ public class PrintHistoryService {
     private static final int MAX_JOBS = 1_000;
 
     /**
-     * @param trigger how the print was started: "auto-start" (AI-gated auto-start), "queue" (manual Start Next
-     *                from the queue), or {@code null} for direct/untracked starts (SD card, Print Again, slicer,
-     *                and history entries recorded before this field existed)
+     * @param trigger  how the print was started: "auto-start" (AI-gated auto-start), "queue" (manual Start Next
+     *                 from the queue), or {@code null} for direct/untracked starts (SD card, Print Again, slicer,
+     *                 and history entries recorded before this field existed)
+     * @param orderRef the marketplace order this print fulfills, or {@code null}
      */
-    public record PrintJob(String printer, String file, OffsetDateTime started, OffsetDateTime ended, long durationSeconds, String result, double grams, String trigger) {
+    public record PrintJob(String printer, String file, OffsetDateTime started, OffsetDateTime ended, long durationSeconds, String result, double grams, String trigger, OrderRef orderRef) {
 
     }
 
@@ -40,11 +41,11 @@ public class PrintHistoryService {
 
     }
 
-    private record RunningJob(String file, OffsetDateTime started, double grams, String trigger) {
+    private record RunningJob(String file, OffsetDateTime started, double grams, String trigger, OrderRef orderRef) {
 
     }
 
-    private record Pending(String file, double grams, OffsetDateTime expires, String trigger) {
+    private record Pending(String file, double grams, OffsetDateTime expires, String trigger, OrderRef orderRef) {
 
     }
 
@@ -56,6 +57,13 @@ public class PrintHistoryService {
     ObjectMapper mapper;
     @Inject
     NotificationService notificationService;
+    @Inject
+    OrderTrackingService orderTracking;
+    @Inject
+    PrintAiService aiService;
+    /** Lazy to avoid an eager circular reference (PrintQueueService injects this service). */
+    @Inject
+    jakarta.enterprise.inject.Instance<PrintQueueService> queueServiceInstance;
 
     private final List<PrintJob> jobs = new ArrayList<>();
     private final Map<String, BambuConst.GCodeState> lastState = new HashMap<>();
@@ -67,12 +75,16 @@ public class PrintHistoryService {
      * Registers the expected filament weight for the next print started on a printer (e.g. from batch print / queue, where the plate weight is known).
      */
     public synchronized void registerExpectedWeight(final String printer, final String file, final double grams) {
-        registerExpectedWeight(printer, file, grams, null);
+        registerExpectedWeight(printer, file, grams, null, null);
     }
 
-    /** Variant that also records HOW the upcoming print was started ("auto-start" / "queue") for history filtering. */
-    public synchronized void registerExpectedWeight(final String printer, final String file, final double grams, final String trigger) {
-        pending.put(printer, new Pending(file, grams, OffsetDateTime.now().plusMinutes(15), trigger));
+    /**
+     * Variant that also records HOW the upcoming print was started ("auto-start" / "queue") and which
+     * marketplace order it fulfills, for history filtering and ready-to-ship tracking.
+     */
+    public synchronized void registerExpectedWeight(final String printer, final String file, final double grams,
+            final String trigger, final OrderRef orderRef) {
+        pending.put(printer, new Pending(file, grams, OffsetDateTime.now().plusMinutes(15), trigger, orderRef));
     }
 
     private Pending consumePending(final String printer) {
@@ -130,14 +142,14 @@ public class PrintHistoryService {
                 if (previous == null && isInJob(current) && !running.containsKey(name)) {
                     final Pending p = consumePending(name);
                     running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
-                            p == null ? 0 : p.grams(), p == null ? null : p.trigger()));
+                            p == null ? 0 : p.grams(), p == null ? null : p.trigger(), p == null ? null : p.orderRef()));
                 }
                 return;
             }
             if (!isInJob(previous) && isInJob(current)) {
                 final Pending p = consumePending(name);
                 running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
-                        p == null ? 0 : p.grams(), p == null ? null : p.trigger()));
+                        p == null ? 0 : p.grams(), p == null ? null : p.trigger(), p == null ? null : p.orderRef()));
                 return;
             }
             if (isInJob(previous) && !isInJob(current)) {
@@ -160,7 +172,7 @@ public class PrintHistoryService {
                 final String file = job.file().isEmpty() ? printer.getLastPrintFile().orElse("") : job.file();
                 final OffsetDateTime now = OffsetDateTime.now();
                 addJob(new PrintJob(name, file, job.started(), now,
-                        Duration.between(job.started(), now).toSeconds(), result, job.grams(), job.trigger()));
+                        Duration.between(job.started(), now).toSeconds(), result, job.grams(), job.trigger(), job.orderRef()));
             }
         });
         save(false);
@@ -183,8 +195,21 @@ public class PrintHistoryService {
         };
         final long h = job.durationSeconds() / 3600;
         final long m = job.durationSeconds() % 3600 / 60;
+        // Attach the current camera frame so Discord/ntfy alerts show the finished (or failed) bed
         notificationService.notifyEvent(event, job.printer(),
-                "Print %s: %s (%dh %dm)".formatted(job.result().toLowerCase(), job.file(), h, m));
+                "Print %s: %s (%dh %dm)".formatted(job.result().toLowerCase(), job.file(), h, m),
+                aiService.getSnapshot(job.printer()).orElse(null));
+
+        // Ready-to-ship: count this finish towards its order; fires exactly once per completed order
+        if (job.orderRef() != null && "Finished".equals(job.result())
+                && orderTracking.recordJobPrinted(job.orderRef().market(), job.orderRef().orderId())) {
+            Log.infof("PrintHistoryService: %s fully printed", job.orderRef().label());
+            notificationService.notifyEvent("order_printed", job.orderRef().market(),
+                    "%s is fully printed - ready to ship".formatted(job.orderRef().label()));
+        }
+
+        // Give the queue a chance to auto-requeue a failed queue-started job (opt-in, single retry)
+        queueServiceInstance.get().onJobEnded(job);
     }
 
     @Shutdown

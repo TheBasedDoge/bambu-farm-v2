@@ -318,10 +318,10 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
                     showNotification("Mapping saved for listing %d".formatted(t.listingId()));
                 },
                 (parts, selectedPrinters) -> {
-                    final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, t.quantity(), selectedPrinters);
+                    final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, t.quantity(), selectedPrinters,
+                            new com.tfyre.bambu.printer.OrderRef("etsy", orderKey, "Etsy order #" + orderKey));
                     if (result.totalQueued() > 0) {
                         showNotification("Queued %d job(s) for listing %d".formatted(result.totalQueued(), t.listingId()));
-                        tracking.markQueued("etsy", orderKey);
                         queuedBadge.setTitle("Print jobs queued just now");
                         queuedBadge.setVisible(true);
                     }

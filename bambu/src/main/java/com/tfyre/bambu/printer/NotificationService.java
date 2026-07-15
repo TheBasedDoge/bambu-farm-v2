@@ -52,6 +52,9 @@ public class NotificationService {
     BambuPrinters printers;
     @Inject
     MaintenanceService maintenanceService;
+    /** Lazy to avoid an eager circular reference (PrintAiService injects this service). Used for error-alert photos. */
+    @Inject
+    jakarta.enterprise.inject.Instance<PrintAiService> aiServiceInstance;
 
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final Map<String, Integer> lastErrors = new HashMap<>();
@@ -255,8 +258,10 @@ public class NotificationService {
             if (previous == null || previous == error || error == 0) {
                 return;
             }
+            // Attach the camera frame so the Discord/ntfy alert shows what the printer looks like right now
             notifyEvent("error", printer.getName(), "Print error [%s]: %s".formatted(
-                    Integer.toHexString(error), BambuErrors.getPrinterError(error).orElse("Unknown")));
+                    Integer.toHexString(error), BambuErrors.getPrinterError(error).orElse("Unknown")),
+                    aiServiceInstance.get().getSnapshot(printer.getName()).orElse(null));
         });
     }
 

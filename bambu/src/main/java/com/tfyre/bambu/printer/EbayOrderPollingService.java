@@ -83,6 +83,7 @@ public class EbayOrderPollingService {
                                             li.listingKey(),
                                             "%dx %s".formatted(li.quantity(), li.title()),
                                             li.quantity(),
+                                            li.personalization().isPresent(),
                                             mappingService.find(li.listingKey(), li.variationAspects())
                                                     .map(EbayMappingService.MappingEntry::parts)
                                                     .orElse(java.util.List.of())))

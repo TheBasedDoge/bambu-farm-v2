@@ -84,13 +84,15 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     Instance<ProjectFile> projectFileInstance;
     @Inject
     OrderTrackingService tracking;
+    @Inject
+    com.tfyre.bambu.printer.AutoQueueService autoQueueService;
 
     /** One row in the Etsy listings table. */
-    public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden) {
+    public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden, String imageUrl) {
     }
 
     /** One row in the eBay listing-keys table. */
-    public record EbayRow(String listingKey, String title, String mappedState, boolean hidden) {
+    public record EbayRow(String listingKey, String title, String mappedState, boolean hidden, String imageUrl) {
     }
 
     /** Whether hidden (never-printed) listings are shown in the tables. */
@@ -190,6 +192,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         sec.add(bar);
 
         if (etsyGrid.getColumns().isEmpty()) {
+            etsyGrid.addComponentColumn(row -> thumbnail(row.imageUrl())).setHeader("").setAutoWidth(true).setFlexGrow(0);
             etsyGrid.addColumn(EtsyRow::title).setHeader("Listing").setFlexGrow(1);
             etsyGrid.addColumn(EtsyRow::listingId).setHeader("ID").setAutoWidth(true);
             etsyGrid.addColumn(EtsyRow::quantity).setHeader("Stock").setAutoWidth(true);
@@ -205,7 +208,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for listing %d".formatted(row.listingId()));
                             renderAll();
                         }));
-                return new Div(edit, hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
+                return new Div(edit, testButton(row.mappedState(),
+                        () -> etsyMapping.find(row.listingId(), List.of()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
+                        row.title()), hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             etsyGrid.setWidth("100%");
             etsyGrid.setAllRowsVisible(true);
@@ -220,7 +225,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         etsyGrid.setItems(etsyListings.stream()
                 .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(),
                         mappedState(saved, String.valueOf(l.listingId())),
-                        tracking.isListingHidden("etsy", String.valueOf(l.listingId()))))
+                        tracking.isListingHidden("etsy", String.valueOf(l.listingId())),
+                        l.imageUrl()))
                 .filter(r -> showHidden || !r.hidden())
                 .toList());
         etsyGrid.setVisible(!etsyListings.isEmpty());
@@ -272,6 +278,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 + "permission was added after your original connection."));
 
         if (ebayGrid.getColumns().isEmpty()) {
+            ebayGrid.addComponentColumn(row -> thumbnail(row.imageUrl())).setHeader("").setAutoWidth(true).setFlexGrow(0);
             ebayGrid.addColumn(EbayRow::listingKey).setHeader("SKU / item id").setAutoWidth(true);
             ebayGrid.addColumn(EbayRow::title).setHeader("Title").setFlexGrow(1);
             ebayGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
@@ -286,7 +293,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for %s".formatted(row.listingKey()));
                             renderAll();
                         }));
-                return new Div(edit, hideButton("ebay", row.listingKey(), row.hidden()));
+                return new Div(edit, testButton(row.mappedState(),
+                        () -> ebayMapping.find(row.listingKey(), List.of()).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
+                        row.listingKey()), hideButton("ebay", row.listingKey(), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             ebayGrid.setWidth("100%");
             ebayGrid.setAllRowsVisible(true);
@@ -298,9 +307,15 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
 
     private void renderEbay() {
         final Map<String, EbayMappingService.MappingEntry> saved = ebayMapping.entries();
-        // Known keys: fetched active listings first (best titles), then open orders, then bare mapped keys
+        // Known keys: fetched active listings first (best titles + images), then open orders, then bare mapped keys
         final Map<String, String> titles = new LinkedHashMap<>();
-        ebayListings.forEach(l -> titles.putIfAbsent(l.listingKey(), l.title()));
+        final Map<String, String> images = new LinkedHashMap<>();
+        ebayListings.forEach(l -> {
+            titles.putIfAbsent(l.listingKey(), l.title());
+            if (l.imageUrl() != null && !l.imageUrl().isBlank()) {
+                images.putIfAbsent(l.listingKey(), l.imageUrl());
+            }
+        });
         ebayPolling.getOrders().forEach(o -> o.lineItems().forEach(li -> {
             final String key = li.listingKey();
             if (key != null && !key.isBlank()) {
@@ -312,7 +327,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .forEach(k -> titles.putIfAbsent(k, ""));
         ebayGrid.setItems(titles.entrySet().stream()
                 .map(e -> new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey()),
-                        tracking.isListingHidden("ebay", e.getKey())))
+                        tracking.isListingHidden("ebay", e.getKey()), images.getOrDefault(e.getKey(), "")))
                 .filter(r -> showHidden || !r.hidden())
                 .sorted((a, b) -> a.listingKey().compareToIgnoreCase(b.listingKey()))
                 .toList());
@@ -419,6 +434,55 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             return "%d variation%s only".formatted(variations, variations == 1 ? "" : "s");
         }
         return "—";
+    }
+
+    /** 48px listing thumbnail, or an empty placeholder when the marketplace didn't provide an image. */
+    private static com.vaadin.flow.component.Component thumbnail(final String imageUrl) {
+        if (imageUrl == null || imageUrl.isBlank()) {
+            final Div empty = new Div();
+            empty.setWidth("48px");
+            return empty;
+        }
+        final com.vaadin.flow.component.html.Image img = new com.vaadin.flow.component.html.Image(imageUrl, "listing");
+        img.setWidth("48px");
+        img.setHeight("48px");
+        img.getStyle().set("object-fit", "cover").set("border-radius", "4px");
+        return img;
+    }
+
+    /** Flask button: dry-runs the mapping through auto-queue's printer/filament selection without queueing. */
+    private Button testButton(final String mappedState, final java.util.function.Supplier<List<MappingPart>> partsSupplier, final String title) {
+        final Button b = new Button(new Icon(VaadinIcon.FLASK));
+        b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        b.setTooltipText("Test: simulate auto-queueing 1 unit of this listing right now (nothing is queued)");
+        b.setEnabled(!"—".equals(mappedState));
+        b.addClickListener(e -> {
+            final Dialog dialog = new Dialog();
+            dialog.setHeaderTitle("Dry run: " + title);
+            dialog.setWidth("700px");
+            final VerticalLayout layout = new VerticalLayout();
+            layout.setPadding(false);
+            final List<com.tfyre.bambu.printer.AutoQueueService.DryRunLine> lines
+                    = autoQueueService.dryRun(partsSupplier.get(), 1);
+            final boolean allOk = lines.stream().allMatch(com.tfyre.bambu.printer.AutoQueueService.DryRunLine::ok);
+            final Span verdict = new Span(allOk
+                    ? "✓ This listing would auto-queue right now"
+                    : "✗ This listing would be SKIPPED right now");
+            verdict.getStyle().setFontWeight("bold")
+                    .setColor(allOk ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
+            layout.add(verdict);
+            lines.forEach(l -> {
+                final Span s = new Span("%s %s — %s".formatted(l.ok() ? "✓" : "✗", l.part(), l.outcome()));
+                s.getStyle().setColor(l.ok() ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
+                layout.add(s);
+            });
+            layout.add(new Span("Uses live printer state (filament loaded, queue depths) - results change as the farm does. "
+                    + "Auto-queue toggle state and personalization are not part of this check."));
+            dialog.add(layout);
+            dialog.getFooter().add(new Button("Close", ev -> dialog.close()));
+            dialog.open();
+        });
+        return b;
     }
 
     /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */

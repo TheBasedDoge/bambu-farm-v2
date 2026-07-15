@@ -47,9 +47,11 @@ public class AutoQueueService {
 
     /**
      * One order line item as the marketplace-agnostic input: listing key (Etsy listing id / eBay SKU or item
-     * id, used for the hidden-listing check), label for messages, ordered qty, mapped parts (empty = unmapped).
+     * id, used for the hidden-listing check), label for messages, ordered qty, whether the buyer supplied
+     * personalization text (custom items must never be auto-printed from the generic mapping), and the mapped
+     * parts (empty = unmapped).
      */
-    public record AutoQueueItem(String listingKey, String label, int quantity, List<MappingPart> parts) {
+    public record AutoQueueItem(String listingKey, String label, int quantity, boolean personalized, List<MappingPart> parts) {
     }
 
     @Inject
@@ -107,6 +109,17 @@ public class AutoQueueService {
         Log.infof("AutoQueueService: auto-queue %s", enabled ? "enabled" : "disabled");
     }
 
+    /** Whether failed queue-started prints are automatically requeued once (see PrintQueueService.onJobEnded). */
+    public boolean isAutoRequeueEnabled() {
+        return settings.getOrDefault("auto-requeue", Boolean.FALSE);
+    }
+
+    public void setAutoRequeueEnabled(final boolean enabled) {
+        settings.put("auto-requeue", enabled);
+        save();
+        Log.infof("AutoQueueService: auto-requeue %s", enabled ? "enabled" : "disabled");
+    }
+
     /**
      * Attempts to auto-queue one newly-seen order. Called by the polling services for orders whose IDs were
      * never seen before (so restarts and re-polls can't double-queue; the queued-marker is a second guard).
@@ -133,6 +146,11 @@ public class AutoQueueService {
         // ---- Pre-validate everything before queueing anything (all-or-nothing) ----
         final List<String> problems = new ArrayList<>();
         for (final AutoQueueItem item : relevant) {
+            if (item.personalized()) {
+                // A buyer-personalized item must never be auto-printed from the generic mapping
+                problems.add("'%s' has buyer personalization - needs manual review".formatted(item.label()));
+                continue;
+            }
             if (item.parts().isEmpty()) {
                 problems.add("'%s' is not mapped to a print job yet".formatted(item.label()));
                 continue;
@@ -160,6 +178,7 @@ public class AutoQueueService {
         }
 
         // ---- Queue: per copy, pick the best qualifying printer (ready+idle first, then shortest queue) ----
+        final OrderRef orderRef = new OrderRef(market, orderId, orderLabel);
         final Map<String, Integer> assignedThisRun = new HashMap<>();
         final Map<String, Integer> perPrinter = new LinkedHashMap<>();
         int total = 0;
@@ -180,7 +199,7 @@ public class AutoQueueService {
                                 "%s: auto-queue aborted mid-way - no eligible printer for %s".formatted(orderLabel, part.path()));
                         return;
                     }
-                    final Optional<String> error = queuer.queuePart(part, best.detail().name(), best.resolvedSlot());
+                    final Optional<String> error = queuer.queuePart(part, best.detail().name(), best.resolvedSlot(), orderRef);
                     if (error.isPresent()) {
                         notificationService.notifyEvent("auto_queue_skipped", market,
                                 "%s: auto-queue aborted - %s".formatted(orderLabel, error.get()));
@@ -194,12 +213,71 @@ public class AutoQueueService {
         }
 
         tracking.markQueued(market, orderId);
+        tracking.addExpectedJobs(market, orderId, total);
         final String distribution = perPrinter.entrySet().stream()
                 .map(e -> "%s×%d".formatted(e.getKey(), e.getValue()))
                 .collect(Collectors.joining(", "));
         Log.infof("AutoQueueService: %s auto-queued: %d job(s) → %s", orderLabel, total, distribution);
         notificationService.notifyEvent("auto_queue", market,
                 "%s auto-queued: %d job(s) → %s".formatted(orderLabel, total, distribution));
+    }
+
+    /** One line of a dry-run result: what would happen to a part if an order arrived right now. */
+    public record DryRunLine(String part, boolean ok, String outcome) {
+    }
+
+    /**
+     * Simulates auto-queueing {@code quantity} units of a mapping WITHOUT queueing anything - shows exactly
+     * which printers qualify per part (and the tray each would use) or why none do. Used by the Mappings
+     * tab's Test button so a mapping can be verified before a real order arrives.
+     */
+    public List<DryRunLine> dryRun(final List<MappingPart> parts, final int quantity) {
+        final List<DryRunLine> lines = new ArrayList<>();
+        if (parts.isEmpty()) {
+            lines.add(new DryRunLine("(no parts)", false, "Listing is not mapped yet"));
+            return lines;
+        }
+        final Map<String, Integer> assigned = new HashMap<>();
+        for (final MappingPart part : parts) {
+            final String label = "%s plate %d%s".formatted(part.path(), part.plateId(),
+                    part.filamentType() != null ? " (" + part.filamentType() + ")" : "");
+            if (part.source() == GcodeSource.LIBRARY
+                    && !Files.isRegularFile(Path.of(config.batchPrint().library()).resolve(part.path()))) {
+                lines.add(new DryRunLine(label, false, "File is not in the library"));
+                continue;
+            }
+            final List<Candidate> eligible = eligiblePrinters(part);
+            if (eligible.isEmpty()) {
+                lines.add(new DryRunLine(label, false, part.filamentType() != null
+                        ? "No printer currently has %s loaded%s".formatted(part.filamentType(),
+                                part.amsSlot() != null ? " in the mapped AMS slot" : "")
+                        : "No printers configured"));
+                continue;
+            }
+            // Simulate the per-copy assignment with current queue depths
+            final Map<String, Integer> distribution = new LinkedHashMap<>();
+            final Map<String, Integer> slotUsed = new LinkedHashMap<>();
+            final int copies = Math.max(1, quantity) * part.copiesPerUnit();
+            for (int i = 0; i < copies; i++) {
+                final Candidate best = eligible.stream()
+                        .min(Comparator
+                                .comparingInt((Candidate c) -> pendingCount(c, assigned) == 0 && c.ready() ? 0 : 1)
+                                .thenComparingInt(c -> pendingCount(c, assigned))
+                                .thenComparing(c -> c.detail().name(), String.CASE_INSENSITIVE_ORDER))
+                        .orElseThrow();
+                assigned.merge(best.detail().name(), 1, Integer::sum);
+                distribution.merge(best.detail().name(), 1, Integer::sum);
+                if (best.resolvedSlot() != null) {
+                    slotUsed.putIfAbsent(best.detail().name(), best.resolvedSlot());
+                }
+            }
+            final String dist = distribution.entrySet().stream()
+                    .map(e -> "%s×%d%s".formatted(e.getKey(), e.getValue(),
+                            slotUsed.containsKey(e.getKey()) ? " (tray %d)".formatted(slotUsed.get(e.getKey()) + 1) : ""))
+                    .collect(Collectors.joining(", "));
+            lines.add(new DryRunLine(label, true, "%d cop%s → %s".formatted(copies, copies == 1 ? "y" : "ies", dist)));
+        }
+        return lines;
     }
 
     /** A printer that qualifies for a part, with the AMS slot the job should be pinned to (null = printer default). */

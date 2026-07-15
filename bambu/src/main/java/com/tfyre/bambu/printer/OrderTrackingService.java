@@ -45,6 +45,24 @@ public class OrderTrackingService {
         public Map<String, Instant> queued = new HashMap<>();
         /** Listing IDs/keys the user hid on the Mappings tab (products that are never printed). */
         public Set<String> hiddenListings = new HashSet<>();
+        /** Per-order print progress (jobs queued vs finished), for the ready-to-ship notification. */
+        public Map<String, OrderProgress> progress = new HashMap<>();
+    }
+
+    /** Jackson-friendly per-order progress counters. */
+    public static class OrderProgress {
+
+        public int expected;
+        public int printed;
+        public boolean notified;
+    }
+
+    /** Immutable snapshot of an order's print progress for the UI. */
+    public record ProgressView(String orderId, int expected, int printed) {
+
+        public boolean complete() {
+            return expected > 0 && printed >= expected;
+        }
     }
 
     @Inject
@@ -141,6 +159,48 @@ public class OrderTrackingService {
         state(market).queued.put(orderId, Instant.now());
         dirty = true;
         save();
+    }
+
+    /**
+     * Registers {@code jobs} more print jobs as queued for an order (accumulates across repeated queueing).
+     * Drives the "X/Y printed" progress display and the ready-to-ship notification.
+     */
+    public synchronized void addExpectedJobs(final String market, final String orderId, final int jobs) {
+        if (jobs <= 0) {
+            return;
+        }
+        final OrderProgress p = state(market).progress.computeIfAbsent(orderId, k -> new OrderProgress());
+        p.expected += jobs;
+        p.notified = false;
+        dirty = true;
+        save();
+    }
+
+    /**
+     * Records one successfully finished print for an order. Returns {@code true} exactly once, when this
+     * finish completes the order (all expected jobs printed) - the caller fires the ready-to-ship
+     * notification on that.
+     */
+    public synchronized boolean recordJobPrinted(final String market, final String orderId) {
+        final OrderProgress p = state(market).progress.get(orderId);
+        if (p == null) {
+            return false;
+        }
+        p.printed++;
+        dirty = true;
+        final boolean justCompleted = p.expected > 0 && p.printed >= p.expected && !p.notified;
+        if (justCompleted) {
+            p.notified = true;
+        }
+        save();
+        return justCompleted;
+    }
+
+    /** Progress for all orders of a marketplace that have print jobs registered. */
+    public synchronized List<ProgressView> progress(final String market) {
+        return state(market).progress.entrySet().stream()
+                .map(e -> new ProgressView(e.getKey(), e.getValue().expected, e.getValue().printed))
+                .toList();
     }
 
     public synchronized Optional<Instant> queuedAt(final String market, final String orderId) {

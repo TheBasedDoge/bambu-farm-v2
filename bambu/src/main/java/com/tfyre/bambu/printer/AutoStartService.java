@@ -224,8 +224,10 @@ public class AutoStartService {
                             lastStatus.put(name, "auto-started at %s".formatted(HHMM.format(LocalTime.now())));
                             final int left = queueService.size(name);
                             Log.infof("AutoStartService: %s: auto-started next job (%d left in queue)", name, left);
+                            // Attach the frame the bed-clear check analyzed, so the alert shows the bed it approved
                             notificationService.notifyEvent("auto_start", name,
-                                    "Auto-started next queued print - AI confirmed bed clear (%d job(s) left in queue)".formatted(left));
+                                    "Auto-started next queued print - AI confirmed bed clear (%d job(s) left in queue)".formatted(left),
+                                    aiService.getLastCheck(name).map(PrintAiService.CheckRecord::snapshot).orElse(null));
                         },
                         error -> hold(name, queueSize, "paused: start failed",
                                 "Auto-start failed to start the job: %s".formatted(error), null));

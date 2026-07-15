@@ -31,6 +31,8 @@ public class GcodeMappingQueuer {
     @Inject
     PrintQueueService queueService;
     @Inject
+    OrderTrackingService tracking;
+    @Inject
     Instance<ProjectFile> projectFileInstance;
 
     /** Weight + filament-slot-count of a LIBRARY part's plate, read once and reused for both queueing decisions. */
@@ -85,7 +87,7 @@ public class GcodeMappingQueuer {
      * slot (auto-queue resolves the slot per printer from live filament telemetry - the tray holding PETG on one
      * printer isn't necessarily the same index on another). Returns an error message, or empty on success.
      */
-    public Optional<String> queuePart(final MappingPart part, final String printerName, final Integer amsSlotOverride) {
+    public Optional<String> queuePart(final MappingPart part, final String printerName, final Integer amsSlotOverride, final OrderRef orderRef) {
         if (part.source() == GcodeSource.LIBRARY) {
             final Path file = Path.of(config.batchPrint().library()).resolve(part.path());
             if (!Files.isRegularFile(file)) {
@@ -100,7 +102,7 @@ public class GcodeMappingQueuer {
                 part.path(), part.plateId(), useAms,
                 config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
                 config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
-        queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source()));
+        queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source(), orderRef));
         return Optional.empty();
     }
 
@@ -109,6 +111,15 @@ public class GcodeMappingQueuer {
      * round-robin across {@code printerNames} (a single printer if that's all the caller selected).
      */
     public QueueResult queue(final List<MappingPart> parts, final int orderedQuantity, final List<String> printerNames) {
+        return queue(parts, orderedQuantity, printerNames, null);
+    }
+
+    /**
+     * Variant that links every queued job to a marketplace order: entries carry {@code orderRef}, the order is
+     * marked queued, and the jobs count towards its "X/Y printed" progress (ready-to-ship notification fires
+     * when the last one finishes).
+     */
+    public QueueResult queue(final List<MappingPart> parts, final int orderedQuantity, final List<String> printerNames, final OrderRef orderRef) {
         if (parts.isEmpty()) {
             return new QueueResult(0, List.of("No parts are mapped for this listing yet"));
         }
@@ -139,9 +150,13 @@ public class GcodeMappingQueuer {
             for (int i = 0; i < copies; i++) {
                 final String printerName = printerNames.get(printerIndex % printerNames.size());
                 printerIndex++;
-                queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source()));
+                queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source(), orderRef));
                 totalQueued++;
             }
+        }
+        if (orderRef != null && totalQueued > 0) {
+            tracking.markQueued(orderRef.market(), orderRef.orderId());
+            tracking.addExpectedJobs(orderRef.market(), orderRef.orderId(), totalQueued);
         }
         return new QueueResult(totalQueued, errors);
     }

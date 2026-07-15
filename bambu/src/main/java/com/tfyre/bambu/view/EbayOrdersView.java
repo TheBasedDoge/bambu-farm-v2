@@ -290,10 +290,10 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
                     showNotification("Mapping saved for %s".formatted(listingKey));
                 },
                 (parts, selectedPrinters) -> {
-                    final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, li.quantity(), selectedPrinters);
+                    final GcodeMappingQueuer.QueueResult result = queuer.queue(parts, li.quantity(), selectedPrinters,
+                            new com.tfyre.bambu.printer.OrderRef("ebay", orderId, "eBay order " + orderId));
                     if (result.totalQueued() > 0) {
                         showNotification("Queued %d job(s) for %s".formatted(result.totalQueued(), listingKey));
-                        tracking.markQueued("ebay", orderId);
                         queuedBadge.setTitle("Print jobs queued just now");
                         queuedBadge.setVisible(true);
                     }

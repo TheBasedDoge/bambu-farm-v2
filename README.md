@@ -213,12 +213,12 @@ bambu.batch-print.library=bambu-library
 
 ### Automation page
 The **Automation** page (`/automation`, sidebar) is the control center for the whole order-to-print pipeline, with four tabs:
-- **Overview** - a live pipeline dashboard in a card grid: big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start), summary chips (open orders, queued jobs, printers printing, and a "fully automatic" indicator when the whole chain is on), then one card per stage: *Orders in* (Etsy/eBay connection + open/unqueued counts + last poll + recently queued orders), *Queue & auto-start* (per-printer state, queue size, next file, auto-start status), *Printing & AI watch* (what's printing, last AI verdict per printer, recent AI flags), and *Fulfillment* (recent completed jobs with **All / Auto-started / Manual filters** - prints started by auto-start are tagged in history; shipping stays manual on the marketplaces).
-- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones from the order pages) with edit/delete. Mappings saved here are listing-wide - order lookups fall back to them for any variation. Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert.
+- **Overview** - a live pipeline dashboard in a card grid: big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start, Auto-Requeue), summary chips (open orders, queued jobs, printers printing, and a "fully automatic" indicator when the whole chain is on), then one card per stage: *Orders in* (Etsy/eBay connection + open/unqueued counts + last poll + an ⏰ aging flag when the oldest unqueued order is a day or more old + in-flight order progress "X/Y printed" + recently queued orders), *Queue & auto-start* (per-printer state, queue size, next file, auto-start status), *Printing & AI watch* (what's printing, last AI verdict per printer, recent AI flags), and *Fulfillment* (recent completed jobs with **All / Auto-started / Manual filters** - prints started by auto-start are tagged in history; shipping stays manual on the marketplaces).
+- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones from the order pages) with edit/delete. Mappings saved here are listing-wide - order lookups fall back to them for any variation. Listing tables show **product thumbnails** (Etsy listing images, eBay gallery pictures). Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert. Every mapped row also has a **Test (flask) button**: a dry run that simulates auto-queueing one unit right now - which printers qualify per part, which tray each would use, and the copy distribution, or exactly why the listing would be skipped (nothing is actually queued).
 - **Print Queue** and **AI Settings** - the full pages below, embedded as tabs. The old direct routes (`/print-queue`, `/ai-settings`, `/mappings`) still work as deep links.
 
 ### Print Queue tab
-The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
+The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry, or **move it to the front** with the ⏫ button so it prints next; entries queued from an order show the order they belong to), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
 
 ### AI-gated auto-start (lights-out mode)
 Per-printer opt-in on the Print Queue tab: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
@@ -330,7 +330,7 @@ Without ffmpeg reachable, AI checks on X1C/X1E/H2D printers keep showing "no sna
 The **Notifications** checkbox in the sidebar enables desktop notifications on print finish/fail (requires an open tab and HTTPS or localhost).
 
 ### Notification Settings page
-The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, Auto-Queue, Auto-Queue Skipped, Auto-Start, Auto-Start Blocked, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
+The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, Auto-Queue, Auto-Queue Skipped, Auto-Start, Auto-Start Blocked, Auto-Requeue, Order Fully Printed, Daily Digest, Plug Auto-Off, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
 
 ### MQTT (recommended for Home Assistant)
 ```properties
@@ -339,7 +339,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `new_order`, `auto_queue`, or `auto_queue_skipped` (for the order events the printer segment is the marketplace, `Etsy`/`eBay`/`etsy`/`ebay`), with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `order_printed`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
@@ -360,7 +360,14 @@ bambu.notifications.webhook-format=discord   # json | discord | ntfy
 ```
 Both MQTT and webhook can be enabled at once. Printer errors are checked every 30s; maintenance-due every 6h (deduped until the task is marked done).
 
-**AI alerts include the camera frame**: when the AI failure or first-layer check fires an alert, the snapshot it analyzed is attached to the webhook delivery (Discord: image upload in the message; ntfy: attachment) - so you can judge "spaghetti or false positive?" straight from your phone. The generic `json` format and MQTT stay text-only.
+**Printer photos on alerts**: Discord/ntfy deliveries attach the relevant printer's camera frame wherever one makes sense - AI failure and first-layer alerts (the exact frame the AI analyzed), print finished/failed/stopped (the bed as the job ended), printer errors, auto-start confirmations (the bed the AI approved), and auto-start blocked. The generic `json` format and MQTT stay text-only.
+
+**Daily digest** (optional): set a cron expression to get a scheduled farm summary - prints finished/failed in the last 24h with filament used, open orders, queued jobs, and printers with errors:
+
+```properties
+# every morning at 07:00 (Quartz cron); unset/off = disabled
+bambu.digest-cron=0 0 7 * * ?
+```
 
 ## Tasmota smart plugs
 
@@ -372,6 +379,9 @@ bambu.printers.myprinter1.tasmota-channel=2
 Adds a plug button to that printer's dashboard card with Power On / Power Off (confirmed; an extra warning appears if the printer is printing). Uses Tasmota's `/cm?cmnd=Power%20On|Off` HTTP API (no web password support yet).
 
 The **Tasmota Settings** page (`/tasmota-settings`, sidebar) is a central control panel: one card per printer with a plug configured, showing live status (ON/OFF/Unreachable) plus Power On / Power Off / Refresh buttons, so you don't need to go to each printer's dashboard card individually.
+
+### Idle auto-off
+Each plug card on the Tasmota Settings page has an "Auto-off after idle minutes" field: once that printer has sat finished/idle with an **empty print queue** for the configured time, its plug is switched off automatically (one attempt per idle period, `tasmota_off` notification). It never fires while printing, paused, or with jobs queued - so auto-start always wins. Per-printer, persisted to `bambu-tasmota-autooff.json`, 0 disables.
 
 ## Etsy and eBay order-to-print integration
 
@@ -394,11 +404,15 @@ Orders are polled on a schedule and filtered to unfulfilled/open only; poll erro
 
 **New-order alerts**: when a poll finds an order it has never seen before, a `new_order` notification fires to your configured channels (Discord/ntfy/MQTT). Seen-order IDs are persisted (`bambu-order-tracking.json`), so restarts don't re-alert, and connecting a shop for the first time doesn't fire one alert per existing order. Toggle on the Notification Settings page.
 
-**Auto-queue (zero-click repeat orders)**: an opt-in "Auto-queue new orders" toggle on either Sales Orders page (one global switch, persisted to `bambu-auto-queue.json`). When a poll finds a NEW order whose line items are all mapped, the print jobs are queued automatically:
+**Auto-queue (zero-click repeat orders)**: an opt-in "Auto-queue new orders" toggle on either Sales Orders page or the Automation overview (one global switch, persisted to `bambu-auto-queue.json`). When a poll finds a NEW order whose line items are all mapped, the print jobs are queued automatically:
 - Each mapped part can specify a required **filament type** (e.g. PETG, ASA) next to its AMS slot in the mapping editor. Auto-queue matches this against each printer's **live AMS telemetry**: with a slot also set, that exact tray must currently hold that material (catches a swapped spool); with type only, any tray with that material qualifies and the job is pinned to it per printer.
 - Among qualifying printers: idle with an empty queue wins, then shortest queue.
-- **All-or-nothing per order**: an unmapped line item, a missing library file, or a part no printer has filament for skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
+- **All-or-nothing per order**: an unmapped line item, a missing library file, a part no printer has filament for, or **buyer personalization on any item** (custom text must never be auto-printed from the generic mapping) skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
 - Queued orders get the "✓ queued" badge and are never auto-queued twice. Success fires an `auto_queue` notification with the job distribution (e.g. "6 jobs → P1S×3, P1P×3").
+
+**Order progress & ready-to-ship**: every job queued from an order (auto or manual) is linked back to it. The Automation overview shows in-flight orders as "Etsy #123 — 2/4 printed", and when the LAST part finishes an `order_printed` notification fires: "Etsy order #123 is fully printed - ready to ship". Shipping itself stays manual.
+
+**Auto-requeue** (opt-in, Automation overview toggle): a failed queue-started print goes back to the FRONT of its printer's queue for exactly one retry (auto-start's bed-clear gate still applies before it runs). A second failure of the same job stops and alerts instead of looping filament into the bin. Direct prints (SD card, Print Again) are never auto-requeued.
 
 Combined with [AI-gated auto-start](#ai-gated-auto-start-lights-out-mode), a repeat order goes from purchase to printing with zero clicks: poll finds it → jobs queue to printers with the right filament → auto-start begins each one after the AI confirms the bed is clear.
 
@@ -492,9 +506,10 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.ebay.sandbox` | `false` | Use eBay sandbox environment |
 | `bambu.ebay.poll-interval` | `10m` | Order polling frequency |
 | `bambu.auto-start-settle` | `3m` | How long a printer must sit ready before AI-gated auto-start attempts it |
+| `bambu.digest-cron` | `off` | Quartz cron for the daily farm digest notification (e.g. `0 0 7 * * ?`) |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, `bambu-tasmota-autooff.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.

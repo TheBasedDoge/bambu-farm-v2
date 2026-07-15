@@ -209,8 +209,8 @@ public class EtsyApiClient {
         return result;
     }
 
-    /** An active shop listing, for the Mappings tab's assign-gcodes table. */
-    public record Listing(long listingId, String title, int quantityAvailable) {
+    /** An active shop listing, for the Mappings tab's assign-gcodes table. {@code imageUrl} may be blank. */
+    public record Listing(long listingId, String title, int quantityAvailable, String imageUrl) {
     }
 
     /**
@@ -225,15 +225,18 @@ public class EtsyApiClient {
         final List<Listing> result = new ArrayList<>();
         final int pageSize = 100;
         for (int offset = 0; offset < 1000; offset += pageSize) {
-            final JsonNode root = getOrThrow("/shops/%s/listings/active?limit=%d&offset=%d"
+            final JsonNode root = getOrThrow("/shops/%s/listings/active?limit=%d&offset=%d&includes=Images"
                     .formatted(shopId.get(), pageSize, offset));
             int pageCount = 0;
             for (final JsonNode l : root.path("results")) {
                 pageCount++;
+                final JsonNode firstImage = l.path("images").path(0);
+                final String imageUrl = firstImage.path("url_75x75").asText(firstImage.path("url_170x135").asText(""));
                 result.add(new Listing(
                         l.path("listing_id").asLong(),
                         l.path("title").asText(""),
-                        l.path("quantity").asInt(0)));
+                        l.path("quantity").asInt(0),
+                        imageUrl));
             }
             if (pageCount < pageSize) {
                 break;

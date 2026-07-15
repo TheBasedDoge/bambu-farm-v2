@@ -246,7 +246,17 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         final Button asBtn = bigToggle("Auto-Start %d/%d".formatted(autoStartOn, details.size()), autoStartOn > 0,
                 "Per-printer setting - click to manage on the Print Queue tab");
         asBtn.addClickListener(e -> tabs.setSelectedTab(queueTab));
-        controls.add(aqBtn, aiBtn, asBtn);
+        final boolean requeue = autoQueueService.isAutoRequeueEnabled();
+        key.append(requeue).append('|');
+        final Button rqBtn = bigToggle("Auto-Requeue", requeue,
+                requeue ? "A failed queue-started print goes back to the front of the queue for ONE retry. Click to turn OFF."
+                        : "Failed prints stay failed until you requeue them. Click to enable a single automatic retry.");
+        rqBtn.addClickListener(e -> {
+            autoQueueService.setAutoRequeueEnabled(!autoQueueService.isAutoRequeueEnabled());
+            showNotification("Auto-requeue " + (autoQueueService.isAutoRequeueEnabled() ? "enabled" : "disabled"));
+            forceRefresh();
+        });
+        controls.add(aqBtn, aiBtn, asBtn, rqBtn);
         strip.add(controls);
 
         final Div row = flexRow();
@@ -295,10 +305,32 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
 
         sec.add(marketRow("Etsy", etsyOauth.isConnected(), etsyPolling.getReceipts().size(),
                 (int) etsyPolling.getReceipts().stream().filter(r -> tracking.queuedAt("etsy", String.valueOf(r.receiptId())).isEmpty()).count(),
-                etsyPolling.getLastPolled(), etsyPolling.getLastError(), "etsy-orders", key));
+                etsyPolling.getLastPolled(), etsyPolling.getLastError(), "etsy-orders",
+                etsyPolling.getReceipts().stream()
+                        .filter(r -> tracking.queuedAt("etsy", String.valueOf(r.receiptId())).isEmpty())
+                        .map(r -> r.createTimestamp()).min(Instant::compareTo), key));
         sec.add(marketRow("eBay", ebayOauth.isConnected(), ebayPolling.getOrders().size(),
                 (int) ebayPolling.getOrders().stream().filter(o -> tracking.queuedAt("ebay", o.orderId()).isEmpty()).count(),
-                ebayPolling.getLastPolled(), ebayPolling.getLastError(), "ebay-orders", key));
+                ebayPolling.getLastPolled(), ebayPolling.getLastError(), "ebay-orders",
+                ebayPolling.getOrders().stream()
+                        .filter(o -> tracking.queuedAt("ebay", o.orderId()).isEmpty())
+                        .map(o -> o.creationDate()).min(Instant::compareTo), key));
+
+        // Orders currently being printed: X/Y parts done (ready-to-ship fires when the last one finishes)
+        final List<String> inProgress = new ArrayList<>();
+        for (final String market : List.of("etsy", "ebay")) {
+            tracking.progress(market).stream()
+                    .filter(p -> !p.complete() && p.expected() > 0)
+                    .forEach(p -> inProgress.add("%s %s — %d/%d printed".formatted(
+                            "etsy".equals(market) ? "Etsy #" : "eBay ", p.orderId(), p.printed(), p.expected())));
+        }
+        if (!inProgress.isEmpty()) {
+            sec.add(secondary("Orders in progress:"));
+            inProgress.stream().limit(5).forEach(s -> {
+                key.append(s).append('|');
+                sec.add(line(new Span("⏳ " + s)));
+            });
+        }
 
         // Recently queued orders (either by auto-queue or manually), newest first
         final List<Map.Entry<String, Instant>> recent = new ArrayList<>();
@@ -320,9 +352,11 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     }
 
     private Div marketRow(final String name, final boolean connected, final int open, final int unqueued,
-            final Optional<Instant> lastPolled, final Optional<String> lastError, final String route, final StringBuilder key) {
+            final Optional<Instant> lastPolled, final Optional<String> lastError, final String route,
+            final Optional<Instant> oldestUnqueued, final StringBuilder key) {
         key.append(name).append(connected).append(open).append(unqueued)
-                .append(lastPolled.map(Instant::getEpochSecond).orElse(0L)).append(lastError.orElse("")).append('|');
+                .append(lastPolled.map(Instant::getEpochSecond).orElse(0L)).append(lastError.orElse(""))
+                .append(oldestUnqueued.map(Instant::getEpochSecond).orElse(0L)).append('|');
         final Div row = new Div();
         row.addClassName("automation-line");
         final Span dot = new Span("● ");
@@ -334,6 +368,16 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                         unqueued > 0 ? " (%d not queued yet)".formatted(unqueued) : "",
                         lastPolled.map(this::ago).orElse("never (waits for the poll interval)"))
                 : "  —  not connected"));
+        // Aging: flag when the oldest unqueued order has been waiting a while
+        oldestUnqueued.ifPresent(oldest -> {
+            final long days = Duration.between(oldest, Instant.now()).toDays();
+            if (days >= 1) {
+                final Span age = new Span("  ⏰ oldest unqueued order is %dd old".formatted(days));
+                age.getStyle().setColor(days >= 3 ? "var(--lumo-error-text-color)" : "var(--lumo-warning-text-color, #e8a33d)")
+                        .setFontWeight("bold");
+                row.add(age);
+            }
+        });
         lastError.ifPresent(err -> {
             final Span e = new Span("  ⚠ last poll failed: " + truncate(err, 120));
             e.getStyle().setColor("var(--lumo-error-text-color)");

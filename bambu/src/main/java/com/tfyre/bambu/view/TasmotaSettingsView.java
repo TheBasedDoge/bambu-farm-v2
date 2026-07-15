@@ -136,6 +136,23 @@ public class TasmotaSettingsView extends VerticalLayout implements NotificationH
         controls.setSpacing(true);
         section.add(controls);
 
+        // Idle auto-off: switch the plug off after the printer has sat ready with an empty queue this long
+        final com.vaadin.flow.component.textfield.IntegerField autoOff
+                = new com.vaadin.flow.component.textfield.IntegerField("Auto-off after idle minutes (0 = off)");
+        autoOff.setMin(0);
+        autoOff.setStepButtonsVisible(true);
+        autoOff.setWidth("260px");
+        autoOff.setValue(tasmotaService.getAutoOffMinutes(printerName));
+        autoOff.setTooltipText("Automatically switch this plug OFF once the printer has been finished/idle with an "
+                + "empty print queue for this many minutes. Never fires while jobs are queued or printing. "
+                + "0 disables it.");
+        autoOff.addValueChangeListener(e -> {
+            tasmotaService.setAutoOffMinutes(printerName, e.getValue() == null ? 0 : e.getValue());
+            showNotification("%s: auto-off %s".formatted(printerName,
+                    e.getValue() == null || e.getValue() <= 0 ? "disabled" : "after " + e.getValue() + " idle min"));
+        });
+        section.add(autoOff);
+
         // Load status on render
         refreshStatus(target, statusBadge, ui);
 

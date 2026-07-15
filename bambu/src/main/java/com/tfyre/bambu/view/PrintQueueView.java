@@ -172,15 +172,23 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         }
         for (int i = 0; i < queue.size(); i++) {
             final PrintQueueService.QueueEntry entry = queue.get(i);
+            final Button toFront = new Button(new Icon(VaadinIcon.ANGLE_DOUBLE_UP), l -> {
+                queueService.moveToFront(detail.name(), entry);
+                refresh.run();
+            });
+            toFront.setTooltipText("Move to front - prints next");
+            toFront.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+            toFront.setVisible(i > 0);
             final Button remove = new Button(new Icon(VaadinIcon.TRASH), l -> {
                 queueService.removeEntry(detail.name(), entry);
                 refresh.run();
             });
             remove.setTooltipText("Remove from queue");
             remove.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+            final String orderSuffix = entry.orderRef() == null ? "" : "  [%s]".formatted(entry.orderRef().label());
             final HorizontalLayout row = new HorizontalLayout(
-                    new Span("%d. %s (plate %d)".formatted(i + 1, entry.command().filename(), entry.command().plateId())),
-                    remove);
+                    new Span("%d. %s (plate %d)%s".formatted(i + 1, entry.command().filename(), entry.command().plateId(), orderSuffix)),
+                    new HorizontalLayout(toFront, remove));
             row.setDefaultVerticalComponentAlignment(FlexLayout.Alignment.CENTER);
             row.setWidthFull();
             row.setJustifyContentMode(FlexComponent.JustifyContentMode.BETWEEN);

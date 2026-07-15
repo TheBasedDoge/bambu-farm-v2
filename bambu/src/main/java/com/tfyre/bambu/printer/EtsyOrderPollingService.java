@@ -85,6 +85,7 @@ public class EtsyOrderPollingService {
                                             String.valueOf(t.listingId()),
                                             "%dx %s".formatted(t.quantity(), t.title()),
                                             t.quantity(),
+                                            t.personalization().isPresent(),
                                             mappingService.find(t.listingId(), t.variations())
                                                     .map(EtsyMappingService.MappingEntry::parts)
                                                     .orElse(java.util.List.of())))

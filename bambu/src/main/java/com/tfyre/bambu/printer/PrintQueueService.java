@@ -34,11 +34,20 @@ import org.eclipse.microprofile.context.ManagedExecutor;
 @ApplicationScoped
 public class PrintQueueService {
 
-    public record QueueEntry(BambuPrinter.CommandPPF command, double grams, GcodeSource source) {
+    /**
+     * @param orderRef the marketplace order this job fulfills, or {@code null} for jobs queued outside the
+     *                 order flow (Batch Print page) and entries persisted before this field existed
+     */
+    public record QueueEntry(BambuPrinter.CommandPPF command, double grams, GcodeSource source, OrderRef orderRef) {
 
         /** Convenience constructor for the common case: a file from the batch print library. */
         public QueueEntry(final BambuPrinter.CommandPPF command, final double grams) {
-            this(command, grams, GcodeSource.LIBRARY);
+            this(command, grams, GcodeSource.LIBRARY, null);
+        }
+
+        /** Backward-compatible constructor for entries with no order linkage. */
+        public QueueEntry(final BambuPrinter.CommandPPF command, final double grams, final GcodeSource source) {
+            this(command, grams, source, null);
         }
 
     }
@@ -55,9 +64,22 @@ public class PrintQueueService {
     PrintHistoryService historyService;
     @Inject
     BambuPrinters printers;
+    @Inject
+    NotificationService notificationService;
+    /** Lazy to avoid an eager circular reference (AutoQueueService injects this service). */
+    @Inject
+    jakarta.enterprise.inject.Instance<AutoQueueService> autoQueueInstance;
 
     private final Map<String, List<QueueEntry>> data = new HashMap<>();
     private boolean dirty;
+
+    /** The last queue-started job per printer, so a failure can be matched back to its entry for auto-requeue. */
+    private record StartedJob(QueueEntry original, String effectiveFile) {
+    }
+
+    private final Map<String, StartedJob> lastStarted = new java.util.concurrent.ConcurrentHashMap<>();
+    /** printer|file|orderId → retry attempts, so a failing job is only auto-requeued once. */
+    private final Map<String, Integer> retryCounts = new java.util.concurrent.ConcurrentHashMap<>();
 
     private Path getPath() {
         return Path.of(config.queueFile());
@@ -133,6 +155,68 @@ public class PrintQueueService {
                 return;
             }
         }
+    }
+
+    /** Puts an entry at the FRONT of a printer's queue (used by auto-requeue so the retry goes next). */
+    public synchronized void requeueFront(final String printer, final QueueEntry entry) {
+        data.computeIfAbsent(printer, k -> new ArrayList<>()).add(0, entry);
+        dirty = true;
+        save();
+    }
+
+    /** Moves an existing entry (matched by identity) to the front of its printer's queue. */
+    public synchronized void moveToFront(final String printer, final QueueEntry entry) {
+        final List<QueueEntry> queue = data.get(printer);
+        if (queue == null) {
+            return;
+        }
+        for (int i = 1; i < queue.size(); i++) {
+            if (queue.get(i) == entry) {
+                queue.remove(i);
+                queue.add(0, entry);
+                dirty = true;
+                save();
+                return;
+            }
+        }
+    }
+
+    /**
+     * Called by {@link PrintHistoryService} when any print ends. When the ended print was queue-started, this
+     * matches it back to its queue entry and - if auto-requeue is enabled - puts a failed job back at the
+     * front of the queue for ONE retry (auto-start's bed-clear gate still applies before it runs again).
+     * A second failure of the same job stops and alerts instead of looping filament into the bin.
+     */
+    public void onJobEnded(final PrintHistoryService.PrintJob job) {
+        final StartedJob started = lastStarted.get(job.printer());
+        if (started == null || !started.effectiveFile().equals(job.file())) {
+            return;
+        }
+        lastStarted.remove(job.printer());
+        final String key = "%s|%s|%s".formatted(job.printer(), started.original().command().filename(),
+                started.original().orderRef() == null ? "" : started.original().orderRef().orderId());
+        if ("Finished".equals(job.result())) {
+            retryCounts.remove(key);
+            return;
+        }
+        if (!autoQueueInstance.get().isAutoRequeueEnabled()) {
+            return;
+        }
+        final int attempts = retryCounts.getOrDefault(key, 0);
+        if (attempts >= 1) {
+            retryCounts.remove(key);
+            Log.warnf("PrintQueueService: %s: %s failed again after a retry - giving up", job.printer(), job.file());
+            notificationService.notifyEvent("auto_requeue", job.printer(),
+                    "%s failed AGAIN after an automatic retry - not requeueing, needs a human (%s)"
+                            .formatted(job.file(), job.result()));
+            return;
+        }
+        retryCounts.put(key, attempts + 1);
+        requeueFront(job.printer(), started.original());
+        Log.infof("PrintQueueService: %s: %s ended %s - auto-requeued at the front for one retry", job.printer(), job.file(), job.result());
+        notificationService.notifyEvent("auto_requeue", job.printer(),
+                "Print %s: %s - automatically requeued for one retry (bed-clear gate still applies)"
+                        .formatted(job.result().toLowerCase(), job.file()));
     }
 
     private synchronized void removeFirst(final String printer, final QueueEntry entry) {
@@ -250,7 +334,8 @@ public class PrintQueueService {
                 }
                 // SD_CARD entries reference a file already resident on the printer's SD card at this path -
                 // nothing to upload, just send the print command directly.
-                historyService.registerExpectedWeight(printerName, command.filename(), entry.grams(), trigger);
+                historyService.registerExpectedWeight(printerName, command.filename(), entry.grams(), trigger, entry.orderRef());
+                lastStarted.put(printerName, new StartedJob(entry, command.filename()));
                 detail.printer().commandPrintProjectFile(command);
                 removeFirst(printerName, entry);
                 Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, command.filename(), command.plateId());
