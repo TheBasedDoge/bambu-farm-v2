@@ -28,14 +28,24 @@ public class AiPromptService {
     // "ignore this / treat as normal" guardrails to cut false positives, and a strict "one keyword first, then one
     // short sentence" output contract the result parser depends on.
     private static final String DEFAULT_BED_CLEAR =
-            "You are inspecting the build plate of a 3D printer through its built-in camera.\n"
-            + "Question: is the build plate completely empty and ready for a new print?\n\n"
-            + "Ignore and treat as EMPTY: the plate's texture or pattern, grid lines, glue/adhesive marks, "
-            + "smudges, shadows, and reflections - none of those count as an object.\n"
-            + "Only answer NO if an actual printed part, a failed/leftover print, or loose filament or debris "
-            + "is sitting on the plate.\n\n"
-            + "Answer with ONE word first: YES if the plate is empty and ready, or NO if something is on it.\n"
-            + "Then add one short sentence describing what you see.";
+            "Look at this 3D printer build plate image. Is there a 3D printed object on the bed?\n\n"
+            + "A NORMAL EMPTY BED looks like this - treat EVERY one of these as EMPTY, never as an object:\n"
+            + "- Dark textured PEI surface with a speckled/mottled pattern (this is normal)\n"
+            + "- White or silver dashed grid lines on the bed surface (this is normal)\n"
+            + "- White or cloudy glue residue smears or patches (this is normal)\n"
+            + "- Faint outlines or marks left by previous prints (this is normal)\n"
+            + "- Thin filament wisps laying flat (this is normal)\n"
+            + "- Reflections and light glare on the surface (this is normal)\n\n"
+            + "ABOUT THE BED: the bed is a FLAT RECTANGLE. It has no circular or ring-shaped features of its own. "
+            + "Any round or circular shape sitting on the plate is a printed object, not part of the bed or the machine.\n\n"
+            + "THE BED IS NOT CLEAR ONLY IF a solid 3D printed plastic object is sitting on top of the bed surface - "
+            + "a distinct shape (cup, ring, bracket, box, cylinder, etc.) that rises above the flat bed and has clear "
+            + "edges and walls. If you see ONLY the normal bed features listed above, the bed IS clear.\n\n"
+            + "The VERY FIRST word of your reply MUST be YES or NO: YES if the bed is clear and empty, NO if any "
+            + "printed object is on it. Then add, each on its own line:\n"
+            + "Objects: <list everything you can see ON the bed surface, or \"none\">\n"
+            + "Confidence: <0-100, how likely the bed is EMPTY; any object on the bed = 0>\n"
+            + "Reason: <what you see, in one short sentence>";
 
     private static final String DEFAULT_FAILURE =
             "You are watching a 3D print in progress through the printer's camera.\n"
