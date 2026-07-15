@@ -48,27 +48,44 @@ public class AiPromptService {
             + "Reason: <what you see, in one short sentence>";
 
     private static final String DEFAULT_FAILURE =
-            "You are watching a 3D print in progress through the printer's camera.\n"
-            + "Question: is this print clearly failing right now?\n\n"
-            + "Answer YES only if you clearly see one of these:\n"
-            + "- SPAGHETTI: loose filament strands tangled in the air, not attached to the object\n"
-            + "- BLOB: a large unintended glob of extruded filament building up in the wrong place\n"
-            + "- DETACHED: the object has come off the plate and is being dragged around by the nozzle\n\n"
-            + "Treat all of these as NORMAL and answer NO: supports, brims, rafts, skirts, infill patterns "
-            + "(gyroid, honeycomb, lattice), overhangs and organic shapes, thin stringing wisps, layer lines, "
-            + "seams, rough texture, and several parts printing at once.\n\n"
-            + "If the print looks like it is still progressing - even if complex, busy, or slightly messy - answer NO.\n\n"
-            + "Answer with ONE word first: YES if it is clearly failing, or NO if it looks fine.\n"
-            + "Then add one short sentence describing what you see.";
+            "Look at this image of a 3D print in progress. Is the print clearly failing right now?\n\n"
+            + "NORMAL, HEALTHY PRINTING looks like this - treat EVERY one of these as NORMAL, never as a failure:\n"
+            + "- Support structures, brims, rafts, skirts, and support interfaces (these are intentional)\n"
+            + "- Infill patterns showing through the walls - gyroid, honeycomb, grid, lattice (this is normal)\n"
+            + "- Overhangs, bridges, and organic or complex geometry (this is normal)\n"
+            + "- Thin strings or wisps of filament between parts (this is normal, not a failure)\n"
+            + "- Layer lines, seams, rough texture, or minor surface blemishes (this is normal)\n"
+            + "- Several separate objects printing on the plate at once (this is normal)\n"
+            + "- The nozzle, hotend, or toolhead passing over or resting near the print (this is normal)\n\n"
+            + "THE PRINT IS FAILING ONLY IF you clearly see one of these:\n"
+            + "- SPAGHETTI: loose strands of filament tangled in the air, not attached to the object\n"
+            + "- BLOB: a large unintended glob or mass of extruded filament building up in the wrong place\n"
+            + "- DETACHED: the object has come off the plate and is being dragged around by the nozzle\n"
+            + "If the print looks like it is still building up layer by layer - even if it is complex, busy, or "
+            + "slightly messy - it is NOT failing.\n\n"
+            + "The VERY FIRST word of your reply MUST be YES or NO: YES if the print is clearly failing, NO if it "
+            + "looks fine. Then add, each on its own line:\n"
+            + "Problems: <list any failure you can see, or \"none\">\n"
+            + "Confidence: <0-100, how likely the print is FAILING; a normal-looking print = 0>\n"
+            + "Reason: <what you see, in one short sentence>";
 
     private static final String DEFAULT_FIRST_LAYER =
-            "You are inspecting the FIRST layer of a 3D print through the printer's camera.\n"
-            + "Question: is the first layer sticking down well?\n\n"
-            + "GOOD: filament lines lie flat, are evenly spaced, and are stuck to the plate.\n"
-            + "POOR: lines are curling or peeling up, not sticking, have gaps between them (under-extrusion), "
-            + "or little to no filament is being laid down.\n\n"
-            + "Answer with ONE word first: GOOD or POOR.\n"
-            + "Then add one short sentence describing what you see.";
+            "Look at this image of the FIRST layer of a 3D print on the bed. Is the first layer sticking down well?\n\n"
+            + "A GOOD FIRST LAYER looks like this:\n"
+            + "- Filament lines lie flat against the plate and are stuck down\n"
+            + "- Lines are evenly spaced and touching, with a smooth, consistent surface\n"
+            + "- Solid, uniform coverage with no gaps in the filled areas\n\n"
+            + "THE FIRST LAYER IS POOR ONLY IF you clearly see one of these:\n"
+            + "- Lines curling, lifting, or peeling up off the plate\n"
+            + "- Filament not sticking - being dragged around or balled up on the nozzle\n"
+            + "- Visible gaps or spaces between lines that should be touching (under-extrusion)\n"
+            + "- Little or no filament being laid down at all\n"
+            + "The plate's texture or pattern, grid lines, glue marks, reflections, and seams are NOT problems.\n\n"
+            + "The VERY FIRST word of your reply MUST be GOOD or POOR: GOOD if the first layer is adhering well, "
+            + "POOR if it shows any of the problems above. Then add, each on its own line:\n"
+            + "Observations: <what the first-layer lines look like>\n"
+            + "Confidence: <0-100, how likely the first layer is GOOD; a clear adhesion problem = 0>\n"
+            + "Reason: <what you see, in one short sentence>";
 
     /**
      * Prepended to any check prompt when the printer is actively reporting an HMS alert or print-error code, so the
