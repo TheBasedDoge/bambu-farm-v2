@@ -22,7 +22,7 @@ Technologies used:
 * Quarkus https://quarkus.io/
 * Vaadin https://vaadin.com/
 
-> **This fork** adds a farm-management layer on top of upstream: dashboard/UI overhaul, batch print library & queue, print history/cost tracking, maintenance tracking, notifications, Tasmota smart plug control, AI-based print/bed monitoring, AMS tray override, Etsy/eBay order-to-print integration, PWA install, and camera access from outside your LAN without forwarding an extra port. See [Fork Additions](#fork-additions) below for the full list and how to configure each one.
+> **This fork** adds a farm-management and automation layer on top of upstream: dashboard/UI overhaul, batch print library & queue, print history/cost tracking, maintenance tracking, notifications with printer photos, Tasmota smart plug control (incl. idle auto-off), AI-based print/bed monitoring with editable prompts, AMS tray override, Etsy/eBay order-to-print integration, and a full **Automation hub** — new orders auto-queue to filament-matching printers, AI-gated auto-start runs the queue lights-out, failed prints retry once, and you get a "ready to ship" ping when an order's last part finishes. Plus PWA install and camera access from outside your LAN without forwarding an extra port. See [Fork Additions](#fork-additions) below for the full list and how to configure each one.
 
 # Features / Supported Devices
 
