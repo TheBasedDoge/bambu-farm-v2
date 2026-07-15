@@ -51,6 +51,8 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
             new EventDef("order_printed", "Order Fully Printed",
                     "Every print job for a marketplace order has finished - ready to ship"),
+            new EventDef("order_from_stock", "Fulfilled From Stock",
+                    "An order line was covered from on-hand stock and skipped printing (stock was decremented)"),
             new EventDef("digest", "Daily Digest",
                     "Scheduled farm summary (set bambu.digest-cron to enable)"),
             new EventDef("tasmota_off", "Plug Auto-Off",

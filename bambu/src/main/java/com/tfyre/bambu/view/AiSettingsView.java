@@ -11,6 +11,7 @@ import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
 import com.vaadin.flow.component.checkbox.Checkbox;
+import com.vaadin.flow.component.combobox.ComboBox;
 import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.component.grid.Grid;
 import com.vaadin.flow.component.grid.GridVariant;
@@ -372,15 +373,74 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         final Div section = new Div();
         section.addClassName("ai-settings-section");
         section.add(new H4("Check Prompts"));
-        section.add(new Span("The exact prompts sent to the model for each check, editable at runtime (saved to bambu-ai-prompts.json, applies to the next check immediately). "
+        section.add(new Span("The exact prompts sent to the model (%s) for each check, editable at runtime (saved to bambu-ai-prompts.json, applies to the next check immediately). "
+                .formatted(config.ollama().model())
                 + "Keep the leading answer keyword instructions intact - result parsing looks for that first word."));
+
+        // One shared printer picker for the per-prompt Test buttons: grabs that printer's current camera frame and
+        // runs the (possibly unsaved) prompt text against it, so a prompt can be tuned without waiting for a real check.
+        final ComboBox<String> testPrinter = new ComboBox<>("Test against printer");
+        testPrinter.setItems(printers.getPrinters().stream().map(p -> p.getName()).sorted().toList());
+        testPrinter.setClearButtonVisible(true);
+        testPrinter.setTooltipText("The Test button on each prompt below grabs this printer's current camera frame "
+                + "and runs the prompt in the editor against it right now (nothing is saved).");
+        section.add(testPrinter);
+
         for (final AiPromptService.PromptType type : AiPromptService.PromptType.values()) {
-            section.add(buildPromptEditor(type));
+            section.add(buildPromptEditor(type, testPrinter));
         }
+        section.add(buildContextEditor());
         return section;
     }
 
-    private Div buildPromptEditor(final AiPromptService.PromptType type) {
+    /** Editor for the HMS/error context wrapper - not a standalone check, so no keyword or Test button. */
+    private Div buildContextEditor() {
+        final Div wrap = new Div();
+        wrap.getStyle().set("margin-top", "24px").set("border-top", "1px solid var(--lumo-contrast-20pct)").set("padding-top", "16px");
+
+        final Span customized = new Span("customized");
+        customized.getStyle().setColor("var(--lumo-primary-text-color)").set("font-size", "0.85em")
+                .set("border", "1px solid var(--lumo-primary-color-50pct)").set("border-radius", "10px").set("padding", "0 8px");
+        customized.setVisible(prompts.isContextCustomized());
+
+        final Span title = new Span("HMS / error context hint ");
+        title.getStyle().setFontWeight("bold");
+        wrap.add(new Div(title, customized));
+        wrap.add(new Div(new Span("Prepended to the three checks above ONLY when the printer is actively reporting an "
+                + "HMS alert or print-error code, so the model gets that as a hint. This is what makes the checks "
+                + "HMS-aware - there is no separate HMS check. Keep the {context} placeholder; it is replaced with the "
+                + "live code/description.")));
+
+        final TextArea area = new TextArea();
+        area.setWidthFull();
+        area.setValue(prompts.getContextTemplate());
+        area.getStyle().set("--vaadin-input-field-height", "auto");
+        area.setMinHeight("120px");
+        wrap.add(area);
+
+        final Button save = new Button("Save", new Icon(VaadinIcon.CHECK), e -> {
+            prompts.setContextTemplate(area.getValue());
+            customized.setVisible(prompts.isContextCustomized());
+            area.setValue(prompts.getContextTemplate());
+            if (!area.getValue().contains("{context}")) {
+                showError("Heads up: the {context} placeholder is missing, so the live HMS code won't be inserted.");
+            } else {
+                showNotification("HMS context hint %s".formatted(prompts.isContextCustomized() ? "saved" : "reset to default (matched the default text)"));
+            }
+        });
+        save.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+        final Button reset = new Button("Reset to default", new Icon(VaadinIcon.ROTATE_LEFT), e -> {
+            prompts.resetContext();
+            area.setValue(prompts.getContextTemplate());
+            customized.setVisible(false);
+            showNotification("HMS context hint reset to default");
+        });
+        reset.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+        wrap.add(new HorizontalLayout(save, reset));
+        return wrap;
+    }
+
+    private Div buildPromptEditor(final AiPromptService.PromptType type, final ComboBox<String> testPrinter) {
         final Div wrap = new Div();
         wrap.getStyle().set("margin-top", "16px");
 
@@ -416,8 +476,81 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             showNotification("%s prompt reset to default".formatted(type.label()));
         });
         reset.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
-        wrap.add(new HorizontalLayout(save, reset));
+
+        final Button test = new Button("Test", new Icon(VaadinIcon.FLASK), e -> runPromptTest(type, testPrinter.getValue(), area.getValue()));
+        test.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+        test.setTooltipText("Run this prompt (as edited above, unsaved) against the selected printer's current camera frame");
+        wrap.add(new HorizontalLayout(save, reset, test));
         return wrap;
+    }
+
+    /**
+     * Grabs the selected printer's current frame and runs the (possibly unsaved) prompt text against it, then shows
+     * the model's raw verdict + the analyzed frame. Tests the prompt in isolation - no HMS context is injected.
+     */
+    private void runPromptTest(final AiPromptService.PromptType type, final String printerName, final String promptText) {
+        if (printerName == null || printerName.isBlank()) {
+            showError("Pick a printer to test against first (the \"Test against printer\" box above).");
+            return;
+        }
+        if (!ollama.isEnabled()) {
+            showError("Ollama is not configured - set bambu.ollama.url first.");
+            return;
+        }
+        showNotification("Testing %s prompt on %s…".formatted(type.label(), printerName));
+        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+        executor.submit(() -> {
+            final Optional<byte[]> snap = aiService.getSnapshot(printerName);
+            final Optional<OllamaService.AiResult> result = snap.flatMap(bytes ->
+                    ollama.analyzePrompt(bytes, promptText, type.positiveKeyword(), Optional.empty()));
+            ui.ifPresent(u -> u.access(() -> showPromptTestResult(type, printerName, snap.orElse(null), result)));
+        });
+    }
+
+    private void showPromptTestResult(final AiPromptService.PromptType type, final String printerName,
+            final byte[] snapshot, final Optional<OllamaService.AiResult> result) {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle("Prompt test — %s on %s".formatted(type.label(), printerName));
+        dialog.setWidth("760px");
+        final VerticalLayout layout = new VerticalLayout();
+        layout.setPadding(false);
+        if (snapshot == null) {
+            final Span none = new Span("No camera snapshot could be grabbed for this printer, so the prompt could not be tested.");
+            none.getStyle().setColor("var(--lumo-error-text-color)");
+            layout.add(none);
+        } else {
+            final Image img = new Image(new StreamResource("prompt-test.jpg",
+                    () -> new ByteArrayInputStream(snapshot)), "tested frame");
+            img.setWidth("100%");
+            img.getStyle().set("border-radius", "6px");
+            layout.add(img);
+            if (result.isEmpty()) {
+                final Span err = new Span("The model did not answer (Ollama error or timeout).");
+                err.getStyle().setColor("var(--lumo-error-text-color)");
+                layout.add(err);
+            } else {
+                final OllamaService.AiResult r = result.get();
+                final Span verdict = new Span("Model answered %s-first: %s".formatted(type.positiveKeyword(),
+                        r.positive() ? "YES (matched \"%s\")".formatted(type.positiveKeyword()) : "no"));
+                verdict.getStyle().setFontWeight("bold").setColor(switch (r.severity()) {
+                    case OK -> "var(--lumo-success-text-color)";
+                    case WARN -> "#856404";
+                    case FAIL -> "var(--lumo-error-text-color)";
+                });
+                layout.add(verdict);
+                layout.add(new Span(r.description()));
+                layout.add(secondaryNote("This tests the prompt only - no HMS/error context was injected."));
+            }
+        }
+        dialog.add(layout);
+        dialog.getFooter().add(new Button("Close", e -> dialog.close()));
+        dialog.open();
+    }
+
+    private static Span secondaryNote(final String text) {
+        final Span s = new Span(text);
+        s.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
+        return s;
     }
 
     private void refreshGrid() {
@@ -497,3 +630,4 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             OllamaService.Severity severity, String timeAgo) {}
 
 }
+     

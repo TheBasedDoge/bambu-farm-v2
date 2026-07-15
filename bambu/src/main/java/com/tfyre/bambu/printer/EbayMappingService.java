@@ -97,6 +97,21 @@ public class EbayMappingService {
         return Optional.ofNullable(data.get(new MappingKey(listingKey, "").storageKey()));
     }
 
+    /**
+     * The storage key a lookup for this listing key + variation would resolve to (exact variation key if stored,
+     * else the listing-wide base key), or empty when neither is mapped. Used to key on-hand stock to the same
+     * granularity as the mapping.
+     */
+    public synchronized Optional<String> findKey(final String listingKey, final List<EbayApiClient.Variation> variations) {
+        final String signature = MappingKey.signatureOf(variations);
+        final String exact = new MappingKey(listingKey, signature).storageKey();
+        if (data.containsKey(exact)) {
+            return Optional.of(exact);
+        }
+        final String base = new MappingKey(listingKey, "").storageKey();
+        return data.containsKey(base) ? Optional.of(base) : Optional.empty();
+    }
+
     public synchronized void set(final String listingKey, final List<EbayApiClient.Variation> variations, final MappingEntry entry) {
         final String signature = MappingKey.signatureOf(variations);
         data.put(new MappingKey(listingKey, signature).storageKey(), entry);

@@ -33,6 +33,8 @@ public class EbayOrderPollingService {
     EbayMappingService mappingService;
     @Inject
     AutoQueueService autoQueue;
+    @Inject
+    StockService stockService;
 
     private final AtomicReference<List<EbayApiClient.Order>> lastOrders = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -76,18 +78,27 @@ public class EbayOrderPollingService {
                     notificationService.notifyEvent("new_order", "eBay",
                             "New order %s from %s: %s".formatted(o.orderId(), o.buyerUsername(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
-                    autoQueue.processOrder(MARKET, o.orderId(),
-                            "eBay order %s (%s)".formatted(o.orderId(), o.buyerUsername()),
-                            o.lineItems().stream()
-                                    .map(li -> new AutoQueueService.AutoQueueItem(
-                                            li.listingKey(),
-                                            "%dx %s".formatted(li.quantity(), li.title()),
-                                            li.quantity(),
-                                            li.personalization().isPresent(),
-                                            mappingService.find(li.listingKey(), li.variationAspects())
-                                                    .map(EbayMappingService.MappingEntry::parts)
-                                                    .orElse(java.util.List.of())))
-                                    .toList());
+                    // Fulfill from on-hand stock first (decrements + notifies), then auto-queue only what's left to print.
+                    final String orderLabel = "eBay order %s (%s)".formatted(o.orderId(), o.buyerUsername());
+                    final java.util.List<AutoQueueService.AutoQueueItem> queueItems = new java.util.ArrayList<>();
+                    for (final EbayApiClient.LineItem li : o.lineItems()) {
+                        final java.util.Optional<String> key = mappingService.findKey(li.listingKey(), li.variationAspects());
+                        final int toPrint = stockService.applyToOrderLine(MARKET, key, li.quantity(), li.title(), orderLabel);
+                        if (key.isPresent() && toPrint <= 0) {
+                            continue; // whole line covered from stock - nothing to print
+                        }
+                        queueItems.add(new AutoQueueService.AutoQueueItem(
+                                li.listingKey(),
+                                "%dx %s".formatted(toPrint, li.title()),
+                                toPrint,
+                                li.personalization().isPresent(),
+                                mappingService.find(li.listingKey(), li.variationAspects())
+                                        .map(EbayMappingService.MappingEntry::parts)
+                                        .orElse(java.util.List.of())));
+                    }
+                    if (!queueItems.isEmpty()) {
+                        autoQueue.processOrder(MARKET, o.orderId(), orderLabel, queueItems);
+                    }
                 });
     }
 

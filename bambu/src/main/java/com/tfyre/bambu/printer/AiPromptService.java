@@ -24,39 +24,54 @@ public class AiPromptService {
 
     private static final String STORE_FILENAME = "bambu-ai-prompts.json";
 
+    // Prompts are tuned for gemma3:12b vision: one clear question, an explicit and short list of what counts,
+    // "ignore this / treat as normal" guardrails to cut false positives, and a strict "one keyword first, then one
+    // short sentence" output contract the result parser depends on.
     private static final String DEFAULT_BED_CLEAR =
-            "Is this 3D printer bed completely empty and clear?\n"
-            + "Look for any printed parts, failed prints, filament blobs, or debris on the bed surface.\n"
-            + "Answer YES if the bed is clear and ready for the next print, "
-            + "or NO if anything is still on the bed.\n"
-            + "After YES or NO, briefly describe what you see.";
+            "You are inspecting the build plate of a 3D printer through its built-in camera.\n"
+            + "Question: is the build plate completely empty and ready for a new print?\n\n"
+            + "Ignore and treat as EMPTY: the plate's texture or pattern, grid lines, glue/adhesive marks, "
+            + "smudges, shadows, and reflections - none of those count as an object.\n"
+            + "Only answer NO if an actual printed part, a failed/leftover print, or loose filament or debris "
+            + "is sitting on the plate.\n\n"
+            + "Answer with ONE word first: YES if the plate is empty and ready, or NO if something is on it.\n"
+            + "Then add one short sentence describing what you see.";
 
     private static final String DEFAULT_FAILURE =
-            "Is this 3D print actively failing right now?\n\n"
-            + "Only answer YES if you see clear evidence of one of these specific failures:\n"
-            + "- SPAGHETTI: loose filament strands floating or tangled in the air that are clearly "
-            + "NOT attached to the main print structure\n"
-            + "- BLOB: a large unintended mass of melted filament building up in the wrong place\n"
-            + "- DETACHED PRINT: the printed object has come off the bed and is being dragged by the nozzle\n\n"
-            + "Do NOT answer YES for any of these normal print features:\n"
-            + "- Supports, brims, rafts, skirts, or support interfaces (these are intentional structures)\n"
-            + "- Dense lattice infill, gyroid, or honeycomb patterns visible through the walls\n"
-            + "- Complex overhangs, organic shapes, or intricate geometry\n"
-            + "- Rough textures, layer lines, seams, or minor surface variations\n"
-            + "- Multiple objects printing together\n\n"
-            + "Answer NO if the print looks like it is progressing normally even if it looks complex or unusual.\n"
-            + "Answer with YES or NO first, then briefly describe what you observe.";
+            "You are watching a 3D print in progress through the printer's camera.\n"
+            + "Question: is this print clearly failing right now?\n\n"
+            + "Answer YES only if you clearly see one of these:\n"
+            + "- SPAGHETTI: loose filament strands tangled in the air, not attached to the object\n"
+            + "- BLOB: a large unintended glob of extruded filament building up in the wrong place\n"
+            + "- DETACHED: the object has come off the plate and is being dragged around by the nozzle\n\n"
+            + "Treat all of these as NORMAL and answer NO: supports, brims, rafts, skirts, infill patterns "
+            + "(gyroid, honeycomb, lattice), overhangs and organic shapes, thin stringing wisps, layer lines, "
+            + "seams, rough texture, and several parts printing at once.\n\n"
+            + "If the print looks like it is still progressing - even if complex, busy, or slightly messy - answer NO.\n\n"
+            + "Answer with ONE word first: YES if it is clearly failing, or NO if it looks fine.\n"
+            + "Then add one short sentence describing what you see.";
 
     private static final String DEFAULT_FIRST_LAYER =
-            "Examine the first layer of this 3D print on the printer bed.\n\n"
-            + "Answer GOOD if:\n"
-            + "- Filament lines are laying flat and sticking down evenly\n"
-            + "- The lines look smooth and consistent\n\n"
-            + "Answer POOR if:\n"
-            + "- Lines are peeling up, curling, or not sticking to the bed\n"
-            + "- Visible gaps between lines (under-extrusion)\n"
-            + "- No filament being deposited at all\n\n"
-            + "Answer GOOD or POOR first, then briefly describe what you see.";
+            "You are inspecting the FIRST layer of a 3D print through the printer's camera.\n"
+            + "Question: is the first layer sticking down well?\n\n"
+            + "GOOD: filament lines lie flat, are evenly spaced, and are stuck to the plate.\n"
+            + "POOR: lines are curling or peeling up, not sticking, have gaps between them (under-extrusion), "
+            + "or little to no filament is being laid down.\n\n"
+            + "Answer with ONE word first: GOOD or POOR.\n"
+            + "Then add one short sentence describing what you see.";
+
+    /**
+     * Prepended to any check prompt when the printer is actively reporting an HMS alert or print-error code, so the
+     * model gets that as a hint. {@code {context}} is replaced with the live code/description; keep the placeholder.
+     * This is not a standalone check - it's the wrapper that makes the three checks above HMS-aware.
+     */
+    private static final String DEFAULT_HMS_CONTEXT =
+            "Note: the printer's control board is currently reporting: {context}. "
+            + "This may or may not be visible in the image or relevant to this question - use it only as a hint, "
+            + "and base your answer mainly on what you actually see.";
+
+    /** Persisted key for the HMS/error context wrapper (kept separate from the {@link PromptType} checks). */
+    private static final String CONTEXT_KEY = "hms-context";
 
     /**
      * The three check prompts. {@code positiveKeyword} is the word the model is instructed to lead with for a
@@ -162,6 +177,44 @@ public class AiPromptService {
         overrides.remove(type.key());
         save();
         Log.infof("AiPromptService: %s prompt reset to default", type.key());
+    }
+
+    // -------------------------------------------------------------------------
+    // HMS / error context wrapper (makes the three checks above HMS-aware)
+    // -------------------------------------------------------------------------
+
+    /** The active HMS-context template (custom if set, else the built-in default). Contains a {@code {context}} placeholder. */
+    public String getContextTemplate() {
+        return overrides.getOrDefault(CONTEXT_KEY, DEFAULT_HMS_CONTEXT);
+    }
+
+    public String defaultContextTemplate() {
+        return DEFAULT_HMS_CONTEXT;
+    }
+
+    public boolean isContextCustomized() {
+        return overrides.containsKey(CONTEXT_KEY);
+    }
+
+    public void setContextTemplate(final String text) {
+        if (text == null || text.isBlank() || text.strip().equals(DEFAULT_HMS_CONTEXT.strip())) {
+            overrides.remove(CONTEXT_KEY);
+        } else {
+            overrides.put(CONTEXT_KEY, text.strip());
+        }
+        save();
+        Log.infof("AiPromptService: HMS-context template %s", isContextCustomized() ? "customized" : "reset to default");
+    }
+
+    public void resetContext() {
+        overrides.remove(CONTEXT_KEY);
+        save();
+    }
+
+    /** Renders the context hint for a concrete HMS/error string, substituting the {@code {context}} placeholder. */
+    public String renderContext(final String context) {
+        final String template = getContextTemplate();
+        return template.contains("{context}") ? template.replace("{context}", context) : template + " " + context;
     }
 
 }

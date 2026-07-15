@@ -102,6 +102,21 @@ public class EtsyMappingService {
         return Optional.ofNullable(data.get(new MappingKey(listingId, "").storageKey()));
     }
 
+    /**
+     * The storage key a lookup for this listing+variation would resolve to (the exact variation key if one is
+     * stored, else the listing-wide base key), or empty when neither is mapped. Used to key on-hand stock to the
+     * same granularity as the mapping.
+     */
+    public synchronized Optional<String> findKey(final long listingId, final List<EtsyApiClient.Variation> variations) {
+        final String signature = MappingKey.signatureOf(variations);
+        final String exact = new MappingKey(listingId, signature).storageKey();
+        if (data.containsKey(exact)) {
+            return Optional.of(exact);
+        }
+        final String base = new MappingKey(listingId, "").storageKey();
+        return data.containsKey(base) ? Optional.of(base) : Optional.empty();
+    }
+
     public synchronized void set(final long listingId, final List<EtsyApiClient.Variation> variations, final MappingEntry entry) {
         final String signature = MappingKey.signatureOf(variations);
         data.put(new MappingKey(listingId, signature).storageKey(), entry);

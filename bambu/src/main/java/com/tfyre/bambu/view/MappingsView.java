@@ -104,14 +104,15 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     public record SavedRow(String market, String storageKey, String listing, String variations, String summary) {
     }
 
+    @Inject
+    com.tfyre.bambu.printer.MarketListingCache listingCache;
+    @Inject
+    com.tfyre.bambu.printer.StockService stockService;
+
     private final Grid<EtsyRow> etsyGrid = new Grid<>();
     private final Grid<EbayRow> ebayGrid = new Grid<>();
     private final Grid<SavedRow> savedGrid = new Grid<>();
     private final Span etsyStatus = new Span();
-
-    /** Fetched on demand via the buttons; kept for re-renders while the view lives. */
-    private List<EtsyApiClient.Listing> etsyListings = List.of();
-    private List<EbayApiClient.EbayListing> ebayListings = List.of();
     private final Span ebayStatus = new Span();
 
     @Override
@@ -174,7 +175,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 try {
                     final List<EtsyApiClient.Listing> listings = etsyClient.getActiveListings();
                     ui.ifPresent(u -> u.access(() -> {
-                        etsyListings = listings;
+                        listingCache.setEtsy(listings);
                         etsyStatus.setText("%d active listing(s)".formatted(listings.size()));
                         renderEtsy();
                         load.setEnabled(true);
@@ -197,8 +198,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             etsyGrid.addComponentColumn(row -> thumbnail(row.imageUrl())).setHeader("").setAutoWidth(true).setFlexGrow(0);
             etsyGrid.addColumn(EtsyRow::title).setHeader("Listing").setFlexGrow(1);
             etsyGrid.addColumn(EtsyRow::listingId).setHeader("ID").setAutoWidth(true);
-            etsyGrid.addColumn(EtsyRow::quantity).setHeader("Stock").setAutoWidth(true);
+            etsyGrid.addColumn(EtsyRow::quantity).setHeader("Listed qty").setAutoWidth(true);
             etsyGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
+            etsyGrid.addComponentColumn(row -> stockField("etsy", row.listingId() + "|")).setHeader("On-hand").setAutoWidth(true);
             etsyGrid.addComponentColumn(row -> {
                 final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
                         new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
@@ -224,14 +226,16 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
 
     private void renderEtsy() {
         final Map<String, EtsyMappingService.MappingEntry> saved = etsyMapping.entries();
-        etsyGrid.setItems(etsyListings.stream()
+        etsyGrid.setItems(listingCache.getEtsy().stream()
                 .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(),
                         mappedState(saved, String.valueOf(l.listingId())),
                         tracking.isListingHidden("etsy", String.valueOf(l.listingId())),
                         l.imageUrl(), l.hasVariations()))
                 .filter(r -> showHidden || !r.hidden())
                 .toList());
-        etsyGrid.setVisible(!etsyListings.isEmpty());
+        etsyGrid.setVisible(!listingCache.getEtsy().isEmpty());
+        listingCache.etsyLoadedAt().ifPresent(at -> etsyStatus.setText(
+                "%d active listing(s) · cached %s".formatted(listingCache.getEtsy().size(), timeAgo(at))));
     }
 
     // -------------------------------------------------------------------------
@@ -257,7 +261,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 try {
                     final List<EbayApiClient.EbayListing> listings = ebayClient.getActiveListings();
                     ui.ifPresent(u -> u.access(() -> {
-                        ebayListings = listings;
+                        listingCache.setEbay(listings);
                         ebayStatus.setText("%d active listing(s)".formatted(listings.size()));
                         renderEbay();
                         load.setEnabled(true);
@@ -284,6 +288,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             ebayGrid.addColumn(EbayRow::listingKey).setHeader("SKU / item id").setAutoWidth(true);
             ebayGrid.addColumn(EbayRow::title).setHeader("Title").setFlexGrow(1);
             ebayGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
+            ebayGrid.addComponentColumn(row -> stockField("ebay", row.listingKey() + "|")).setHeader("On-hand").setAutoWidth(true);
             ebayGrid.addComponentColumn(row -> {
                 final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
                         new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
@@ -313,7 +318,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         final Map<String, String> titles = new LinkedHashMap<>();
         final Map<String, String> images = new LinkedHashMap<>();
         final Map<String, EbayApiClient.EbayListing> byKey = new LinkedHashMap<>();
-        ebayListings.forEach(l -> {
+        listingCache.getEbay().forEach(l -> {
             titles.putIfAbsent(l.listingKey(), l.title());
             byKey.putIfAbsent(l.listingKey(), l);
             if (l.imageUrl() != null && !l.imageUrl().isBlank()) {
@@ -341,6 +346,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .sorted((a, b) -> a.listingKey().compareToIgnoreCase(b.listingKey()))
                 .toList());
         ebayGrid.setVisible(!titles.isEmpty());
+        listingCache.ebayLoadedAt().ifPresent(at -> ebayStatus.setText(
+                "%d active listing(s) · cached %s".formatted(listingCache.getEbay().size(), timeAgo(at))));
     }
 
     // -------------------------------------------------------------------------
@@ -357,6 +364,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             savedGrid.addColumn(SavedRow::listing).setHeader("Listing").setAutoWidth(true);
             savedGrid.addColumn(SavedRow::variations).setHeader("Variation").setAutoWidth(true);
             savedGrid.addColumn(SavedRow::summary).setHeader("Print jobs").setFlexGrow(1);
+            savedGrid.addComponentColumn(row -> stockField(row.market(), row.storageKey())).setHeader("On-hand").setAutoWidth(true);
             savedGrid.addComponentColumn(row -> {
                 final Button edit = new Button(new Icon(VaadinIcon.EDIT));
                 edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
@@ -426,6 +434,18 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                         p.amsSlot() != null ? " · " + AmsSlotSupport.label(p.amsSlot()) : "",
                         p.filamentType() != null ? " · " + p.filamentType() : ""))
                 .collect(Collectors.joining(";  "));
+    }
+
+    /** Compact "just now / 5 min ago / 2h 10m ago" for the cached-listings status line. */
+    private static String timeAgo(final java.time.Instant t) {
+        final long secs = java.time.Duration.between(t, java.time.Instant.now()).getSeconds();
+        if (secs < 60) {
+            return "just now";
+        }
+        if (secs < 3600) {
+            return "%d min ago".formatted(secs / 60);
+        }
+        return "%dh %dm ago".formatted(secs / 3600, (secs % 3600) / 60);
     }
 
     private static String mappedState(final Map<String, ?> saved, final String listingKeyPrefix) {
@@ -543,4 +563,208 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 Log.errorf(ex, "MappingsView: Etsy variation fetch failed: %s", ex.getMessage());
                 ui.ifPresent(u -> u.access(() -> {
                     layout.removeAll();
-                    final Span err = new Span("Could not load variations: 
+                    final Span err = new Span("Could not load variations: " + ex.getMessage());
+                    err.getStyle().setColor("var(--lumo-error-text-color)");
+                    layout.add(err);
+                }));
+            }
+        }).start();
+    }
+
+    private Div buildEtsyVariationRow(final EtsyRow listing, final EtsyApiClient.VariationCombo combo, final Runnable refresh) {
+        final String label = combo.variations().stream()
+                .map(v -> v.propertyName() + ": " + v.value())
+                .collect(Collectors.joining(", "));
+        final String exactKey = listing.listingId() + "|" + EtsyMappingService.MappingKey.signatureOf(combo.variations());
+        final boolean mapped = etsyMapping.entries().containsKey(exactKey);
+        final boolean effective = etsyMapping.find(listing.listingId(), combo.variations()).isPresent();
+
+        final Span name = new Span(label + (combo.sku().isBlank() ? "" : "  (SKU " + combo.sku() + ")"));
+        name.getStyle().set("flex", "1");
+        final Button edit = new Button(mapped ? "Edit" : "Map", new Icon(mapped ? VaadinIcon.EDIT : VaadinIcon.PLUS));
+        edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        edit.addClickListener(e -> openEditor("Etsy: " + listing.title() + " — " + label,
+                etsyMapping.find(listing.listingId(), combo.variations()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
+                parts -> {
+                    etsyMapping.set(listing.listingId(), combo.variations(), new EtsyMappingService.MappingEntry(parts));
+                    showNotification("Mapping saved for variation: " + label);
+                    refresh.run();
+                    renderAll();
+                }));
+        final Button test = testButton(effective ? "ok" : "—",
+                () -> etsyMapping.find(listing.listingId(), combo.variations()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
+                listing.title() + " — " + label);
+        final Span stockLabel = new Span("stock:");
+        stockLabel.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
+        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockField("etsy", exactKey));
+        rowDiv.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center").set("padding", "4px 0");
+        return rowDiv;
+    }
+
+    /** Opens a dialog listing this eBay listing's variations, each mappable to its own gcode. */
+    private Button ebayVariationsButton(final EbayRow row) {
+        final int count = row.variations().size();
+        final Button b = new Button(count > 0 ? "Variations (" + count + ")" : "Variations", new Icon(VaadinIcon.GRID_SMALL));
+        b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        b.setEnabled(count > 0);
+        b.setTooltipText(count > 0
+                ? "Map each variation (color, size, …) of this listing to its own gcode"
+                : "No variations found for this listing (load active listings from eBay first)");
+        b.addClickListener(e -> openEbayVariationsDialog(row));
+        return b;
+    }
+
+    private void openEbayVariationsDialog(final EbayRow row) {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle("Variations: " + (row.title().isBlank() ? row.listingKey() : row.title()));
+        dialog.setWidth("900px");
+        final VerticalLayout layout = new VerticalLayout();
+        layout.setPadding(false);
+        if (row.variations().isEmpty()) {
+            layout.add(new Span("No variations found for this listing."));
+        } else {
+            final Runnable[] refresh = new Runnable[1];
+            refresh[0] = () -> {
+                layout.removeAll();
+                row.variations().forEach(v -> layout.add(buildEbayVariationRow(row, v, refresh[0])));
+            };
+            refresh[0].run();
+        }
+        dialog.add(layout);
+        dialog.getFooter().add(new Button("Close", ev -> dialog.close()));
+        dialog.open();
+    }
+
+    private Div buildEbayVariationRow(final EbayRow listing, final EbayApiClient.EbayVariation variation, final Runnable refresh) {
+        final String label = variation.specifics().stream()
+                .map(v -> v.propertyName() + ": " + v.value())
+                .collect(Collectors.joining(", "));
+        // A variation with its own SKU is uniquely identified by that SKU, so map it SKU-wide (no specifics
+        // signature) - the most robust match for an order line item that reports the same SKU. Only variations
+        // without a SKU fall back to parent-item-id + specifics signature.
+        final String key = variation.listingKey(listing.itemId());
+        final List<EbayApiClient.Variation> sig = (variation.sku() == null || variation.sku().isBlank())
+                ? variation.specifics() : List.of();
+        final String exactKey = key + "|" + EbayMappingService.MappingKey.signatureOf(sig);
+        final boolean mapped = ebayMapping.entries().containsKey(exactKey);
+        final boolean effective = ebayMapping.find(key, sig).isPresent();
+
+        final Span name = new Span(label + (variation.sku() == null || variation.sku().isBlank() ? "" : "  (SKU " + variation.sku() + ")"));
+        name.getStyle().set("flex", "1");
+        final Button edit = new Button(mapped ? "Edit" : "Map", new Icon(mapped ? VaadinIcon.EDIT : VaadinIcon.PLUS));
+        edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        edit.addClickListener(e -> openEditor("eBay: " + label + (key.isBlank() ? "" : " (" + key + ")"),
+                ebayMapping.find(key, sig).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
+                parts -> {
+                    ebayMapping.set(key, sig, new EbayMappingService.MappingEntry(parts));
+                    showNotification("Mapping saved for variation: " + label);
+                    refresh.run();
+                    renderAll();
+                }));
+        final Button test = testButton(effective ? "ok" : "—",
+                () -> ebayMapping.find(key, sig).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
+                label);
+        final Span stockLabel = new Span("stock:");
+        stockLabel.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
+        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockField("ebay", exactKey));
+        rowDiv.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center").set("padding", "4px 0");
+        return rowDiv;
+    }
+
+    /**
+     * A small on-hand stock editor for a mapping storage key. When an order arrives, in-stock units are fulfilled
+     * from here (decremented, not printed) - so bump this when you print extra or take a return. Default 0.
+     */
+    private com.vaadin.flow.component.textfield.IntegerField stockField(final String market, final String storageKey) {
+        final com.vaadin.flow.component.textfield.IntegerField f = new com.vaadin.flow.component.textfield.IntegerField();
+        f.setValue(stockService.get(market, storageKey));
+        f.setMin(0);
+        f.setStepButtonsVisible(true);
+        f.setWidth("90px");
+        f.setTooltipText("On-hand stock. New orders are filled from this first (decremented, not printed). "
+                + "Increase it when you print spares or take a return.");
+        f.addValueChangeListener(e -> {
+            final int v = e.getValue() == null ? 0 : e.getValue();
+            stockService.set(market, storageKey, v);
+        });
+        return f;
+    }
+
+    /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */
+    private Button hideButton(final String market, final String listingKey, final boolean hidden) {
+        final Button b = new Button(new Icon(hidden ? VaadinIcon.EYE : VaadinIcon.EYE_SLASH));
+        b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        b.setTooltipText(hidden
+                ? "Unhide this listing"
+                : "Hide this listing (not a printed product) - auto-queue will silently ignore it");
+        b.addClickListener(e -> {
+            if (hidden) {
+                tracking.unhideListing(market, listingKey);
+                showNotification("Listing unhidden");
+            } else {
+                tracking.hideListing(market, listingKey);
+                showNotification("Listing hidden - auto-queue will ignore it");
+            }
+            renderAll();
+        });
+        return b;
+    }
+
+    private Span mappedBadge(final String state) {
+        final Span s = new Span(state);
+        s.getStyle().setColor("—".equals(state) ? "var(--lumo-error-text-color)" : "var(--lumo-success-text-color)");
+        if (!"—".equals(state)) {
+            s.getStyle().setFontWeight("bold");
+        }
+        return s;
+    }
+
+    // -------------------------------------------------------------------------
+    // Shared editor dialog + library helpers
+    // -------------------------------------------------------------------------
+
+    private void openEditor(final String title, final List<MappingPart> initial, final Consumer<List<MappingPart>> onSave) {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle(title);
+        dialog.setWidth("1100px");
+        final MappingPartsPanel panel = new MappingPartsPanel(
+                this::getLibraryFiles,
+                this::loadPlateIds,
+                initial,
+                parts -> {
+                    onSave.accept(parts);
+                    dialog.close();
+                });
+        dialog.add(panel);
+        dialog.getFooter().add(new Button("Cancel", e -> dialog.close()));
+        dialog.open();
+    }
+
+    private List<String> getLibraryFiles() {
+        try (Stream<Path> stream = Files.list(Path.of(config.batchPrint().library()))) {
+            return stream
+                    .map(p -> p.getFileName().toString())
+                    .filter(name -> name.toLowerCase().endsWith(".3mf"))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .toList();
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
+    private List<Integer> loadPlateIds(final String filename) {
+        final Path file = Path.of(config.batchPrint().library()).resolve(filename);
+        if (!Files.isRegularFile(file)) {
+            return List.of();
+        }
+        final ProjectFile projectFile = projectFileInstance.get();
+        try {
+            return projectFile.setup(filename, file.toFile()).getPlates().stream().map(Plate::plateId).toList();
+        } catch (Exception ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
+}

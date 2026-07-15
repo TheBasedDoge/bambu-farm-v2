@@ -213,12 +213,13 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         final int queuedJobs = details.stream().mapToInt(d -> queueService.size(d.name())).sum();
         final long printing = details.stream().filter(d -> d.printer().getGCodeState().isPrinting()).count();
         final long autoStartOn = details.stream().filter(d -> autoStartService.isEnabled(d.name())).count();
+        final boolean asGlobal = autoStartService.isGloballyEnabled();
         final boolean aq = autoQueueService.isEnabled();
         final boolean aiConfigured = ollama.isEnabled();
         final boolean ai = aiService.isEnabled();
         key.append(openEtsy).append('|').append(openEbay).append('|').append(unqueued).append('|')
                 .append(queuedJobs).append('|').append(printing).append('|').append(autoStartOn).append('|')
-                .append(aq).append('|').append(ai).append('§');
+                .append(asGlobal).append('|').append(aq).append('|').append(ai).append('§');
 
         final Div strip = section();
         strip.addClassName("automation-full");
@@ -243,9 +244,17 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification("AI checks " + (aiService.isRuntimeEnabled() ? "enabled" : "disabled"));
             forceRefresh();
         });
-        final Button asBtn = bigToggle("Auto-Start %d/%d".formatted(autoStartOn, details.size()), autoStartOn > 0,
-                "Per-printer setting - click to manage on the Print Queue tab");
-        asBtn.addClickListener(e -> tabs.setSelectedTab(queueTab));
+        final Button asBtn = bigToggle("Auto-Start %d/%d".formatted(autoStartOn, details.size()), asGlobal,
+                asGlobal ? "Master switch is ON - each printer enabled on the Print Queue tab auto-starts its queue "
+                        + "after the AI bed-clear check. Click to turn auto-start OFF for the whole farm (per-printer "
+                        + "selections are kept)."
+                        : "Master switch is OFF - nothing auto-starts even where enabled per printer. Click to turn ON. "
+                        + "Choose which printers participate on the Print Queue tab.");
+        asBtn.addClickListener(e -> {
+            autoStartService.setGloballyEnabled(!autoStartService.isGloballyEnabled());
+            showNotification("Auto-start " + (autoStartService.isGloballyEnabled() ? "enabled globally" : "disabled globally"));
+            forceRefresh();
+        });
         final boolean requeue = autoQueueService.isAutoRequeueEnabled();
         key.append(requeue).append('|');
         final Button rqBtn = bigToggle("Auto-Requeue", requeue,
@@ -268,12 +277,13 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         row.add(chip("%d printing".formatted(printing), "var(--lumo-primary-color)"));
         strip.add(row);
 
-        final boolean lightsOut = aq && ai && autoStartOn == details.size() && !details.isEmpty();
+        final boolean lightsOut = aq && ai && asGlobal && autoStartOn == details.size() && !details.isEmpty();
         final Span pipeline = new Span(lightsOut
                 ? "✓ Fully automatic: mapped orders go from purchase to printing with zero clicks."
                 : "Pipeline: order → auto-queue%s → queue → auto-start%s → AI-watched printing → manual shipping."
                         .formatted(aq ? "" : " (OFF - manual Queue Print)",
-                                autoStartOn == 0 ? " (OFF everywhere - manual Start Next)" : ""));
+                                !asGlobal ? " (OFF globally - manual Start Next)"
+                                        : autoStartOn == 0 ? " (OFF everywhere - manual Start Next)" : ""));
         pipeline.getStyle().setColor(lightsOut ? "var(--lumo-success-text-color)" : "var(--lumo-secondary-text-color)");
         final Div pipelineLine = new Div(pipeline);
         pipelineLine.addClassName("automation-line");

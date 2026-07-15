@@ -34,6 +34,8 @@ public class EtsyOrderPollingService {
     EtsyMappingService mappingService;
     @Inject
     AutoQueueService autoQueue;
+    @Inject
+    StockService stockService;
 
     private final AtomicReference<List<EtsyApiClient.Receipt>> lastReceipts = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -78,18 +80,27 @@ public class EtsyOrderPollingService {
                     notificationService.notifyEvent("new_order", "Etsy",
                             "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
-                    autoQueue.processOrder(MARKET, String.valueOf(r.receiptId()),
-                            "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName()),
-                            r.transactions().stream()
-                                    .map(t -> new AutoQueueService.AutoQueueItem(
-                                            String.valueOf(t.listingId()),
-                                            "%dx %s".formatted(t.quantity(), t.title()),
-                                            t.quantity(),
-                                            t.personalization().isPresent(),
-                                            mappingService.find(t.listingId(), t.variations())
-                                                    .map(EtsyMappingService.MappingEntry::parts)
-                                                    .orElse(java.util.List.of())))
-                                    .toList());
+                    // Fulfill from on-hand stock first (decrements + notifies), then auto-queue only what's left to print.
+                    final String orderLabel = "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName());
+                    final java.util.List<AutoQueueService.AutoQueueItem> queueItems = new java.util.ArrayList<>();
+                    for (final EtsyApiClient.Transaction t : r.transactions()) {
+                        final java.util.Optional<String> key = mappingService.findKey(t.listingId(), t.variations());
+                        final int toPrint = stockService.applyToOrderLine(MARKET, key, t.quantity(), t.title(), orderLabel);
+                        if (key.isPresent() && toPrint <= 0) {
+                            continue; // whole line covered from stock - nothing to print
+                        }
+                        queueItems.add(new AutoQueueService.AutoQueueItem(
+                                String.valueOf(t.listingId()),
+                                "%dx %s".formatted(toPrint, t.title()),
+                                toPrint,
+                                t.personalization().isPresent(),
+                                mappingService.find(t.listingId(), t.variations())
+                                        .map(EtsyMappingService.MappingEntry::parts)
+                                        .orElse(java.util.List.of())));
+                    }
+                    if (!queueItems.isEmpty()) {
+                        autoQueue.processOrder(MARKET, String.valueOf(r.receiptId()), orderLabel, queueItems);
+                    }
                 });
     }
 

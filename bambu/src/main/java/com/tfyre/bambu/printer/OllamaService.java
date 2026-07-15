@@ -122,16 +122,22 @@ public class OllamaService {
 
     /**
      * Prepends printer status context (e.g. active HMS alerts, a printer error code) to a prompt as a hint,
-     * when present. Phrased so the model treats it as a clue to correlate with the image rather than an
-     * instruction to override what it actually sees - a stale or unrelated HMS code (e.g. an AMS calibration
-     * reminder) shouldn't force a false-positive failure/poor-bed-clear result.
+     * when present, using the editable template in {@link AiPromptService#renderContext(String)}. Phrased so the
+     * model treats it as a clue to correlate with the image rather than an instruction to override what it
+     * actually sees - a stale or unrelated HMS code shouldn't force a false-positive result.
      */
-    private static String withContext(final String prompt, final Optional<String> context) {
+    private String withContext(final String prompt, final Optional<String> context) {
         return context.filter(c -> !c.isBlank())
-                .map(c -> "Context: the printer's control board is currently reporting: " + c + ". "
-                        + "This may or may not be visible in the image or relevant to this specific question - "
-                        + "use it only as a hint, and base your answer primarily on what you actually observe.\n\n" + prompt)
+                .map(c -> prompts.renderContext(c) + "\n\n" + prompt)
                 .orElse(prompt);
+    }
+
+    /**
+     * Runs an arbitrary prompt against an image, exposing {@link #analyze} for the AI Settings "Test prompt"
+     * button so an edited (not-yet-saved) prompt can be tried against a live camera frame before saving.
+     */
+    public Optional<AiResult> analyzePrompt(final byte[] imageJpeg, final String prompt, final String positiveKeyword, final Optional<String> context) {
+        return analyze(imageJpeg, prompt, positiveKeyword, context);
     }
 
     /**

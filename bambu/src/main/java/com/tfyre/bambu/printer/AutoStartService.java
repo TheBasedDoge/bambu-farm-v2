@@ -47,6 +47,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AutoStartService {
 
     private static final String STORE_FILENAME = "bambu-auto-start.json";
+    /** Reserved key in the per-printer settings map that holds the farm-wide master switch (default on). */
+    private static final String GLOBAL_KEY = "*__global__*";
     private static final DateTimeFormatter HHMM = DateTimeFormatter.ofPattern("HH:mm");
     /** How often a blocked/paused printer is silently re-checked (bed cleared? AI back up?). */
     private static final Duration RETRY_INTERVAL = Duration.ofMinutes(15);
@@ -118,6 +120,21 @@ public class AutoStartService {
         return enabled.getOrDefault(printerName, Boolean.FALSE);
     }
 
+    /**
+     * Farm-wide master switch (default on). When off, NOTHING auto-starts regardless of each printer's own
+     * opt-in - the per-printer selections are preserved and take effect again when this is turned back on.
+     * Toggled from the Automation overview's Auto-Start button.
+     */
+    public boolean isGloballyEnabled() {
+        return enabled.getOrDefault(GLOBAL_KEY, Boolean.TRUE);
+    }
+
+    public void setGloballyEnabled(final boolean value) {
+        enabled.put(GLOBAL_KEY, value);
+        save();
+        Log.infof("AutoStartService: global auto-start %s", value ? "enabled" : "disabled");
+    }
+
     public void setEnabled(final String printerName, final boolean value) {
         enabled.put(printerName, value);
         save();
@@ -128,6 +145,9 @@ public class AutoStartService {
 
     /** Human-readable status for the /print-queue page, e.g. "blocked: bed not clear (12:03)". */
     public String getStatus(final String printerName) {
+        if (!isGloballyEnabled()) {
+            return "off (global)";
+        }
         if (!isEnabled(printerName)) {
             return "off";
         }
@@ -152,6 +172,9 @@ public class AutoStartService {
             }
             stateSince.putIfAbsent(name, now);
 
+            if (!isGloballyEnabled()) {
+                return; // master switch off - nothing auto-starts, per-printer opt-ins preserved
+            }
             if (!isEnabled(name)) {
                 return;
             }
