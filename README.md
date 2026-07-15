@@ -214,14 +214,14 @@ bambu.batch-print.library=bambu-library
 ### Automation page
 The **Automation** page (`/automation`, sidebar) is the control center for the whole order-to-print pipeline, with four tabs:
 - **Overview** - a live pipeline dashboard in a card grid: big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start, Auto-Requeue), summary chips (open orders, queued jobs, printers printing, and a "fully automatic" indicator when the whole chain is on), then one card per stage: *Orders in* (Etsy/eBay connection + open/unqueued counts + last poll + an ⏰ aging flag when the oldest unqueued order is a day or more old + in-flight order progress "X/Y printed" + recently queued orders), *Queue & auto-start* (per-printer state, queue size, next file, auto-start status), *Printing & AI watch* (what's printing, last AI verdict per printer, recent AI flags), and *Fulfillment* (recent completed jobs with **All / Auto-started / Manual filters** - prints started by auto-start are tagged in history; shipping stays manual on the marketplaces).
-- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones) with edit/delete. The listing-level Map button saves a listing-wide mapping (order lookups fall back to it for any variation), but each row also has a **Variations button** that pulls the listing's individual variations - Etsy variation combinations from the listing's inventory (`listings_r`), eBay variations straight from `GetMyeBaySelling` - so each specific variation (color, size, …) can be mapped to its own gcode, before any order arrives. eBay variations map by their own SKU (the same key an order line item reports, so the match is exact); Etsy variations map by their property=value signature. Listing tables show **product thumbnails** (Etsy listing images, eBay gallery pictures). Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert. Every mapped row also has a **Test (flask) button**: a dry run that simulates auto-queueing one unit right now - which printers qualify per part, which tray each would use, and the copy distribution, or exactly why the listing would be skipped (nothing is actually queued).
+- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones) with edit/delete. The listing-level Map button saves a listing-wide mapping (order lookups fall back to it for any variation), but each row also has a **Variations button** that pulls the listing's individual variations - Etsy variation combinations from the listing's inventory (`listings_r`), eBay variations straight from `GetMyeBaySelling` - so each specific variation (color, size, …) can be mapped to its own gcode, before any order arrives. eBay variations map by their own SKU (the same key an order line item reports, so the match is exact); Etsy variations map by their property=value signature. Listing tables show **product thumbnails** (Etsy listing images, eBay gallery pictures). Loaded listings are **cached** in memory, so they're still shown after a page reload or navigating away and back - the Load button re-fetches on demand. Each listing (and each variation) also has an **On-hand stock** field (default 0): bump it when you print spares or take a return, and incoming orders are filled from stock first - covered units are decremented and an `order_from_stock` notification fires *instead of* printing them, so only the shortfall is auto-queued. Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert. Every mapped row also has a **Test (flask) button**: a dry run that simulates auto-queueing one unit right now - which printers qualify per part, which tray each would use, and the copy distribution, or exactly why the listing would be skipped (nothing is actually queued).
 - **Print Queue** and **AI Settings** - the full pages below, embedded as tabs. The old direct routes (`/print-queue`, `/ai-settings`, `/mappings`) still work as deep links.
 
 ### Print Queue tab
 The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry, or **move it to the front** with the ⏫ button so it prints next; entries queued from an order show the order they belong to), current state, the same AI-gated **Start Next** button as the dashboard card, and two per-printer toggles below: **auto-start** (below) and **"Auto-queue new orders to this printer"** - the latter is on by default and only ever narrows the global Auto-Queue switch, so you can, say, let new orders auto-queue onto the P1S units but keep the H2D for manual jobs.
 
 ### AI-gated auto-start (lights-out mode)
-Per-printer opt-in on the Print Queue tab: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
+Two levels of control: a **farm-wide master switch** (the **Auto-Start** button on the Automation overview toggles it) and a **per-printer opt-in** on the Print Queue tab (*"Auto-start next when bed is clear (AI-checked)"*). The master switch off means nothing auto-starts anywhere - the per-printer selections are remembered and take effect again when you turn it back on. With the master on, a server-side watcher (runs with no browser open) checks every enabled printer every minute; once a printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
 - **Bed clear** → starts the next queued job and sends an `auto_start` notification.
 - **Bed not clear** → does NOT start, sends one `auto_start_blocked` notification **with the camera frame attached**, then silently re-checks every 15 minutes (clearing the bed doesn't change printer state, so the periodic recheck is what picks it up). You're only notified once per situation, not every retry.
 - **Fails closed**: if AI checks are disabled/unavailable or no snapshot can be grabbed, nothing starts - you get an `auto_start_blocked` notification instead. No AI answer = no start, ever.
@@ -282,7 +282,8 @@ Results show as a status chip on each dashboard card (with an animated "checking
 - a runtime on/off toggle (no restart needed) and a "Check Now" button per printer;
 - **the last analyzed snapshot per printer** - the exact camera frame the AI looked at, why the check ran (manual / scheduled / Start Next gate / auto-start gate), what HMS/error hint was fed to the model, and what it concluded (click to enlarge);
 - **check history** - the last 50 check attempts across the farm with trigger, result, and description; click any row to see that check's snapshot (in-memory, resets on restart);
-- **editable prompts** - the exact text sent to the model for each of the three checks, editable at runtime and saved to `bambu-ai-prompts.json` (blank or default-identical text reverts to the built-in default, so future stock-prompt improvements still reach you). Keep the leading YES/NO/GOOD answer-keyword instructions intact - result parsing depends on that first word.
+- **editable prompts** - the exact text sent to the model for each of the three checks, editable at runtime and saved to `bambu-ai-prompts.json` (blank or default-identical text reverts to the built-in default, so future stock-prompt improvements still reach you). Keep the leading YES/NO/GOOD answer-keyword instructions intact - result parsing depends on that first word. The built-in defaults are tuned for **gemma3:12b**. Each prompt has a **Test** button: pick a printer, and it runs the prompt as currently edited (unsaved) against that printer's live camera frame and shows the model's verdict + the analyzed image, so you can tune a prompt without waiting for a real check.
+- **HMS / error context hint** - there is no separate "HMS check". Instead, when a printer is actively reporting an HMS alert or print-error code, that code is prepended to the three checks above as a hint (so e.g. a nozzle-clog alert nudges the failure check). That wrapper text is itself an editable prompt at the bottom of the page (keep its `{context}` placeholder, which is replaced with the live code).
 
 ```properties
 # Base URL of your Ollama server - AI checks are fully skipped when this is unset
@@ -330,7 +331,7 @@ Without ffmpeg reachable, AI checks on X1C/X1E/H2D printers keep showing "no sna
 The **Notifications** checkbox in the sidebar enables desktop notifications on print finish/fail (requires an open tab and HTTPS or localhost).
 
 ### Notification Settings page
-The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, Auto-Queue, Auto-Queue Skipped, Auto-Start, Auto-Start Blocked, Auto-Requeue, Order Fully Printed, Daily Digest, Plug Auto-Off, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
+The **Notification Settings** page (`/notification-settings`, sidebar) shows whether webhook/MQTT are currently configured (with credentials masked), lets you toggle individual event types on/off at runtime without restarting (New Order, Auto-Queue, Auto-Queue Skipped, Auto-Start, Auto-Start Blocked, Auto-Requeue, Order Fully Printed, Fulfilled From Stock, Daily Digest, Plug Auto-Off, AI Failure Detected, AI First Layer Issue, Printer Error, Maintenance Due, Print Finished/Failed/Stopped - saved to `bambu-notification-suppressed.json`, survives restarts), and has a "Send Test" button that fires a test event to all configured channels regardless of the toggles above.
 
 ### MQTT (recommended for Home Assistant)
 ```properties
@@ -509,7 +510,7 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.digest-cron` | `off` | Quartz cron for the daily farm digest notification (e.g. `0 0 7 * * ?`) |
 
 ### Files to back up
-`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, `bambu-tasmota-autooff.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
+`bambu-maintenance.json`, `bambu-history.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, `bambu-tasmota-autooff.json`, `bambu-stock.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
 Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.
@@ -888,4 +889,41 @@ quarkus.log.file.path=application.log
 
 
 ### DEBUG logging
-#quark
+#quarkus.log.category."com.tfyre".level=DEBUG
+
+
+### TRACE logging
+#quarkus.log.min-level=TRACE
+#quarkus.log.category."com.tfyre".min-level=TRACE
+#quarkus.log.category."com.tfyre".level=TRACE
+```
+
+# Links
+
+## Inspirational Web interface
+
+* https://github.com/davglass/bambu-farm/tree/main
+
+## Printer MQTT Interface
+
+* https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md
+* https://github.com/xperiments-in/xtouch/blob/main/src/xtouch/device.h
+* https://github.com/SoftFever/OrcaSlicer/blob/main/src/slic3r/GUI/DeviceManager.hpp
+
+## Remoteview
+
+* https://github.com/bambulab/BambuStudio/issues/1536#issuecomment-1811916472
+
+## Marketplace APIs
+
+* Etsy Open API v3: https://developer.etsy.com/documentation/
+* eBay Sell Fulfillment API: https://developer.ebay.com/api-docs/sell/fulfillment/overview.html
+
+## Images from
+
+* https://github.com/SoftFever/OrcaSlicer/tree/main/resources/images
+
+## Json to Proto
+
+* https://json-to-proto.github.io/
+* https://formatter.org/protobuf-formatter
