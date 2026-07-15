@@ -216,6 +216,7 @@ public class PrintAiService {
             final java.util.function.BiFunction<byte[], Optional<String>, Optional<OllamaService.AiResult>> check,
             final boolean positiveMeansGood, final boolean updateLastResult) {
         final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+        illuminateForCheck(printerName);
         final Optional<byte[]> snapshot = getSnapshot(printerName);
         if (snapshot.isEmpty()) {
             record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
@@ -361,6 +362,27 @@ public class PrintAiService {
         return printers.getPrinters().stream()
                 .filter(p -> p.getName().equals(printerName))
                 .findFirst();
+    }
+
+    /** How long to wait after switching the chamber light on so the camera's auto-exposure settles before a check. */
+    private static final long LIGHT_SETTLE_MS = 4500;
+
+    /**
+     * Turns the printer's chamber light on and waits {@link #LIGHT_SETTLE_MS} for the camera exposure to adjust,
+     * so AI checks always analyze a well-lit frame. Called right before every snapshot grab for a check (including
+     * the AI Settings "Test" button). Best-effort: light-command or interruption failures don't abort the check.
+     */
+    public void illuminateForCheck(final String printerName) {
+        findPrinter(printerName).ifPresent(printer -> {
+            try {
+                printer.commandLight(BambuConst.LightMode.ON);
+                Thread.sleep(LIGHT_SETTLE_MS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            } catch (RuntimeException ex) {
+                Log.warnf("PrintAiService: %s: could not turn light on before check: %s", printerName, ex.getMessage());
+            }
+        });
     }
 
     /**

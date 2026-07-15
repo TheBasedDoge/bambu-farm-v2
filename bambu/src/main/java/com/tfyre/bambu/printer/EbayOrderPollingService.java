@@ -73,8 +73,13 @@ public class EbayOrderPollingService {
                 .filter(o -> fresh.contains(o.orderId()))
                 .forEach(o -> {
                     final String items = o.lineItems().stream()
-                            .map(li -> "%dx %s".formatted(li.quantity(), li.title()))
-                            .collect(Collectors.joining(", "));
+                            .map(li -> {
+                                final String vars = li.variationAspects().stream()
+                                        .map(v -> v.propertyName() + ": " + v.value())
+                                        .collect(Collectors.joining(", "));
+                                return "%dx %s%s".formatted(li.quantity(), li.title(), vars.isBlank() ? "" : " (" + vars + ")");
+                            })
+                            .collect(Collectors.joining("; "));
                     notificationService.notifyEvent("new_order", "eBay",
                             "New order %s from %s: %s".formatted(o.orderId(), o.buyerUsername(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));

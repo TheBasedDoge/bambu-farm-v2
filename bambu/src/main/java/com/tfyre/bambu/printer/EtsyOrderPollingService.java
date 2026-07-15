@@ -75,8 +75,13 @@ public class EtsyOrderPollingService {
                 .filter(r -> fresh.contains(String.valueOf(r.receiptId())))
                 .forEach(r -> {
                     final String items = r.transactions().stream()
-                            .map(t -> "%dx %s".formatted(t.quantity(), t.title()))
-                            .collect(Collectors.joining(", "));
+                            .map(t -> {
+                                final String vars = t.variations().stream()
+                                        .map(v -> v.propertyName() + ": " + v.value())
+                                        .collect(Collectors.joining(", "));
+                                return "%dx %s%s".formatted(t.quantity(), t.title(), vars.isBlank() ? "" : " (" + vars + ")");
+                            })
+                            .collect(Collectors.joining("; "));
                     notificationService.notifyEvent("new_order", "Etsy",
                             "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));

@@ -500,6 +500,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         showNotification("Testing %s prompt on %s…".formatted(type.label(), printerName));
         final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
         executor.submit(() -> {
+            aiService.illuminateForCheck(printerName);
             final Optional<byte[]> snap = aiService.getSnapshot(printerName);
             final Optional<OllamaService.AiResult> result = snap.flatMap(bytes ->
                     ollama.analyzePrompt(bytes, promptText, type.positiveKeyword(), Optional.empty()));
