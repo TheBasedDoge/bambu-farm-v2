@@ -44,6 +44,8 @@ import java.util.stream.Collectors;
 public class AutoQueueService {
 
     private static final String STORE_FILENAME = "bambu-auto-queue.json";
+    /** Per-printer opt-in keys live in the same settings map under this prefix (default on, so existing farms keep auto-queueing to every printer). */
+    private static final String PRINTER_PREFIX = "printer:";
 
     /**
      * One order line item as the marketplace-agnostic input: listing key (Etsy listing id / eBay SKU or item
@@ -118,6 +120,21 @@ public class AutoQueueService {
         settings.put("auto-requeue", enabled);
         save();
         Log.infof("AutoQueueService: auto-requeue %s", enabled ? "enabled" : "disabled");
+    }
+
+    /**
+     * Whether a specific printer is allowed to receive auto-queued jobs. Defaults to {@code true}, so turning on
+     * the global auto-queue toggle keeps sending to every printer as before; uncheck a printer here (on the Print
+     * Queue page) to exclude it - e.g. run lights-out only on the P1S units and leave the H2D for manual jobs.
+     */
+    public boolean isPrinterEnabled(final String printerName) {
+        return settings.getOrDefault(PRINTER_PREFIX + printerName, Boolean.TRUE);
+    }
+
+    public void setPrinterEnabled(final String printerName, final boolean enabled) {
+        settings.put(PRINTER_PREFIX + printerName, enabled);
+        save();
+        Log.infof("AutoQueueService: auto-queue to %s %s", printerName, enabled ? "enabled" : "disabled");
     }
 
     /**
@@ -290,6 +307,7 @@ public class AutoQueueService {
 
     private List<Candidate> eligiblePrinters(final MappingPart part) {
         return printers.getPrintersDetail().stream()
+                .filter(detail -> isPrinterEnabled(detail.name()))
                 .map(detail -> resolveSlot(detail, part))
                 .flatMap(Optional::stream)
                 .toList();
@@ -306,25 +324,4 @@ public class AutoQueueService {
             // No material requirement - any printer, mapped slot (or default) as-is
             return Optional.of(new Candidate(detail, ready, part.amsSlot()));
         }
-        final String want = part.filamentType().strip().toUpperCase();
-        final Map<Integer, String> trays = printer.getAmsTrayTypes();
-        if (part.amsSlot() != null) {
-            // Strict: the mapped tray must currently hold the wanted material
-            return want.equals(trays.get(part.amsSlot()))
-                    ? Optional.of(new Candidate(detail, ready, part.amsSlot()))
-                    : Optional.empty();
-        }
-        // Any tray with the wanted material qualifies - lowest real AMS tray first, external spool last
-        return trays.entrySet().stream()
-                .filter(e -> want.equals(e.getValue()))
-                .map(Map.Entry::getKey)
-                .sorted(Comparator.comparingInt(slot -> slot == BambuConst.AMS_TRAY_VIRTUAL ? Integer.MAX_VALUE : slot))
-                .findFirst()
-                .map(slot -> new Candidate(detail, ready, slot));
-    }
-
-    private static String truncate(final String s, final int max) {
-        return s == null ? "" : (s.length() <= max ? s : s.substring(0, max) + "…");
-    }
-
-}
+        f

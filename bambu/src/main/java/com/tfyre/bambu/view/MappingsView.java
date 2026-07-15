@@ -88,11 +88,13 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     com.tfyre.bambu.printer.AutoQueueService autoQueueService;
 
     /** One row in the Etsy listings table. */
-    public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden, String imageUrl) {
+    public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden, String imageUrl,
+            boolean hasVariations) {
     }
 
     /** One row in the eBay listing-keys table. */
-    public record EbayRow(String listingKey, String title, String mappedState, boolean hidden, String imageUrl) {
+    public record EbayRow(String listingKey, String title, String mappedState, boolean hidden, String imageUrl,
+            String itemId, List<EbayApiClient.EbayVariation> variations) {
     }
 
     /** Whether hidden (never-printed) listings are shown in the tables. */
@@ -210,7 +212,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                         }));
                 return new Div(edit, testButton(row.mappedState(),
                         () -> etsyMapping.find(row.listingId(), List.of()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
-                        row.title()), hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
+                        row.title()), etsyVariationsButton(row), hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             etsyGrid.setWidth("100%");
             etsyGrid.setAllRowsVisible(true);
@@ -226,7 +228,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(),
                         mappedState(saved, String.valueOf(l.listingId())),
                         tracking.isListingHidden("etsy", String.valueOf(l.listingId())),
-                        l.imageUrl()))
+                        l.imageUrl(), l.hasVariations()))
                 .filter(r -> showHidden || !r.hidden())
                 .toList());
         etsyGrid.setVisible(!etsyListings.isEmpty());
@@ -295,7 +297,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                         }));
                 return new Div(edit, testButton(row.mappedState(),
                         () -> ebayMapping.find(row.listingKey(), List.of()).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
-                        row.listingKey()), hideButton("ebay", row.listingKey(), row.hidden()));
+                        row.listingKey()), ebayVariationsButton(row), hideButton("ebay", row.listingKey(), row.hidden()));
             }).setHeader("").setAutoWidth(true);
             ebayGrid.setWidth("100%");
             ebayGrid.setAllRowsVisible(true);
@@ -310,8 +312,10 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         // Known keys: fetched active listings first (best titles + images), then open orders, then bare mapped keys
         final Map<String, String> titles = new LinkedHashMap<>();
         final Map<String, String> images = new LinkedHashMap<>();
+        final Map<String, EbayApiClient.EbayListing> byKey = new LinkedHashMap<>();
         ebayListings.forEach(l -> {
             titles.putIfAbsent(l.listingKey(), l.title());
+            byKey.putIfAbsent(l.listingKey(), l);
             if (l.imageUrl() != null && !l.imageUrl().isBlank()) {
                 images.putIfAbsent(l.listingKey(), l.imageUrl());
             }
@@ -326,8 +330,13 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .map(k -> k.substring(0, k.indexOf('|') < 0 ? k.length() : k.indexOf('|')))
                 .forEach(k -> titles.putIfAbsent(k, ""));
         ebayGrid.setItems(titles.entrySet().stream()
-                .map(e -> new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey()),
-                        tracking.isListingHidden("ebay", e.getKey()), images.getOrDefault(e.getKey(), "")))
+                .map(e -> {
+                    final EbayApiClient.EbayListing l = byKey.get(e.getKey());
+                    return new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey()),
+                            tracking.isListingHidden("ebay", e.getKey()), images.getOrDefault(e.getKey(), ""),
+                            l == null ? e.getKey() : l.itemId(),
+                            l == null ? List.of() : l.variations());
+                })
                 .filter(r -> showHidden || !r.hidden())
                 .sorted((a, b) -> a.listingKey().compareToIgnoreCase(b.listingKey()))
                 .toList());
@@ -485,81 +494,53 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         return b;
     }
 
-    /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */
-    private Button hideButton(final String market, final String listingKey, final boolean hidden) {
-        final Button b = new Button(new Icon(hidden ? VaadinIcon.EYE : VaadinIcon.EYE_SLASH));
+    // -------------------------------------------------------------------------
+    // Per-variation mapping (map a specific color/size/etc. to its own gcode)
+    // -------------------------------------------------------------------------
+
+    /** Opens a dialog listing this Etsy listing's variation combinations, each mappable to its own gcode. */
+    private Button etsyVariationsButton(final EtsyRow row) {
+        final Button b = new Button("Variations", new Icon(VaadinIcon.GRID_SMALL));
         b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-        b.setTooltipText(hidden
-                ? "Unhide this listing"
-                : "Hide this listing (not a printed product) - auto-queue will silently ignore it");
-        b.addClickListener(e -> {
-            if (hidden) {
-                tracking.unhideListing(market, listingKey);
-                showNotification("Listing unhidden");
-            } else {
-                tracking.hideListing(market, listingKey);
-                showNotification("Listing hidden - auto-queue will ignore it");
-            }
-            renderAll();
-        });
+        b.setEnabled(row.hasVariations());
+        b.setTooltipText(row.hasVariations()
+                ? "Map specific variations (color, size, …) of this listing to their own gcode"
+                : "This listing has no variations - use its Map button for a single mapping");
+        b.addClickListener(e -> openEtsyVariationsDialog(row));
         return b;
     }
 
-    private Span mappedBadge(final String state) {
-        final Span s = new Span(state);
-        s.getStyle().setColor("—".equals(state) ? "var(--lumo-error-text-color)" : "var(--lumo-success-text-color)");
-        if (!"—".equals(state)) {
-            s.getStyle().setFontWeight("bold");
-        }
-        return s;
-    }
-
-    // -------------------------------------------------------------------------
-    // Shared editor dialog + library helpers
-    // -------------------------------------------------------------------------
-
-    private void openEditor(final String title, final List<MappingPart> initial, final Consumer<List<MappingPart>> onSave) {
+    private void openEtsyVariationsDialog(final EtsyRow row) {
         final Dialog dialog = new Dialog();
-        dialog.setHeaderTitle(title);
-        dialog.setWidth("1100px");
-        final MappingPartsPanel panel = new MappingPartsPanel(
-                this::getLibraryFiles,
-                this::loadPlateIds,
-                initial,
-                parts -> {
-                    onSave.accept(parts);
-                    dialog.close();
-                });
-        dialog.add(panel);
-        dialog.getFooter().add(new Button("Cancel", e -> dialog.close()));
+        dialog.setHeaderTitle("Variations: " + row.title());
+        dialog.setWidth("900px");
+        final VerticalLayout layout = new VerticalLayout();
+        layout.setPadding(false);
+        final Span loading = new Span("Loading variations…");
+        layout.add(loading);
+        dialog.add(layout);
+        dialog.getFooter().add(new Button("Close", ev -> dialog.close()));
         dialog.open();
-    }
 
-    private List<String> getLibraryFiles() {
-        try (Stream<Path> stream = Files.list(Path.of(config.batchPrint().library()))) {
-            return stream
-                    .map(p -> p.getFileName().toString())
-                    .filter(name -> name.toLowerCase().endsWith(".3mf"))
-                    .sorted(String.CASE_INSENSITIVE_ORDER)
-                    .toList();
-        } catch (IOException ex) {
-            Log.error(ex.getMessage(), ex);
-            return List.of();
-        }
-    }
-
-    private List<Integer> loadPlateIds(final String filename) {
-        final Path file = Path.of(config.batchPrint().library()).resolve(filename);
-        if (!Files.isRegularFile(file)) {
-            return List.of();
-        }
-        final ProjectFile projectFile = projectFileInstance.get();
-        try {
-            return projectFile.setup(filename, file.toFile()).getPlates().stream().map(Plate::plateId).toList();
-        } catch (Exception ex) {
-            Log.error(ex.getMessage(), ex);
-            return List.of();
-        }
-    }
-
-}
+        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+        new Thread(() -> {
+            try {
+                final List<EtsyApiClient.VariationCombo> combos = etsyClient.getListingVariations(row.listingId());
+                ui.ifPresent(u -> u.access(() -> {
+                    layout.removeAll();
+                    if (combos.isEmpty()) {
+                        layout.add(new Span("This listing has no variations. Use its Map button for a single listing-wide mapping."));
+                        return;
+                    }
+                    final Runnable[] refresh = new Runnable[1];
+                    refresh[0] = () -> {
+                        layout.removeAll();
+                        combos.forEach(c -> layout.add(buildEtsyVariationRow(row, c, refresh[0])));
+                    };
+                    refresh[0].run();
+                }));
+            } catch (Exception ex) {
+                Log.errorf(ex, "MappingsView: Etsy variation fetch failed: %s", ex.getMessage());
+                ui.ifPresent(u -> u.access(() -> {
+                    layout.removeAll();
+                    final Span err = new Span("Could not load variations: 

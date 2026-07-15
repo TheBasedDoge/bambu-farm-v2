@@ -214,11 +214,11 @@ bambu.batch-print.library=bambu-library
 ### Automation page
 The **Automation** page (`/automation`, sidebar) is the control center for the whole order-to-print pipeline, with four tabs:
 - **Overview** - a live pipeline dashboard in a card grid: big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start, Auto-Requeue), summary chips (open orders, queued jobs, printers printing, and a "fully automatic" indicator when the whole chain is on), then one card per stage: *Orders in* (Etsy/eBay connection + open/unqueued counts + last poll + an ⏰ aging flag when the oldest unqueued order is a day or more old + in-flight order progress "X/Y printed" + recently queued orders), *Queue & auto-start* (per-printer state, queue size, next file, auto-start status), *Printing & AI watch* (what's printing, last AI verdict per printer, recent AI flags), and *Fulfillment* (recent completed jobs with **All / Auto-started / Manual filters** - prints started by auto-start are tagged in history; shipping stays manual on the marketplaces).
-- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones from the order pages) with edit/delete. Mappings saved here are listing-wide - order lookups fall back to them for any variation. Listing tables show **product thumbnails** (Etsy listing images, eBay gallery pictures). Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert. Every mapped row also has a **Test (flask) button**: a dry run that simulates auto-queueing one unit right now - which printers qualify per part, which tray each would use, and the copy distribution, or exactly why the listing would be skipped (nothing is actually queued).
+- **Mappings** - every listing → gcode assignment in one place. Both marketplaces have a **"Load active listings"** button that pulls the whole shop into a table so products can be mapped **before an order ever arrives** - which is exactly what auto-queue needs to handle a first-time order hands-free. Etsy uses the `listings_r` scope the connect flow always requested; eBay uses the Trading API's `GetMyeBaySelling` (sees ALL listings, not just API-created ones), which in practice works with any connected account token - the legacy Trading API doesn't enforce the granular REST scopes. New connections request the base + `sell.inventory.readonly` scopes anyway for future REST use; in the unlikely event the pull reports a permissions error, Disconnect and reconnect eBay once. eBay rows also include listing keys from saved mappings and open orders. A third table lists every raw saved mapping (including per-variation ones) with edit/delete. The listing-level Map button saves a listing-wide mapping (order lookups fall back to it for any variation), but each row also has a **Variations button** that pulls the listing's individual variations - Etsy variation combinations from the listing's inventory (`listings_r`), eBay variations straight from `GetMyeBaySelling` - so each specific variation (color, size, …) can be mapped to its own gcode, before any order arrives. eBay variations map by their own SKU (the same key an order line item reports, so the match is exact); Etsy variations map by their property=value signature. Listing tables show **product thumbnails** (Etsy listing images, eBay gallery pictures). Listings that are never printed (digital items, add-ons) can be **hidden** (eye-slash button, "Show hidden listings" to reveal) - orders containing only hidden, unmapped listings are silently ignored by auto-queue instead of raising a "not mapped" alert. Every mapped row also has a **Test (flask) button**: a dry run that simulates auto-queueing one unit right now - which printers qualify per part, which tray each would use, and the copy distribution, or exactly why the listing would be skipped (nothing is actually queued).
 - **Print Queue** and **AI Settings** - the full pages below, embedded as tabs. The old direct routes (`/print-queue`, `/ai-settings`, `/mappings`) still work as deep links.
 
 ### Print Queue tab
-The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry, or **move it to the front** with the ⏫ button so it prints next; entries queued from an order show the order they belong to), current state, the same AI-gated **Start Next** button as the dashboard card, and the per-printer **auto-start** toggle below.
+The **Print Queue** tab (also `/print-queue`) shows every printer's queue in one place instead of opening each card's dialog individually - one section per printer with its queued jobs (remove any entry, or **move it to the front** with the ⏫ button so it prints next; entries queued from an order show the order they belong to), current state, the same AI-gated **Start Next** button as the dashboard card, and two per-printer toggles below: **auto-start** (below) and **"Auto-queue new orders to this printer"** - the latter is on by default and only ever narrows the global Auto-Queue switch, so you can, say, let new orders auto-queue onto the P1S units but keep the H2D for manual jobs.
 
 ### AI-gated auto-start (lights-out mode)
 Per-printer opt-in on the Print Queue tab: *"Auto-start next when bed is clear (AI-checked)"*. When enabled, a server-side watcher (runs with no browser open) checks every minute; once the printer has been ready - finished, idle, or failed - for the settle delay with jobs queued, it runs the AI bed-clear check and:
@@ -406,7 +406,7 @@ Orders are polled on a schedule and filtered to unfulfilled/open only; poll erro
 
 **Auto-queue (zero-click repeat orders)**: an opt-in "Auto-queue new orders" toggle on either Sales Orders page or the Automation overview (one global switch, persisted to `bambu-auto-queue.json`). When a poll finds a NEW order whose line items are all mapped, the print jobs are queued automatically:
 - Each mapped part can specify a required **filament type** (e.g. PETG, ASA) next to its AMS slot in the mapping editor. Auto-queue matches this against each printer's **live AMS telemetry**: with a slot also set, that exact tray must currently hold that material (catches a swapped spool); with type only, any tray with that material qualifies and the job is pinned to it per printer.
-- Among qualifying printers: idle with an empty queue wins, then shortest queue.
+- Among qualifying printers: idle with an empty queue wins, then shortest queue. Printers can be **individually excluded** from auto-queue on the Print Queue page (each printer is eligible by default) - useful to keep, say, the H2D out of the automatic rotation while the P1S units run lights-out. Excluded printers still take manual and batch prints.
 - **All-or-nothing per order**: an unmapped line item, a missing library file, a part no printer has filament for, or **buyer personalization on any item** (custom text must never be auto-printed from the generic mapping) skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
 - Queued orders get the "✓ queued" badge and are never auto-queued twice. Success fires an `auto_queue` notification with the job distribution (e.g. "6 jobs → P1S×3, P1P×3").
 
@@ -888,41 +888,4 @@ quarkus.log.file.path=application.log
 
 
 ### DEBUG logging
-#quarkus.log.category."com.tfyre".level=DEBUG
-
-
-### TRACE logging
-#quarkus.log.min-level=TRACE
-#quarkus.log.category."com.tfyre".min-level=TRACE
-#quarkus.log.category."com.tfyre".level=TRACE
-```
-
-# Links
-
-## Inspirational Web interface
-
-* https://github.com/davglass/bambu-farm/tree/main
-
-## Printer MQTT Interface
-
-* https://github.com/Doridian/OpenBambuAPI/blob/main/mqtt.md
-* https://github.com/xperiments-in/xtouch/blob/main/src/xtouch/device.h
-* https://github.com/SoftFever/OrcaSlicer/blob/main/src/slic3r/GUI/DeviceManager.hpp
-
-## Remoteview
-
-* https://github.com/bambulab/BambuStudio/issues/1536#issuecomment-1811916472
-
-## Marketplace APIs
-
-* Etsy Open API v3: https://developer.etsy.com/documentation/
-* eBay Sell Fulfillment API: https://developer.ebay.com/api-docs/sell/fulfillment/overview.html
-
-## Images from
-
-* https://github.com/SoftFever/OrcaSlicer/tree/main/resources/images
-
-## Json to Proto
-
-* https://json-to-proto.github.io/
-* https://formatter.org/protobuf-formatter
+#quark

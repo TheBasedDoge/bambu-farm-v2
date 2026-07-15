@@ -89,11 +89,25 @@ public class EbayApiClient {
     // -------------------------------------------------------------------------
 
     /** An active listing, for the Mappings tab. {@link #listingKey()} matches {@link LineItem#listingKey()}. */
-    public record EbayListing(String itemId, String sku, String title, int quantity, String imageUrl) {
+    public record EbayListing(String itemId, String sku, String title, int quantity, String imageUrl,
+            List<EbayVariation> variations) {
 
         /** Stable identity for mapping: SKU if present, else the item id - same rule as order line items. */
         public String listingKey() {
             return (sku != null && !sku.isBlank()) ? sku : itemId;
+        }
+    }
+
+    /**
+     * One variation of a multi-variation eBay listing (e.g. Color=Red, Size=Large). Each variation of a listing
+     * usually carries its own SKU, which is exactly what an order line item reports, so
+     * {@link #listingKey(String)} matches {@link LineItem#listingKey()} for that variation.
+     */
+    public record EbayVariation(String sku, List<Variation> specifics, int quantityAvailable) {
+
+        /** SKU if the variation has one, else the parent listing's item id - the same rule order line items use. */
+        public String listingKey(final String parentItemId) {
+            return (sku != null && !sku.isBlank()) ? sku : parentItemId;
         }
     }
 
@@ -166,12 +180,86 @@ public class EbayApiClient {
                 final int quantity = Optional.of(childText(item, "QuantityAvailable")).filter(s -> !s.isBlank())
                         .or(() -> Optional.of(childText(item, "Quantity")).filter(s -> !s.isBlank()))
                         .map(Integer::parseInt).orElse(0);
-                result.add(new EbayListing(itemId, childText(item, "SKU"), childText(item, "Title"), quantity,
-                        childText(item, "GalleryURL")));
+                // SKU read as a DIRECT child only: on a variation listing getElementsByTagName would otherwise
+                // return the first nested variation SKU, making the parent row collide with a variation's key.
+                result.add(new EbayListing(itemId, directChildText(item, "SKU"), childText(item, "Title"), quantity,
+                        childText(item, "GalleryURL"), parseListingVariations(item)));
             }
             page++;
         }
         result.sort((a, b) -> a.title().compareToIgnoreCase(b.title()));
+        return result;
+    }
+
+    /**
+     * Parses the {@code <Variations>} block of an active listing's {@code <Item>} into per-variation SKU +
+     * specifics, scoped to direct children so item-level {@code ItemSpecifics} (which reuse {@code NameValueList})
+     * aren't mistaken for variation specifics. Returns an empty list for single-variation listings.
+     */
+    private static List<EbayVariation> parseListingVariations(final org.w3c.dom.Element item) {
+        final org.w3c.dom.Element variations = directChild(item, "Variations");
+        if (variations == null) {
+            return List.of();
+        }
+        final List<EbayVariation> result = new ArrayList<>();
+        for (final org.w3c.dom.Element variation : directChildren(variations, "Variation")) {
+            final List<Variation> specifics = new ArrayList<>();
+            final org.w3c.dom.Element specificsEl = directChild(variation, "VariationSpecifics");
+            if (specificsEl != null) {
+                for (final org.w3c.dom.Element nv : directChildren(specificsEl, "NameValueList")) {
+                    final String name = childText(nv, "Name");
+                    final String value = childText(nv, "Value");
+                    if (!name.isBlank() && !value.isBlank()) {
+                        specifics.add(new Variation(name, value));
+                    }
+                }
+            }
+            if (specifics.isEmpty()) {
+                continue;
+            }
+            final int qty = parseIntOrZero(childText(variation, "Quantity"));
+            final int sold = parseIntOrZero(childText(variation, "QuantitySold"));
+            result.add(new EbayVariation(childText(variation, "SKU"), specifics, Math.max(0, qty - sold)));
+        }
+        return result;
+    }
+
+    private static int parseIntOrZero(final String s) {
+        try {
+            return s == null || s.isBlank() ? 0 : Integer.parseInt(s.trim());
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    /** Trimmed text of the first direct child element with the given tag name, or {@code ""}. */
+    private static String directChildText(final org.w3c.dom.Element parent, final String tag) {
+        final org.w3c.dom.Element child = directChild(parent, tag);
+        return child == null ? "" : child.getTextContent().trim();
+    }
+
+    /** First direct child element with the given tag name, or {@code null}. */
+    private static org.w3c.dom.Element directChild(final org.w3c.dom.Element parent, final String tag) {
+        final org.w3c.dom.NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            final org.w3c.dom.Node n = children.item(i);
+            if (n.getNodeType() == org.w3c.dom.Node.ELEMENT_NODE && tag.equals(n.getNodeName())) {
+                return (org.w3c.dom.Element) n;
+            }
+        }
+        return null;
+    }
+
+    /** All direct child elements with the given tag name. */
+    private static List<org.w3c.dom.Element> directChildren(final org.w3c.dom.Element parent, final String tag) {
+        final List<org.w3c.dom.Element> result = new ArrayList<>();
+        final org.w3c.dom.NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            final org.w3c.dom.Node n = children.item(i);
+            if (n.getNodeType() == org.w3c.dom.Node.ELEMENT_NODE && tag.equals(n.getNodeName())) {
+                result.add((org.w3c.dom.Element) n);
+            }
+        }
         return result;
     }
 
@@ -184,109 +272,4 @@ public class EbayApiClient {
         return factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
-    private static String firstText(final org.w3c.dom.Document doc, final String tag) {
-        final org.w3c.dom.NodeList nodes = doc.getElementsByTagName(tag);
-        return nodes.getLength() == 0 ? null : nodes.item(0).getTextContent().trim();
-    }
-
-    private static String childText(final org.w3c.dom.Element parent, final String tag) {
-        final org.w3c.dom.NodeList nodes = parent.getElementsByTagName(tag);
-        return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent().trim();
-    }
-
-    /** Swallowing variant for non-critical calls. */
-    private Optional<JsonNode> get(final String path) {
-        try {
-            return Optional.of(getOrThrow(path));
-        } catch (Exception ex) {
-            Log.errorf(ex, "EbayApiClient: GET %s failed: %s", path, ex.getMessage());
-            return Optional.empty();
-        }
-    }
-
-    private static List<Variation> parseVariations(final JsonNode lineItem) {
-        final List<Variation> result = new ArrayList<>();
-        for (final JsonNode v : lineItem.path("variationAspects")) {
-            final String name = v.path("name").asText("");
-            final String value = v.path("value").asText("");
-            if (!name.isBlank()) {
-                result.add(new Variation(name, value));
-            }
-        }
-        return result;
-    }
-
-    private static Optional<String> parsePersonalization(final JsonNode lineItem) {
-        // eBay's documented getOrders schema has no dedicated personalization field (unlike Etsy); check the couple
-        // of shapes seen for "Personalize It" listings in case one is present, without assuming a fixed structure.
-        final JsonNode custom = lineItem.path("customizedOptions");
-        if (custom.isArray() && !custom.isEmpty()) {
-            final StringBuilder sb = new StringBuilder();
-            for (final JsonNode opt : custom) {
-                final String name = opt.path("name").asText("");
-                final String value = opt.path("value").asText("");
-                if (!value.isBlank()) {
-                    sb.append(sb.isEmpty() ? "" : "; ").append(name.isBlank() ? value : name + ": " + value);
-                }
-            }
-            if (!sb.isEmpty()) {
-                return Optional.of(sb.toString());
-            }
-        }
-        final String notes = lineItem.path("buyerCustomization").asText("");
-        return notes.isBlank() ? Optional.empty() : Optional.of(notes);
-    }
-
-    private LineItem parseLineItem(final JsonNode li) {
-        return new LineItem(
-                li.path("lineItemId").asText(""),
-                li.path("sku").asText(""),
-                li.path("legacyItemId").asText(""),
-                li.path("title").asText(""),
-                Math.max(1, li.path("quantity").asInt(1)),
-                parseVariations(li),
-                parsePersonalization(li));
-    }
-
-    private Order parseOrder(final JsonNode o) {
-        final List<LineItem> lineItems = new ArrayList<>();
-        for (final JsonNode li : o.path("lineItems")) {
-            lineItems.add(parseLineItem(li));
-        }
-        return new Order(
-                o.path("orderId").asText(""),
-                o.path("buyer").path("username").asText("(unknown buyer)"),
-                parseInstant(o.path("creationDate").asText("")),
-                o.path("orderFulfillmentStatus").asText("NOT_STARTED"),
-                lineItems);
-    }
-
-    private static Instant parseInstant(final String text) {
-        try {
-            return text.isBlank() ? Instant.EPOCH : Instant.parse(text);
-        } catch (Exception ex) {
-            return Instant.EPOCH;
-        }
-    }
-
-    /**
-     * Fetches orders that still need fulfillment (NOT_STARTED or IN_PROGRESS), newest first. Throws on failure so
-     * the caller can surface the real reason instead of silently showing "no orders".
-     */
-    public List<Order> getOpenOrders() throws Exception {
-        final String filter = java.net.URLEncoder.encode("orderfulfillmentstatus:{NOT_STARTED|IN_PROGRESS}", java.nio.charset.StandardCharsets.UTF_8);
-        final String path = "/sell/fulfillment/v1/order?filter=" + filter + "&limit=200";
-        final JsonNode root = getOrThrow(path);
-        final List<Order> result = new ArrayList<>();
-        for (final JsonNode o : root.path("orders")) {
-            result.add(parseOrder(o));
-        }
-        result.sort((a, b) -> b.creationDate().compareTo(a.creationDate()));
-        return result;
-    }
-
-    public boolean isConnected() {
-        return oauth.isConnected();
-    }
-
-}
+    private static String firstText(final org.w3c.dom.Doc

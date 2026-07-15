@@ -2,6 +2,7 @@ package com.tfyre.bambu.view;
 
 import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.YesNoCancelDialog;
+import com.tfyre.bambu.printer.AutoQueueService;
 import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
@@ -58,6 +59,8 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
     PrintAiService aiService;
     @Inject
     AutoStartService autoStartService;
+    @Inject
+    AutoQueueService autoQueueService;
     @Inject
     BambuConfig config;
     @Inject
@@ -137,6 +140,20 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         final HorizontalLayout autoStartRow = new HorizontalLayout(autoStart, autoStartStatus);
         autoStartRow.setDefaultVerticalComponentAlignment(FlexLayout.Alignment.CENTER);
         section.add(autoStartRow);
+
+        // Per-printer auto-queue opt-in: whether NEW mapped orders may auto-queue onto this printer. Default on,
+        // so this only ever narrows the global "Auto-queue new orders" toggle (Sales Orders / Automation pages).
+        final Checkbox autoQueue = new Checkbox("Auto-queue new orders to this printer");
+        autoQueue.setValue(autoQueueService.isPrinterEnabled(detail.name()));
+        autoQueue.setTooltipText("Only matters when the global \"Auto-queue new orders\" toggle is on. Uncheck to "
+                + "keep new marketplace orders from auto-queueing onto this printer (it can still be used for manual "
+                + "and batch prints) - e.g. run lights-out only on the P1S units and leave the H2D for manual jobs.");
+        autoQueue.addValueChangeListener(e -> {
+            autoQueueService.setPrinterEnabled(detail.name(), Boolean.TRUE.equals(e.getValue()));
+            showNotification("Auto-queue to %s %s".formatted(detail.name(),
+                    autoQueueService.isPrinterEnabled(detail.name()) ? "enabled" : "disabled"));
+        });
+        section.add(autoQueue);
 
         // Self-referencing refresh callback: reloads the state badge, the queue list (whose remove buttons
         // also call back into this same refresh), and the Start Next button's label/enabled state. Also runs
@@ -246,32 +263,4 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
             } else {
                 confirmAndStartNext(detail, entry, "", refresh);
             }
-        }, () -> showError("%s: queue is empty".formatted(printerName)));
-    }
-
-    private void confirmAndStartNext(final BambuPrinters.PrinterDetail detail, final PrintQueueService.QueueEntry entry,
-            final String aiNote, final Runnable refresh) {
-        YesNoCancelDialog.show("%s - Start next queued print [%s] plate %d\n\nIs the bed clear?%s"
-                .formatted(detail.name(), entry.command().filename(), entry.command().plateId(), aiNote),
-                ync -> {
-                    if (ync.isConfirmed()) {
-                        performStartNext(detail, refresh);
-                    }
-                });
-    }
-
-    private void performStartNext(final BambuPrinters.PrinterDetail detail, final Runnable refresh) {
-        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-        queueService.startNext(detail.name(),
-                () -> ui.ifPresent(u -> u.access(() -> {
-                    showNotification("%s: print started".formatted(detail.name()));
-                    refresh.run();
-                })),
-                error -> ui.ifPresent(u -> u.access(() -> showError(error))));
-    }
-
-    private static String truncateAi(final String s) {
-        return s.length() <= 150 ? s : s.substring(0, 150) + "…";
-    }
-
-}
+        }, () -> showError("%s: queue is empty".formatted(print

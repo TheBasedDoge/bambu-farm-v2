@@ -210,12 +210,17 @@ public class EtsyApiClient {
     }
 
     /** An active shop listing, for the Mappings tab's assign-gcodes table. {@code imageUrl} may be blank. */
-    public record Listing(long listingId, String title, int quantityAvailable, String imageUrl) {
+    public record Listing(long listingId, String title, int quantityAvailable, String imageUrl, boolean hasVariations) {
     }
 
     /**
      * Fetches ALL active listings in the shop (paginated), so every product can be pre-mapped to gcode before
      * an order ever arrives. Requires the {@code listings_r} scope, which the connect flow already requests.
+     * <p>
+     * Uses {@code getListingsByShop} ({@code /shops/{id}/listings?state=active}) rather than
+     * {@code findAllActiveListingsByShop} ({@code /shops/{id}/listings/active}): only the former accepts the
+     * {@code includes} parameter, so it's the one that actually embeds listing images (and it returns
+     * {@code has_variations}, which drives the per-variation Map button in the UI).
      */
     public List<Listing> getActiveListings() throws Exception {
         final Optional<String> shopId = config.etsy().shopId();
@@ -225,7 +230,7 @@ public class EtsyApiClient {
         final List<Listing> result = new ArrayList<>();
         final int pageSize = 100;
         for (int offset = 0; offset < 1000; offset += pageSize) {
-            final JsonNode root = getOrThrow("/shops/%s/listings/active?limit=%d&offset=%d&includes=Images"
+            final JsonNode root = getOrThrow("/shops/%s/listings?state=active&limit=%d&offset=%d&includes=Images"
                     .formatted(shopId.get(), pageSize, offset));
             int pageCount = 0;
             for (final JsonNode l : root.path("results")) {
@@ -236,7 +241,8 @@ public class EtsyApiClient {
                         l.path("listing_id").asLong(),
                         l.path("title").asText(""),
                         l.path("quantity").asInt(0),
-                        imageUrl));
+                        imageUrl,
+                        l.path("has_variations").asBoolean(false)));
             }
             if (pageCount < pageSize) {
                 break;
@@ -246,39 +252,18 @@ public class EtsyApiClient {
         return result;
     }
 
-    /**
-     * Fetches the primary listing image URL for a listing, used to help identify which gcode file to map it to.
-     */
-    public Optional<String> getListingImageUrl(final long listingId) {
-        final Optional<JsonNode> oRoot = get("/listings/%d/images".formatted(listingId));
-        if (oRoot.isEmpty()) {
-            return Optional.empty();
-        }
-        final JsonNode results = oRoot.get().path("results");
-        if (!results.isArray() || results.isEmpty()) {
-            return Optional.empty();
-        }
-        final String url = results.get(0).path("url_570xN").asText("");
-        return url.isBlank() ? Optional.empty() : Optional.of(url);
-    }
-
-    public boolean isConnected() {
-        return oauth.isConnected();
+    /** One purchasable variation combination of a listing (e.g. Color=Red, Size=Large), from its inventory. */
+    public record VariationCombo(List<Variation> variations, String sku, int quantity) {
     }
 
     /**
-     * Looks up the shop ID that belongs to the Etsy account you connected with - handy when
-     * {@code bambu.etsy.shop-id} is wrong (e.g. a shop ID copied from a different account, or the numeric buyer
-     * user ID used by mistake), which shows up as an HTTP 403 "User does not own Shop ..." on every other call.
+     * Fetches a listing's variation combinations from its inventory, so each can be pre-mapped to its own gcode in
+     * the Mappings tab (before any order arrives). Each combo's {@code variations} carry the same property
+     * name/value pairs an order transaction reports, so a mapping saved here resolves for the matching order.
+     * Returns an empty list for listings that have no variations (a listing without variations still returns one
+     * property-less product, which is skipped). Uses the {@code listings_r} scope the connect flow already requests.
      */
-    public Optional<Long> findMyShopId() throws Exception {
-        final String userId = tokenStore.get().map(EtsyTokenStore.Tokens::userId).orElse("");
-        if (userId.isBlank()) {
-            throw new IllegalStateException("Not connected to Etsy.");
-        }
-        final JsonNode root = getOrThrow("/users/%s/shops".formatted(userId));
-        final long shopId = root.path("shop_id").asLong(0);
-        return shopId > 0 ? Optional.of(shopId) : Optional.empty();
-    }
-
-}
+    public List<VariationCombo> getListingVariations(final long listingId) throws Exception {
+        final JsonNode root = getOrThrow("/listings/%d/inventory".formatted(listingId));
+        final List<VariationCombo> result = new ArrayList<>();
+        for (final JsonNode product : r
