@@ -13,6 +13,7 @@ import com.tfyre.bambu.view.AutomationView;
 import com.tfyre.bambu.view.EbayOrdersView;
 import com.tfyre.bambu.view.EtsyOrdersView;
 import com.tfyre.bambu.view.NotificationSettingsView;
+import com.tfyre.bambu.view.SpoolsView;
 import com.tfyre.bambu.view.TasmotaSettingsView;
 import com.tfyre.bambu.view.UpdateHeader;
 import com.tfyre.bambu.view.dashboard.Dashboard;
@@ -65,6 +66,7 @@ public class MainLayout extends AppLayout {
             HistoryView.class,
             LogsView.class,
             MaintenanceView.class,
+            SpoolsView.class,
             NotificationSettingsView.class,
             TasmotaSettingsView.class,
             EtsyOrdersView.class,
@@ -81,6 +83,7 @@ public class MainLayout extends AppLayout {
             Map.entry(HistoryView.class, VaadinIcon.CLOCK),
             Map.entry(LogsView.class, VaadinIcon.CLIPBOARD_TEXT),
             Map.entry(MaintenanceView.class, VaadinIcon.WRENCH),
+            Map.entry(SpoolsView.class, VaadinIcon.CIRCLE_THIN),
             Map.entry(NotificationSettingsView.class, VaadinIcon.BELL),
             Map.entry(TasmotaSettingsView.class, VaadinIcon.PLUG),
             Map.entry(EtsyOrdersView.class, VaadinIcon.SHOP),
@@ -243,6 +246,7 @@ public class MainLayout extends AppLayout {
                 HistoryView.class,
                 LogsView.class,
                 MaintenanceView.class,
+                SpoolsView.class,
                 NotificationSettingsView.class,
                 TasmotaSettingsView.class,
                 EtsyOrdersView.class,

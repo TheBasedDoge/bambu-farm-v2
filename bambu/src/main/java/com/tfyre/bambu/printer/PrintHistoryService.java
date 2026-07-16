@@ -61,6 +61,8 @@ public class PrintHistoryService {
     OrderTrackingService orderTracking;
     @Inject
     PrintAiService aiService;
+    @Inject
+    SpoolService spoolService;
     /** Lazy to avoid an eager circular reference (PrintQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<PrintQueueService> queueServiceInstance;
@@ -206,6 +208,14 @@ public class PrintHistoryService {
             Log.infof("PrintHistoryService: %s fully printed", job.orderRef().label());
             notificationService.notifyEvent("order_printed", job.orderRef().market(),
                     "%s is fully printed - ready to ship".formatted(job.orderRef().label()));
+        }
+
+        // Decrement the (non-Bambu) spool assigned to the tray this print used, if any
+        if (job.grams() > 0) {
+            printers.getPrinters().stream()
+                    .filter(p -> p.getName().equals(job.printer()))
+                    .findFirst()
+                    .ifPresent(p -> spoolService.recordUsage(job.printer(), p.getActiveTrayId(), job.grams()));
         }
 
         // Give the queue a chance to auto-requeue a failed queue-started job (opt-in, single retry)
