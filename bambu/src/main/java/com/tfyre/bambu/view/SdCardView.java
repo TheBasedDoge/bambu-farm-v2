@@ -446,6 +446,7 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         final Grid.Column<FTPFile> colActions = grid.addComponentColumn(this::getComponentColumn)
                 .setHeader("Actions").setFlexGrow(2);
         grid.getColumns().forEach(c -> c.setResizable(true));
+        grid.setColumnReorderingAllowed(true);
         grid.addItemDoubleClickListener(l -> doDoubleClick(l.getItem()));
         grid.setSelectionMode(Grid.SelectionMode.MULTI);
         grid.addSelectionListener(l -> deleteSelected.setEnabled(!l.getAllSelectedItems().isEmpty()));

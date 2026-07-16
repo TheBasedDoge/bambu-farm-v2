@@ -185,6 +185,7 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
         grid.addComponentColumn(PrinterMapping::getFilamentMapping).setHeader("Filament Mapping").setFlexGrow(3);
 
         grid.getColumns().forEach(c -> c.setResizable(true));
+        grid.setColumnReorderingAllowed(true);
         grid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT);
 
         grid.sort(GridSortOrder.asc(colName).build());

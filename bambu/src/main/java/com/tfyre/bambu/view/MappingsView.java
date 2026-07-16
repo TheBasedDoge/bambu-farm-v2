@@ -219,6 +219,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             etsyGrid.setWidth("100%");
             etsyGrid.setAllRowsVisible(true);
             etsyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
+            etsyGrid.setColumnReorderingAllowed(true);
+            etsyGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(etsyGrid);
         return sec;
@@ -307,6 +309,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             ebayGrid.setWidth("100%");
             ebayGrid.setAllRowsVisible(true);
             ebayGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
+            ebayGrid.setColumnReorderingAllowed(true);
+            ebayGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(ebayGrid);
         return sec;
@@ -405,6 +409,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             savedGrid.setWidth("100%");
             savedGrid.setAllRowsVisible(true);
             savedGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
+            savedGrid.setColumnReorderingAllowed(true);
+            savedGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(savedGrid);
         return sec;

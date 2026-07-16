@@ -207,6 +207,7 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
                     .orElse("--");
         }).setHeader("Remaining / ETA").setFlexGrow(2);
         grid.getColumns().forEach(c -> c.setResizable(true));
+        grid.setColumnReorderingAllowed(true);
         grid.setAllRowsVisible(true);
         grid.setItems(overviewPrinters);
         add(grid);

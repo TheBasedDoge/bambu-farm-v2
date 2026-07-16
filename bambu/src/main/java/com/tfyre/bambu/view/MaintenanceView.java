@@ -157,6 +157,8 @@ public class MaintenanceView extends VerticalLayout implements NotificationHelpe
             );
         });
 
+        grid.setColumnReorderingAllowed(true);
+        grid.getColumns().forEach(c -> c.setResizable(true));
         grid.sort(GridSortOrder.asc(colName).build());
     }
 
@@ -190,6 +192,8 @@ public class MaintenanceView extends VerticalLayout implements NotificationHelpe
             return new HorizontalLayout(done, remove);
         }).setFlexGrow(2);
         taskGrid.setAllRowsVisible(true);
+        taskGrid.setColumnReorderingAllowed(true);
+        taskGrid.getColumns().forEach(c -> c.setResizable(true));
         reload.run();
 
         final NumberField hoursField = new NumberField("Total Print Hours");
