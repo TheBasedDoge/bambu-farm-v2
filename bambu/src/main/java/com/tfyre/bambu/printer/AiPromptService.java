@@ -100,6 +100,29 @@ public class AiPromptService {
     /** Persisted key for the HMS/error context wrapper (kept separate from the {@link PromptType} checks). */
     private static final String CONTEXT_KEY = "hms-context";
 
+    /** Persisted key for the experimental empty-bed reference-compare prompt (two images: reference + current). */
+    private static final String BED_REFERENCE_KEY = "bed-clear-reference";
+
+    /**
+     * EXPERIMENTAL bed-clear prompt used when a saved empty-bed reference exists for the printer. The model is sent
+     * TWO images - image 1 the empty reference, image 2 the current bed - and asked to compare, which is far more
+     * reliable than judging one image alone. Must still answer YES/NO first (YES = current bed is clear).
+     */
+    private static final String DEFAULT_BED_REFERENCE =
+            "You are given TWO images of the SAME 3D printer bed from the same fixed camera.\n"
+            + "IMAGE 1 is the REFERENCE: this exact bed when it is EMPTY and clear.\n"
+            + "IMAGE 2 is the bed RIGHT NOW.\n\n"
+            + "Compare IMAGE 2 against IMAGE 1. IGNORE any differences in lighting, brightness, glare, reflections, "
+            + "shadows, glue residue, the bed's texture/pattern, grid lines, and faint marks left by previous prints "
+            + "- none of those are objects. A printed object is a solid 3D shape that is present in IMAGE 2 but NOT "
+            + "in IMAGE 1, rising above the bed surface with clear edges and walls.\n\n"
+            + "The VERY FIRST word of your reply MUST be YES or NO: YES if IMAGE 2 is clear and empty (it matches "
+            + "the reference), NO if there is a printed object on the bed in IMAGE 2 that is not in the reference. "
+            + "Then add, each on its own line:\n"
+            + "Objects: <what is on the current bed that is not in the reference, or \"none\">\n"
+            + "Confidence: <0-100, how likely the current bed is EMPTY>\n"
+            + "Reason: <what you see, in one short sentence>";
+
     /**
      * The three check prompts. {@code positiveKeyword} is the word the model is instructed to lead with for a
      * positive outcome - keep custom prompts asking for the same leading keyword, or result parsing breaks
@@ -242,6 +265,37 @@ public class AiPromptService {
     public String renderContext(final String context) {
         final String template = getContextTemplate();
         return template.contains("{context}") ? template.replace("{context}", context) : template + " " + context;
+    }
+
+    // -------------------------------------------------------------------------
+    // Experimental empty-bed reference-compare prompt (two images)
+    // -------------------------------------------------------------------------
+
+    public String getBedReferencePrompt() {
+        return overrides.getOrDefault(BED_REFERENCE_KEY, DEFAULT_BED_REFERENCE);
+    }
+
+    public String defaultBedReferencePrompt() {
+        return DEFAULT_BED_REFERENCE;
+    }
+
+    public boolean isBedReferenceCustomized() {
+        return overrides.containsKey(BED_REFERENCE_KEY);
+    }
+
+    public void setBedReferencePrompt(final String text) {
+        if (text == null || text.isBlank() || text.strip().equals(DEFAULT_BED_REFERENCE.strip())) {
+            overrides.remove(BED_REFERENCE_KEY);
+        } else {
+            overrides.put(BED_REFERENCE_KEY, text.strip());
+        }
+        save();
+        Log.infof("AiPromptService: bed-reference prompt %s", isBedReferenceCustomized() ? "customized" : "reset to default");
+    }
+
+    public void resetBedReference() {
+        overrides.remove(BED_REFERENCE_KEY);
+        save();
     }
 
 }

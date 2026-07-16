@@ -150,7 +150,9 @@ public class MappingPartsPanel extends Div {
             sourceSelect.addValueChangeListener(e -> applyVisibility());
 
             gcodeSelect.setItems(libraryFilesSupplier.get());
-            gcodeSelect.setWidth("220px");
+            gcodeSelect.setWidth("300px");
+            // Let the dropdown overlay be wider than the input so long library filenames aren't truncated.
+            gcodeSelect.getStyle().set("--vaadin-combo-box-overlay-width", "460px");
             plateSelect.setWidth("90px");
             gcodeSelect.addValueChangeListener(e -> {
                 if (e.getValue() == null) {

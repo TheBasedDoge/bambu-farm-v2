@@ -62,6 +62,8 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     @Inject
     BambuPrinters printers;
     @Inject
+    com.tfyre.bambu.printer.BedReferenceService bedReference;
+    @Inject
     org.eclipse.microprofile.context.ManagedExecutor executor;
 
     private final Grid<PrinterAiRow> grid = new Grid<>();
@@ -85,10 +87,103 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         add(new H3("AI Print Monitoring — Settings"));
         add(buildConnectionSection());
         add(buildControlSection());
+        add(buildBedReferenceSection());
         add(buildResultsSection());
         add(buildLastChecksSection());
         add(buildHistorySection());
         add(buildPromptsSection());
+    }
+
+    // -------------------------------------------------------------------------
+    // Experimental: empty-bed reference compare
+    // -------------------------------------------------------------------------
+
+    private Div buildBedReferenceSection() {
+        final Div section = new Div();
+        section.addClassName("ai-settings-section");
+        section.add(new H4("Empty-bed reference (experimental)"));
+        section.add(new Span("Save a photo of each printer's EMPTY bed. When enabled, the bed-clear check compares "
+                + "the live frame against that reference (two images to the model) instead of judging one image "
+                + "alone - much more reliable, since the model has a per-printer ground truth for the bed texture, "
+                + "glue marks and lighting. Retake the reference whenever you change the plate or move the camera."));
+
+        final Checkbox toggle = new Checkbox("Use empty-bed reference for the bed-clear check");
+        toggle.setValue(bedReference.isEnabled());
+        toggle.setEnabled(ollama.isEnabled());
+        toggle.addValueChangeListener(e -> {
+            bedReference.setEnabled(Boolean.TRUE.equals(e.getValue()));
+            showNotification("Empty-bed reference compare " + (bedReference.isEnabled() ? "enabled" : "disabled"));
+        });
+        section.add(toggle);
+
+        final Div cards = new Div();
+        cards.getStyle().set("display", "flex").set("flex-wrap", "wrap").set("gap", "16px").set("margin-top", "12px");
+        printers.getPrinters().forEach(p -> cards.add(buildBedReferenceCard(p.getName())));
+        section.add(cards);
+        return section;
+    }
+
+    private Div buildBedReferenceCard(final String printerName) {
+        final Div card = new Div();
+        card.addClassName("ai-settings-section");
+        card.getStyle().set("max-width", "300px");
+        final Span title = new Span(printerName);
+        title.getStyle().setFontWeight("bold");
+        card.add(new Div(title));
+
+        final Div imgHolder = new Div();
+        card.add(imgHolder);
+        final Runnable[] refresh = new Runnable[1];
+        refresh[0] = () -> {
+            imgHolder.removeAll();
+            bedReference.getReference(printerName).ifPresentOrElse(bytes -> {
+                final Image img = new Image(new StreamResource("bed-ref-%s.jpg".formatted(printerName),
+                        () -> new ByteArrayInputStream(bytes)), "empty-bed reference for " + printerName);
+                img.setWidth("280px");
+                img.getStyle().set("border-radius", "6px");
+                imgHolder.add(img);
+            }, () -> {
+                final Span none = new Span("No reference saved yet");
+                none.getStyle().setColor("var(--lumo-secondary-text-color)");
+                imgHolder.add(none);
+            });
+        };
+        refresh[0].run();
+
+        final Button saveBtn = new Button("Save current frame", new Icon(VaadinIcon.CAMERA));
+        saveBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_PRIMARY);
+        saveBtn.setTooltipText("Make sure the bed is EMPTY, then capture the current camera frame as this printer's reference");
+        saveBtn.setEnabled(ollama.isEnabled());
+        saveBtn.addClickListener(e -> {
+            showNotification("%s: capturing empty-bed reference…".formatted(printerName));
+            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+            executor.submit(() -> {
+                aiService.illuminateForCheck(printerName);
+                final Optional<byte[]> snap = aiService.getSnapshot(printerName);
+                ui.ifPresent(u -> u.access(() -> {
+                    if (snap.isEmpty()) {
+                        showError("%s: no camera snapshot could be grabbed".formatted(printerName));
+                        return;
+                    }
+                    try {
+                        bedReference.saveReference(printerName, snap.get());
+                        refresh[0].run();
+                        showNotification("%s: empty-bed reference saved".formatted(printerName));
+                    } catch (RuntimeException ex) {
+                        showError(ex.getMessage());
+                    }
+                }));
+            });
+        });
+        final Button clearBtn = new Button("Clear", new Icon(VaadinIcon.TRASH));
+        clearBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
+        clearBtn.addClickListener(e -> {
+            bedReference.clearReference(printerName);
+            refresh[0].run();
+            showNotification("%s: reference cleared".formatted(printerName));
+        });
+        card.add(new HorizontalLayout(saveBtn, clearBtn));
+        return card;
     }
 
     // -------------------------------------------------------------------------
@@ -390,7 +485,50 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             section.add(buildPromptEditor(type, testPrinter));
         }
         section.add(buildContextEditor());
+        section.add(buildBedReferencePromptEditor());
         return section;
+    }
+
+    /** Editor for the experimental two-image (reference + current) bed-clear prompt. */
+    private Div buildBedReferencePromptEditor() {
+        final Div wrap = new Div();
+        wrap.getStyle().set("margin-top", "24px").set("border-top", "1px solid var(--lumo-contrast-20pct)").set("padding-top", "16px");
+
+        final Span customized = new Span("customized");
+        customized.getStyle().setColor("var(--lumo-primary-text-color)").set("font-size", "0.85em")
+                .set("border", "1px solid var(--lumo-primary-color-50pct)").set("border-radius", "10px").set("padding", "0 8px");
+        customized.setVisible(prompts.isBedReferenceCustomized());
+
+        final Span title = new Span("Bed Clear — reference compare (experimental) ");
+        title.getStyle().setFontWeight("bold");
+        final Span keywordHint = new Span(" (model must answer YES-first; used only when a saved empty-bed reference exists and compare mode is on)");
+        keywordHint.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
+        wrap.add(new Div(title, customized, keywordHint));
+        wrap.add(new Div(new Span("The model receives TWO images: image 1 the saved empty reference, image 2 the current bed. Keep the wording that refers to \"IMAGE 1\" and \"IMAGE 2\".")));
+
+        final TextArea area = new TextArea();
+        area.setWidthFull();
+        area.setValue(prompts.getBedReferencePrompt());
+        area.getStyle().set("--vaadin-input-field-height", "auto");
+        area.setMinHeight("160px");
+        wrap.add(area);
+
+        final Button save = new Button("Save", new Icon(VaadinIcon.CHECK), e -> {
+            prompts.setBedReferencePrompt(area.getValue());
+            customized.setVisible(prompts.isBedReferenceCustomized());
+            area.setValue(prompts.getBedReferencePrompt());
+            showNotification("Bed-reference prompt %s".formatted(prompts.isBedReferenceCustomized() ? "saved" : "reset to default (matched the default text)"));
+        });
+        save.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+        final Button reset = new Button("Reset to default", new Icon(VaadinIcon.ROTATE_LEFT), e -> {
+            prompts.resetBedReference();
+            area.setValue(prompts.getBedReferencePrompt());
+            customized.setVisible(false);
+            showNotification("Bed-reference prompt reset to default");
+        });
+        reset.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+        wrap.add(new HorizontalLayout(save, reset));
+        return wrap;
     }
 
     /** Editor for the HMS/error context wrapper - not a standalone check, so no keyword or Test button. */

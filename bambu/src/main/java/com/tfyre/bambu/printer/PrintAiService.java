@@ -42,6 +42,8 @@ public class PrintAiService {
     BambuConfig config;
     @Inject
     RtspSnapshotService rtspSnapshotService;
+    @Inject
+    BedReferenceService bedReference;
 
     /**
      * Snapshot of the last AI check result per printer.
@@ -223,7 +225,13 @@ public class PrintAiService {
                     null, null, "No camera snapshot available", null));
             return Optional.empty();
         }
-        final Optional<OllamaService.AiResult> result = check.apply(snapshot.get(), context);
+        // Experimental: for the bed-clear check, if reference-compare mode is on and this printer has a saved
+        // empty-bed reference, compare current-vs-reference (two images) instead of judging one image alone.
+        final Optional<byte[]> reference = "bed-clear".equals(checkType) && bedReference.isEnabled()
+                ? bedReference.getReference(printerName) : Optional.empty();
+        final Optional<OllamaService.AiResult> result = reference.isPresent()
+                ? ollama.checkBedClearWithReference(reference.get(), snapshot.get(), context)
+                : check.apply(snapshot.get(), context);
         if (result.isEmpty()) {
             record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
                     null, null, "AI did not answer (Ollama error or timeout)", snapshot.get()));

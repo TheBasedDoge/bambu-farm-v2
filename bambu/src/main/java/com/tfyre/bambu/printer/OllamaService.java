@@ -81,16 +81,21 @@ public class OllamaService {
      *                       prompt as a hint - see {@link #withContext(String, Optional)}
      */
     private Optional<AiResult> analyze(final byte[] imageJpeg, final String prompt, final String positiveKeyword, final Optional<String> context) {
+        return analyze(List.of(imageJpeg), prompt, positiveKeyword, context);
+    }
+
+    /** Multi-image variant: sends every image in order (e.g. [reference, current] for a bed comparison). */
+    private Optional<AiResult> analyze(final List<byte[]> imagesJpeg, final String prompt, final String positiveKeyword, final Optional<String> context) {
         final Optional<String> urlOpt = config.ollama().url();
         if (urlOpt.isEmpty()) {
             return Optional.empty();
         }
         try {
-            final String base64 = Base64.getEncoder().encodeToString(imageJpeg);
+            final List<String> base64 = imagesJpeg.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList();
             final Map<String, Object> body = Map.of(
                     "model", config.ollama().model(),
                     "prompt", withContext(prompt, context),
-                    "images", List.of(base64),
+                    "images", base64,
                     "stream", false
             );
             final HttpRequest request = HttpRequest.newBuilder(URI.create(urlOpt.get() + "/api/generate"))
@@ -195,6 +200,15 @@ public class OllamaService {
      */
     public Optional<AiResult> checkBedClear(final byte[] imageJpeg, final Optional<String> context) {
         return analyze(imageJpeg, prompts.getPrompt(AiPromptService.PromptType.BED_CLEAR),
+                AiPromptService.PromptType.BED_CLEAR.positiveKeyword(), context);
+    }
+
+    /**
+     * EXPERIMENTAL bed-clear check that compares the current frame against a saved empty-bed reference for the same
+     * printer. Sends the reference as image 1 and the current frame as image 2. positive=true means the bed IS clear.
+     */
+    public Optional<AiResult> checkBedClearWithReference(final byte[] referenceJpeg, final byte[] currentJpeg, final Optional<String> context) {
+        return analyze(List.of(referenceJpeg, currentJpeg), prompts.getBedReferencePrompt(),
                 AiPromptService.PromptType.BED_CLEAR.positiveKeyword(), context);
     }
 

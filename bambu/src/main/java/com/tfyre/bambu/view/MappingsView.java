@@ -680,7 +680,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         f.setValue(stockService.get(market, storageKey));
         f.setMin(0);
         f.setStepButtonsVisible(true);
-        f.setWidth("90px");
+        f.setWidth("128px");
         f.setTooltipText("On-hand stock. New orders are filled from this first (decremented, not printed). "
                 + "Increase it when you print spares or take a return.");
         f.addValueChangeListener(e -> {
