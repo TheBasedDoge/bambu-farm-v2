@@ -347,7 +347,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `order_printed`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `order_printed`, `order_from_stock`, `spool_low`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
@@ -410,7 +410,7 @@ A listing can have multiple parts - useful for kits made of several different gc
 
 Orders are polled on a schedule and filtered to unfulfilled/open only; poll errors (bad credentials, wrong shop ID, etc.) show directly on the page instead of silently reporting "no orders".
 
-**New-order alerts**: when a poll finds an order it has never seen before, a `new_order` notification fires to your configured channels (Discord/ntfy/MQTT). Seen-order IDs are persisted (`bambu-order-tracking.json`), so restarts don't re-alert, and connecting a shop for the first time doesn't fire one alert per existing order. Toggle on the Notification Settings page.
+**New-order alerts**: when a poll finds an order it has never seen before, a `new_order` notification fires to your configured channels (Discord/ntfy/MQTT), listing each item with its **variation** (e.g. "1x Cupholder Insert (Version: Blue)"). Seen-order IDs are persisted (`bambu-order-tracking.json`), so restarts don't re-alert, and connecting a shop for the first time doesn't fire one alert per existing order. Toggle on the Notification Settings page.
 
 **Auto-queue (zero-click repeat orders)**: an opt-in "Auto-queue new orders" toggle on either Sales Orders page or the Automation overview (one global switch, persisted to `bambu-auto-queue.json`). When a poll finds a NEW order whose line items are all mapped, the print jobs are queued automatically:
 - Each mapped part can specify a required **filament type** (e.g. PETG, ASA) next to its AMS slot in the mapping editor. Auto-queue matches this against each printer's **live AMS telemetry**: with a slot also set, that exact tray must currently hold that material (catches a swapped spool); with type only, any tray with that material qualifies and the job is pinned to it per printer.
