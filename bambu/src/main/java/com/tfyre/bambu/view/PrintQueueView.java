@@ -263,4 +263,32 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
             } else {
                 confirmAndStartNext(detail, entry, "", refresh);
             }
-        }, () -> showError("%s: queue is empty".formatted(print
+        }, () -> showError("%s: queue is empty".formatted(printerName)));
+    }
+
+    private void confirmAndStartNext(final BambuPrinters.PrinterDetail detail, final PrintQueueService.QueueEntry entry,
+            final String aiNote, final Runnable refresh) {
+        YesNoCancelDialog.show("%s - Start next queued print [%s] plate %d\n\nIs the bed clear?%s"
+                .formatted(detail.name(), entry.command().filename(), entry.command().plateId(), aiNote),
+                ync -> {
+                    if (ync.isConfirmed()) {
+                        performStartNext(detail, refresh);
+                    }
+                });
+    }
+
+    private void performStartNext(final BambuPrinters.PrinterDetail detail, final Runnable refresh) {
+        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+        queueService.startNext(detail.name(),
+                () -> ui.ifPresent(u -> u.access(() -> {
+                    showNotification("%s: print started".formatted(detail.name()));
+                    refresh.run();
+                })),
+                error -> ui.ifPresent(u -> u.access(() -> showError(error))));
+    }
+
+    private static String truncateAi(final String s) {
+        return s.length() <= 150 ? s : s.substring(0, 150) + "…";
+    }
+
+}

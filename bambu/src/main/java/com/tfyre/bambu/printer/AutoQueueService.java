@@ -324,4 +324,25 @@ public class AutoQueueService {
             // No material requirement - any printer, mapped slot (or default) as-is
             return Optional.of(new Candidate(detail, ready, part.amsSlot()));
         }
-        f
+        final String want = part.filamentType().strip().toUpperCase();
+        final Map<Integer, String> trays = printer.getAmsTrayTypes();
+        if (part.amsSlot() != null) {
+            // Strict: the mapped tray must currently hold the wanted material
+            return want.equals(trays.get(part.amsSlot()))
+                    ? Optional.of(new Candidate(detail, ready, part.amsSlot()))
+                    : Optional.empty();
+        }
+        // Any tray with the wanted material qualifies - lowest real AMS tray first, external spool last
+        return trays.entrySet().stream()
+                .filter(e -> want.equals(e.getValue()))
+                .map(Map.Entry::getKey)
+                .sorted(Comparator.comparingInt(slot -> slot == BambuConst.AMS_TRAY_VIRTUAL ? Integer.MAX_VALUE : slot))
+                .findFirst()
+                .map(slot -> new Candidate(detail, ready, slot));
+    }
+
+    private static String truncate(final String s, final int max) {
+        return s == null ? "" : (s.length() <= max ? s : s.substring(0, max) + "…");
+    }
+
+}

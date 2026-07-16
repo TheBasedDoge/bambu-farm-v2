@@ -272,4 +272,109 @@ public class EbayApiClient {
         return factory.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
-    private static String firstText(final org.w3c.dom.Doc
+    private static String firstText(final org.w3c.dom.Document doc, final String tag) {
+        final org.w3c.dom.NodeList nodes = doc.getElementsByTagName(tag);
+        return nodes.getLength() == 0 ? null : nodes.item(0).getTextContent().trim();
+    }
+
+    private static String childText(final org.w3c.dom.Element parent, final String tag) {
+        final org.w3c.dom.NodeList nodes = parent.getElementsByTagName(tag);
+        return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent().trim();
+    }
+
+    /** Swallowing variant for non-critical calls. */
+    private Optional<JsonNode> get(final String path) {
+        try {
+            return Optional.of(getOrThrow(path));
+        } catch (Exception ex) {
+            Log.errorf(ex, "EbayApiClient: GET %s failed: %s", path, ex.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private static List<Variation> parseVariations(final JsonNode lineItem) {
+        final List<Variation> result = new ArrayList<>();
+        for (final JsonNode v : lineItem.path("variationAspects")) {
+            final String name = v.path("name").asText("");
+            final String value = v.path("value").asText("");
+            if (!name.isBlank()) {
+                result.add(new Variation(name, value));
+            }
+        }
+        return result;
+    }
+
+    private static Optional<String> parsePersonalization(final JsonNode lineItem) {
+        // eBay's documented getOrders schema has no dedicated personalization field (unlike Etsy); check the couple
+        // of shapes seen for "Personalize It" listings in case one is present, without assuming a fixed structure.
+        final JsonNode custom = lineItem.path("customizedOptions");
+        if (custom.isArray() && !custom.isEmpty()) {
+            final StringBuilder sb = new StringBuilder();
+            for (final JsonNode opt : custom) {
+                final String name = opt.path("name").asText("");
+                final String value = opt.path("value").asText("");
+                if (!value.isBlank()) {
+                    sb.append(sb.isEmpty() ? "" : "; ").append(name.isBlank() ? value : name + ": " + value);
+                }
+            }
+            if (!sb.isEmpty()) {
+                return Optional.of(sb.toString());
+            }
+        }
+        final String notes = lineItem.path("buyerCustomization").asText("");
+        return notes.isBlank() ? Optional.empty() : Optional.of(notes);
+    }
+
+    private LineItem parseLineItem(final JsonNode li) {
+        return new LineItem(
+                li.path("lineItemId").asText(""),
+                li.path("sku").asText(""),
+                li.path("legacyItemId").asText(""),
+                li.path("title").asText(""),
+                Math.max(1, li.path("quantity").asInt(1)),
+                parseVariations(li),
+                parsePersonalization(li));
+    }
+
+    private Order parseOrder(final JsonNode o) {
+        final List<LineItem> lineItems = new ArrayList<>();
+        for (final JsonNode li : o.path("lineItems")) {
+            lineItems.add(parseLineItem(li));
+        }
+        return new Order(
+                o.path("orderId").asText(""),
+                o.path("buyer").path("username").asText("(unknown buyer)"),
+                parseInstant(o.path("creationDate").asText("")),
+                o.path("orderFulfillmentStatus").asText("NOT_STARTED"),
+                lineItems);
+    }
+
+    private static Instant parseInstant(final String text) {
+        try {
+            return text.isBlank() ? Instant.EPOCH : Instant.parse(text);
+        } catch (Exception ex) {
+            return Instant.EPOCH;
+        }
+    }
+
+    /**
+     * Fetches orders that still need fulfillment (NOT_STARTED or IN_PROGRESS), newest first. Throws on failure so
+     * the caller can surface the real reason instead of silently showing "no orders".
+     */
+    public List<Order> getOpenOrders() throws Exception {
+        final String filter = java.net.URLEncoder.encode("orderfulfillmentstatus:{NOT_STARTED|IN_PROGRESS}", java.nio.charset.StandardCharsets.UTF_8);
+        final String path = "/sell/fulfillment/v1/order?filter=" + filter + "&limit=200";
+        final JsonNode root = getOrThrow(path);
+        final List<Order> result = new ArrayList<>();
+        for (final JsonNode o : root.path("orders")) {
+            result.add(parseOrder(o));
+        }
+        result.sort((a, b) -> b.creationDate().compareTo(a.creationDate()));
+        return result;
+    }
+
+    public boolean isConnected() {
+        return oauth.isConnected();
+    }
+
+}

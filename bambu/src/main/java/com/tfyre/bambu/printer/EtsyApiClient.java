@@ -266,4 +266,60 @@ public class EtsyApiClient {
     public List<VariationCombo> getListingVariations(final long listingId) throws Exception {
         final JsonNode root = getOrThrow("/listings/%d/inventory".formatted(listingId));
         final List<VariationCombo> result = new ArrayList<>();
-        for (final JsonNode product : r
+        for (final JsonNode product : root.path("products")) {
+            final List<Variation> variations = new ArrayList<>();
+            for (final JsonNode pv : product.path("property_values")) {
+                final String name = pv.path("property_name").asText("");
+                final String value = pv.path("values").path(0).asText("");
+                if (!name.isBlank() && !value.isBlank()) {
+                    variations.add(new Variation(name, value));
+                }
+            }
+            if (variations.isEmpty()) {
+                continue;
+            }
+            int quantity = 0;
+            for (final JsonNode off : product.path("offerings")) {
+                quantity += Math.max(0, off.path("quantity").asInt(0));
+            }
+            result.add(new VariationCombo(variations, product.path("sku").asText(""), quantity));
+        }
+        return result;
+    }
+
+    /**
+     * Fetches the primary listing image URL for a listing, used to help identify which gcode file to map it to.
+     */
+    public Optional<String> getListingImageUrl(final long listingId) {
+        final Optional<JsonNode> oRoot = get("/listings/%d/images".formatted(listingId));
+        if (oRoot.isEmpty()) {
+            return Optional.empty();
+        }
+        final JsonNode results = oRoot.get().path("results");
+        if (!results.isArray() || results.isEmpty()) {
+            return Optional.empty();
+        }
+        final String url = results.get(0).path("url_570xN").asText("");
+        return url.isBlank() ? Optional.empty() : Optional.of(url);
+    }
+
+    public boolean isConnected() {
+        return oauth.isConnected();
+    }
+
+    /**
+     * Looks up the shop ID that belongs to the Etsy account you connected with - handy when
+     * {@code bambu.etsy.shop-id} is wrong (e.g. a shop ID copied from a different account, or the numeric buyer
+     * user ID used by mistake), which shows up as an HTTP 403 "User does not own Shop ..." on every other call.
+     */
+    public Optional<Long> findMyShopId() throws Exception {
+        final String userId = tokenStore.get().map(EtsyTokenStore.Tokens::userId).orElse("");
+        if (userId.isBlank()) {
+            throw new IllegalStateException("Not connected to Etsy.");
+        }
+        final JsonNode root = getOrThrow("/users/%s/shops".formatted(userId));
+        final long shopId = root.path("shop_id").asLong(0);
+        return shopId > 0 ? Optional.of(shopId) : Optional.empty();
+    }
+
+}
