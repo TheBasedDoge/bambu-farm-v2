@@ -28,3 +28,12 @@ bambu/styles.css
 
 # Generated Vaadin production frontend bundle
 bambu/src/main/bundles/
+
+# Deployment/runtime folder if copied into the repo dir (contains the built jar + .env secrets - never commit)
+/bambu-liveview/
+# Vaadin build-tool files that can appear at the repo root
+/bambu/package.json
+/bambu/package-lock.json
+/bambu/tsconfig.json
+/bambu/types.d.ts
+/bambu/.vaadin-node-tasks.lock
