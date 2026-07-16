@@ -89,6 +89,16 @@ public interface BambuPrinter {
      */
     Map<Integer, String> getAmsTrayTypes();
 
+    /** Most recently reported chamber-light mode (ON/OFF), or empty if not seen yet. */
+    Optional<BambuConst.LightMode> getLightMode();
+
+    /**
+     * The global tray index the printer most recently fed filament from ({@code amsId*4+trayId}, 0-15, or
+     * {@link BambuConst#AMS_TRAY_VIRTUAL} for the external spool), sticky across idle so it still reflects the tray
+     * a just-finished print used. -1 if never seen. Used by spool tracking to decrement the right spool.
+     */
+    int getActiveTrayId();
+
     void commandFilamentLoad(final int amsTrayId);
 
     void commandFilamentUnload();

@@ -158,8 +158,9 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             showNotification("%s: capturing empty-bed reference…".formatted(printerName));
             final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
             executor.submit(() -> {
-                aiService.illuminateForCheck(printerName);
+                final Optional<com.tfyre.bambu.printer.BambuConst.LightMode> prior = aiService.illuminateForCheck(printerName);
                 final Optional<byte[]> snap = aiService.getSnapshot(printerName);
+                aiService.restoreLight(printerName, prior);
                 ui.ifPresent(u -> u.access(() -> {
                     if (snap.isEmpty()) {
                         showError("%s: no camera snapshot could be grabbed".formatted(printerName));
@@ -426,6 +427,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             case "scheduled" -> "Scheduled check";
             case "start-next" -> "Start Next gate";
             case "auto-start" -> "Auto-start gate";
+            case "test" -> "Prompt test";
             default -> trigger;
         };
         final Span chip = new Span(label);
@@ -482,8 +484,14 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         testPrinter.setItems(printers.getPrinters().stream().map(p -> p.getName()).sorted().toList());
         testPrinter.setClearButtonVisible(true);
         testPrinter.setTooltipText("The Test button on each prompt below grabs this printer's current camera frame "
-                + "and runs the prompt in the editor against it right now (nothing is saved).");
-        section.add(testPrinter);
+                + "and runs the prompt in the editor against it right now (results are recorded in the check history).");
+        final Button testAll = new Button("Test all three now", new Icon(VaadinIcon.FLASK));
+        testAll.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+        testAll.setTooltipText("Run all three SAVED prompts against the selected printer's current frame in one capture, and record them in the history below");
+        testAll.addClickListener(e -> runAllPromptsTest(testPrinter.getValue()));
+        final HorizontalLayout testBar = new HorizontalLayout(testPrinter, testAll);
+        testBar.setDefaultVerticalComponentAlignment(com.vaadin.flow.component.orderedlayout.FlexComponent.Alignment.END);
+        section.add(testBar);
 
         for (final AiPromptService.PromptType type : AiPromptService.PromptType.values()) {
             section.add(buildPromptEditor(type, testPrinter));
@@ -642,12 +650,69 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         showNotification("Testing %s prompt on %s…".formatted(type.label(), printerName));
         final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
         executor.submit(() -> {
-            aiService.illuminateForCheck(printerName);
-            final Optional<byte[]> snap = aiService.getSnapshot(printerName);
-            final Optional<OllamaService.AiResult> result = snap.flatMap(bytes ->
-                    ollama.analyzePrompt(bytes, promptText, type.positiveKeyword(), Optional.empty()));
-            ui.ifPresent(u -> u.access(() -> showPromptTestResult(type, printerName, snap.orElse(null), result)));
+            final Optional<OllamaService.AiResult> result = aiService.testPrompt(printerName, type, promptText);
+            final byte[] snap = aiService.getLastCheck(printerName).map(PrintAiService.CheckRecord::snapshot).orElse(null);
+            ui.ifPresent(u -> u.access(() -> {
+                showPromptTestResult(type, printerName, snap, result);
+                refreshGrid();
+            }));
         });
+    }
+
+    /** Runs all three SAVED prompts against one frame (one light cycle), records each, and shows a combined verdict. */
+    private void runAllPromptsTest(final String printerName) {
+        if (printerName == null || printerName.isBlank()) {
+            showError("Pick a printer to test against first (the \"Test against printer\" box above).");
+            return;
+        }
+        if (!ollama.isEnabled()) {
+            showError("Ollama is not configured - set bambu.ollama.url first.");
+            return;
+        }
+        showNotification("Testing all three prompts on %s…".formatted(printerName));
+        final java.util.Map<AiPromptService.PromptType, String> texts = new java.util.LinkedHashMap<>();
+        for (final AiPromptService.PromptType type : AiPromptService.PromptType.values()) {
+            texts.put(type, prompts.getPrompt(type));
+        }
+        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+        executor.submit(() -> {
+            final java.util.Map<AiPromptService.PromptType, Optional<OllamaService.AiResult>> results
+                    = aiService.testPrompts(printerName, texts);
+            ui.ifPresent(u -> u.access(() -> {
+                showAllPromptsResult(printerName, results);
+                refreshGrid();
+            }));
+        });
+    }
+
+    private void showAllPromptsResult(final String printerName,
+            final java.util.Map<AiPromptService.PromptType, Optional<OllamaService.AiResult>> results) {
+        final Dialog dialog = new Dialog();
+        dialog.setHeaderTitle("Test all prompts — " + printerName);
+        dialog.setWidth("620px");
+        final VerticalLayout layout = new VerticalLayout();
+        layout.setPadding(false);
+        results.forEach((type, result) -> {
+            final Span line;
+            if (result.isEmpty()) {
+                line = new Span("%s: — did not complete (no snapshot or AI error)".formatted(type.label()));
+                line.getStyle().setColor("var(--lumo-secondary-text-color)");
+            } else {
+                final OllamaService.AiResult r = result.get();
+                line = new Span("%s: %s-first %s — %s".formatted(type.label(), type.positiveKeyword(),
+                        r.positive() ? "YES" : "no", truncate(r.description(), 160)));
+                line.getStyle().setColor(switch (r.severity()) {
+                    case OK -> "var(--lumo-success-text-color)";
+                    case WARN -> "#856404";
+                    case FAIL -> "var(--lumo-error-text-color)";
+                });
+            }
+            layout.add(line);
+        });
+        layout.add(secondaryNote("All three were recorded in the check history below. Uses the SAVED prompts."));
+        dialog.add(layout);
+        dialog.getFooter().add(new Button("Close", e -> dialog.close()));
+        dialog.open();
     }
 
     private void showPromptTestResult(final AiPromptService.PromptType type, final String printerName,

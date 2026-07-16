@@ -76,6 +76,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private int printerError;
     private List<String> activeHmsErrors = List.of();
     private volatile java.util.Map<Integer, String> amsTrayTypes = java.util.Map.of();
+    private volatile Optional<BambuConst.LightMode> lightMode = Optional.empty();
+    private volatile int activeTrayId = -1;
     private int totalLayerNum;
     private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.IDLE;
     private PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
@@ -120,6 +122,27 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
             trackLastPrintFile(print.getGcodeFile());
         }
         updateAmsTrayTypes(print);
+        updateLightMode(print);
+        updateActiveTray(print);
+    }
+
+    /** Track the chamber-light mode when a message carries a lights report (used to restore state after AI checks). */
+    private void updateLightMode(final Print print) {
+        print.getLightsReportList().stream()
+                .filter(lr -> BambuConst.CHAMBER_LIGHT.equals(lr.getNode()))
+                .findFirst()
+                .ifPresent(lr -> lightMode = BambuConst.LightMode.ON.getValue().equals(lr.getMode())
+                        ? Optional.of(BambuConst.LightMode.ON) : Optional.of(BambuConst.LightMode.OFF));
+    }
+
+    /** Sticky last-fed tray id: only refreshed when a message actually carries ams.tray_now, kept across idle. */
+    private void updateActiveTray(final Print print) {
+        if (print.hasAms() && print.getAms().hasTrayNow()) {
+            final int t = parseIntSafe(print.getAms().getTrayNow(), -1);
+            if (t >= 0) {
+                activeTrayId = t;
+            }
+        }
     }
 
     /**
@@ -273,6 +296,16 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public java.util.Map<Integer, String> getAmsTrayTypes() {
         return amsTrayTypes;
+    }
+
+    @Override
+    public Optional<BambuConst.LightMode> getLightMode() {
+        return lightMode;
+    }
+
+    @Override
+    public int getActiveTrayId() {
+        return activeTrayId;
     }
 
     @Override

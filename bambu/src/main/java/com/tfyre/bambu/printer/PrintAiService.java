@@ -218,8 +218,9 @@ public class PrintAiService {
             final java.util.function.BiFunction<byte[], Optional<String>, Optional<OllamaService.AiResult>> check,
             final boolean positiveMeansGood, final boolean updateLastResult) {
         final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
-        illuminateForCheck(printerName);
+        final Optional<BambuConst.LightMode> priorLight = illuminateForCheck(printerName);
         final Optional<byte[]> snapshot = getSnapshot(printerName);
+        restoreLight(printerName, priorLight);
         if (snapshot.isEmpty()) {
             record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
                     null, null, "No camera snapshot available", null));
@@ -250,6 +251,53 @@ public class PrintAiService {
 
     public boolean isEnabled() {
         return ollama.isEnabled() && runtimeEnabled;
+    }
+
+    // -------------------------------------------------------------------------
+    // Prompt testing (AI Settings) - records to history so tuning results are kept
+    // -------------------------------------------------------------------------
+
+    /** Records one prompt test against an already-grabbed frame (trigger "test"), returning the raw model result. */
+    private Optional<OllamaService.AiResult> recordTest(final String printerName, final AiPromptService.PromptType type,
+            final String promptText, final Optional<byte[]> snapshot, final Optional<String> context) {
+        final String checkType = type.key();
+        if (snapshot.isEmpty()) {
+            record(new CheckRecord(Instant.now(), printerName, checkType, "test", context.orElse(null),
+                    null, null, "No camera snapshot available", null));
+            return Optional.empty();
+        }
+        final Optional<OllamaService.AiResult> result = ollama.analyzePrompt(snapshot.get(), promptText, type.positiveKeyword(), context);
+        if (result.isEmpty()) {
+            record(new CheckRecord(Instant.now(), printerName, checkType, "test", context.orElse(null),
+                    null, null, "AI did not answer (Ollama error or timeout)", snapshot.get()));
+            return result;
+        }
+        final OllamaService.AiResult r = result.get();
+        final boolean good = (type != AiPromptService.PromptType.FAILURE) == r.positive();
+        record(new CheckRecord(Instant.now(), printerName, checkType, "test", context.orElse(null),
+                good, OllamaService.severityFor(good, r.description()), r.description(), snapshot.get()));
+        return result;
+    }
+
+    /** Tests one (possibly unsaved) prompt against a printer's live frame and records it. Call on a background thread. */
+    public Optional<OllamaService.AiResult> testPrompt(final String printerName, final AiPromptService.PromptType type, final String promptText) {
+        final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+        final Optional<BambuConst.LightMode> prior = illuminateForCheck(printerName);
+        final Optional<byte[]> snapshot = getSnapshot(printerName);
+        restoreLight(printerName, prior);
+        return recordTest(printerName, type, promptText, snapshot, context);
+    }
+
+    /** Tests several prompts against ONE shared frame (one light cycle) and records each. Call on a background thread. */
+    public java.util.Map<AiPromptService.PromptType, Optional<OllamaService.AiResult>> testPrompts(
+            final String printerName, final java.util.Map<AiPromptService.PromptType, String> promptTexts) {
+        final Optional<String> context = findPrinter(printerName).flatMap(this::buildContext);
+        final Optional<BambuConst.LightMode> prior = illuminateForCheck(printerName);
+        final Optional<byte[]> snapshot = getSnapshot(printerName);
+        restoreLight(printerName, prior);
+        final java.util.Map<AiPromptService.PromptType, Optional<OllamaService.AiResult>> out = new java.util.LinkedHashMap<>();
+        promptTexts.forEach((type, text) -> out.put(type, recordTest(printerName, type, text, snapshot, context)));
+        return out;
     }
 
     // -------------------------------------------------------------------------
@@ -380,10 +428,12 @@ public class PrintAiService {
      * so AI checks always analyze a well-lit frame. Called right before every snapshot grab for a check (including
      * the AI Settings "Test" button). Best-effort: light-command or interruption failures don't abort the check.
      */
-    public void illuminateForCheck(final String printerName) {
-        findPrinter(printerName).ifPresent(printer -> {
+    public Optional<BambuConst.LightMode> illuminateForCheck(final String printerName) {
+        final Optional<BambuPrinter> printer = findPrinter(printerName);
+        final Optional<BambuConst.LightMode> prior = printer.flatMap(BambuPrinter::getLightMode);
+        printer.ifPresent(p -> {
             try {
-                printer.commandLight(BambuConst.LightMode.ON);
+                p.commandLight(BambuConst.LightMode.ON);
                 Thread.sleep(LIGHT_SETTLE_MS);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
@@ -391,6 +441,24 @@ public class PrintAiService {
                 Log.warnf("PrintAiService: %s: could not turn light on before check: %s", printerName, ex.getMessage());
             }
         });
+        return prior;
+    }
+
+    /**
+     * Restores the chamber light to its pre-check state. Only acts when the light was known to be OFF before the
+     * check (we forced it ON), so lights-off setups stay dark between checks; if the prior state is unknown or was
+     * already ON, the light is left on.
+     */
+    public void restoreLight(final String printerName, final Optional<BambuConst.LightMode> prior) {
+        if (prior.map(m -> m == BambuConst.LightMode.OFF).orElse(false)) {
+            findPrinter(printerName).ifPresent(p -> {
+                try {
+                    p.commandLight(BambuConst.LightMode.OFF);
+                } catch (RuntimeException ex) {
+                    Log.warnf("PrintAiService: %s: could not restore light after check: %s", printerName, ex.getMessage());
+                }
+            });
+        }
     }
 
     /**
