@@ -144,16 +144,77 @@ public interface BambuConfig {
         Duration failureCheckInterval();
 
         /**
-         * How long after a print starts before the first-layer quality check fires.
+         * How long to keep waiting for the printer to report a layer number before giving up on the first-layer
+         * check. This is a timeout, not a delay - the check fires as soon as the first layer is actually reported.
          */
         @WithDefault("8m")
         Duration firstLayerDelay();
+
+        /**
+         * Highest layer the first-layer check will still judge. If layers go by faster than the sampler can catch
+         * them and the print is already past this, the check is skipped rather than judging a mid-print surface
+         * against a first-layer prompt.
+         */
+        @WithDefault("3")
+        int firstLayerMaxLayer();
 
         /**
          * HTTP request timeout for each Ollama inference call.
          */
         @WithDefault("60s")
         Duration timeout();
+
+        /**
+         * How long to wait after switching the chamber light on before grabbing the snapshot, so the camera's
+         * auto-exposure has settled. P1-series chamber cameras are slow - a dim, mid-adaptation frame both
+         * confuses the vision model and skews the pixel-diff backstop, so err on the generous side.
+         */
+        @WithDefault("10s")
+        Duration lightSettle();
+
+        /**
+         * Whether a "bed is clear" verdict must survive a SECOND, independently captured snapshot before a print
+         * is allowed to start.
+         * <p>
+         * A single vision-model verdict is not stable on marginal beds. Observed on this farm: the same bed, with
+         * the same pixel reading, was judged not-clear at 01:12 and clear at 01:16, and the "clear" one started a
+         * print onto an occupied plate. Two passes turn one coin flip into two that must agree.
+         * <p>
+         * It only runs when the first pass wants to APPROVE and the pixel backstop hasn't already blocked, so the
+         * common "bed dirty" path costs nothing. On the approve path it adds a light settle plus one inference,
+         * which is a few seconds before starting a print measured in hours.
+         * <p>
+         * Note what this does and does not fix: it catches an <i>unstable</i> verdict, not a <i>consistent</i>
+         * blind spot. A part the model reliably fails to see - a large dark ring on a dark plate is the known one -
+         * will be missed by both passes. That case is what the contradiction override and the pixel backstop exist
+         * for.
+         */
+        @WithDefault("true")
+        boolean twoPassBedCheck();
+
+    }
+
+    BedDiff bedDiff();
+
+    /**
+     * Geometry for the deterministic bed pixel-diff backstop ({@code BedDiffService}). The crop selects the part
+     * of the camera frame that actually shows the build plate; everything outside it (chamber walls, spool, AMS)
+     * is noise that would dilute the measurement. Defaults suit a P1-series chamber camera looking down at the
+     * plate from the front-left. Expressed as fractions of the frame so they hold at any resolution.
+     */
+    public interface BedDiff {
+
+        @WithDefault("0.146")
+        double cropLeft();
+
+        @WithDefault("0.407")
+        double cropTop();
+
+        @WithDefault("0.896")
+        double cropRight();
+
+        @WithDefault("1.0")
+        double cropBottom();
 
     }
 

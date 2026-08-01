@@ -35,6 +35,8 @@ public class EbayOrderPollingService {
     AutoQueueService autoQueue;
     @Inject
     StockService stockService;
+    @Inject
+    PollFailureReporter pollFailures;
 
     private final AtomicReference<List<EbayApiClient.Order>> lastOrders = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -55,10 +57,15 @@ public class EbayOrderPollingService {
             lastPolled.set(Instant.now());
             lastError.set(null);
             Log.infof("EbayOrderPollingService: %d open order(s)", orders.size());
+            pollFailures.recordSuccess("eBay");
+            // Orders that have left the open list are done with, however their print progress ended up
+            tracking.pruneClosed(MARKET, orders.stream().map(EbayApiClient.Order::orderId).collect(java.util.stream.Collectors.toSet()));
             notifyNewOrders(orders);
         } catch (Exception ex) {
             lastError.set(ex.getMessage());
             Log.errorf(ex, "EbayOrderPollingService: poll failed: %s", ex.getMessage());
+            // A failing poll means orders silently stop arriving - notify rather than only logging.
+            pollFailures.recordFailure("eBay", ex.getMessage());
         }
     }
 
@@ -83,12 +90,19 @@ public class EbayOrderPollingService {
                     notificationService.notifyEvent("new_order", "eBay",
                             "New order %s from %s: %s".formatted(o.orderId(), o.buyerUsername(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
-                    // Fulfill from on-hand stock first (decrements + notifies), then auto-queue only what's left to print.
+                    // Work out what on-hand stock would cover and auto-queue only the remainder. The stock is NOT
+                    // consumed yet: processOrder can decline the order for five different reasons, and consuming
+                    // up front deducted the units anyway - so they were spent on something never printed.
                     final String orderLabel = "eBay order %s (%s)".formatted(o.orderId(), o.buyerUsername());
                     final java.util.List<AutoQueueService.AutoQueueItem> queueItems = new java.util.ArrayList<>();
+                    final java.util.List<StockService.PlannedCoverage> planned = new java.util.ArrayList<>();
                     for (final EbayApiClient.LineItem li : o.lineItems()) {
                         final java.util.Optional<String> key = mappingService.findKey(li.listingKey(), li.variationAspects());
-                        final int toPrint = stockService.applyToOrderLine(MARKET, key, li.quantity(), li.title(), orderLabel);
+                        final int covered = stockService.coverageFor(MARKET, key, li.quantity());
+                        if (covered > 0) {
+                            planned.add(new StockService.PlannedCoverage(key.get(), covered, li.title()));
+                        }
+                        final int toPrint = li.quantity() - covered;
                         if (key.isPresent() && toPrint <= 0) {
                             continue; // whole line covered from stock - nothing to print
                         }
@@ -101,8 +115,19 @@ public class EbayOrderPollingService {
                                         .map(EbayMappingService.MappingEntry::parts)
                                         .orElse(java.util.List.of())));
                     }
-                    if (!queueItems.isEmpty()) {
-                        autoQueue.processOrder(MARKET, o.orderId(), orderLabel, queueItems);
+                    // Nothing left to print means stock covered the whole order - there's no queueing step to
+                    // accept it, so accept it here. Previously this fell through entirely: the order was never
+                    // marked queued and sat as "not queued" forever despite being fulfillable off the shelf.
+                    final boolean accepted = queueItems.isEmpty()
+                            ? !planned.isEmpty() && autoQueue.isEnabled()
+                            : autoQueue.processOrder(MARKET, o.orderId(), orderLabel, queueItems);
+                    if (accepted) {
+                        planned.forEach(p -> stockService.commitCoverage(MARKET, p, orderLabel));
+                        if (queueItems.isEmpty()) {
+                            tracking.markQueued(MARKET, o.orderId());
+                            Log.infof("EbayOrderPollingService: %s fully fulfilled from on-hand stock - nothing to print",
+                                    orderLabel);
+                        }
                     }
                 });
     }

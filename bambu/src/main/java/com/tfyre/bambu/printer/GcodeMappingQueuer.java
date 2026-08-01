@@ -8,9 +8,11 @@ import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -83,6 +85,76 @@ public class GcodeMappingQueuer {
     }
 
     /**
+     * Every mappable file in the library: loose {@code .3mf}s at the root as bare names (exactly what existing
+     * mappings already store, so they keep matching), plus files inside project folders as {@code Project/file.3mf}.
+     * <p>
+     * Sub-paths are safe end to end: {@link #queuePart} resolves them against the library root, and
+     * {@code PrintQueueService.startNext} flattens them to a bare filename before the SD-card upload.
+     */
+    public List<String> listLibraryFiles() {
+        final Path root = Path.of(config.batchPrint().library());
+        if (!Files.isDirectory(root)) {
+            return List.of();
+        }
+        final List<String> loose = new ArrayList<>();
+        final List<String> inProjects = new ArrayList<>();
+        try (final java.util.stream.Stream<Path> stream = Files.list(root)) {
+            stream.sorted(Comparator.comparing(p -> p.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .forEach(entry -> {
+                        final String name = entry.getFileName().toString();
+                        if (Files.isRegularFile(entry) && name.toLowerCase().endsWith(".3mf")) {
+                            loose.add(name);
+                        } else if (Files.isDirectory(entry)) {
+                            inProjects.addAll(listProject(entry).stream().map(f -> name + "/" + f).toList());
+                        }
+                    });
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+        final List<String> all = new ArrayList<>(loose);
+        all.addAll(inProjects);
+        return all;
+    }
+
+    /** Project folder names that contain at least one {@code .3mf}. */
+    public List<String> listProjects() {
+        final Path root = Path.of(config.batchPrint().library());
+        if (!Files.isDirectory(root)) {
+            return List.of();
+        }
+        try (final java.util.stream.Stream<Path> stream = Files.list(root)) {
+            return stream.filter(Files::isDirectory)
+                    .filter(d -> !listProject(d).isEmpty())
+                    .map(d -> d.getFileName().toString())
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .toList();
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
+    /** Library-relative paths of every file in one project, in name order. */
+    public List<String> listProjectFiles(final String project) {
+        final Path dir = Path.of(config.batchPrint().library()).resolve(project);
+        return listProject(dir).stream().map(f -> project + "/" + f).toList();
+    }
+
+    private static List<String> listProject(final Path dir) {
+        try (final java.util.stream.Stream<Path> stream = Files.list(dir)) {
+            return stream.filter(Files::isRegularFile)
+                    .map(f -> f.getFileName().toString())
+                    .filter(n -> n.toLowerCase().endsWith(".3mf"))
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .toList();
+        } catch (IOException ex) {
+            Log.error(ex.getMessage(), ex);
+            return List.of();
+        }
+    }
+
+    /**
      * Queues a single job for {@code part} on {@code printerName}, optionally overriding the part's mapped AMS
      * slot (auto-queue resolves the slot per printer from live filament telemetry - the tray holding PETG on one
      * printer isn't necessarily the same index on another). Returns an error message, or empty on success.
@@ -102,7 +174,10 @@ public class GcodeMappingQueuer {
                 part.path(), part.plateId(), useAms,
                 config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
                 config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
-        queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source(), orderRef));
+        // Carry the part itself so the job can be returned to the dispatch pool intact if it's later removed
+        // from this printer's queue - the command alone loses the filament requirement.
+        queueService.add(printerName, new PrintQueueService.QueueEntry(
+                command, plateInfo.weight(), part.source(), orderRef, part));
         return Optional.empty();
     }
 
@@ -150,7 +225,8 @@ public class GcodeMappingQueuer {
             for (int i = 0; i < copies; i++) {
                 final String printerName = printerNames.get(printerIndex % printerNames.size());
                 printerIndex++;
-                queueService.add(printerName, new PrintQueueService.QueueEntry(command, plateInfo.weight(), part.source(), orderRef));
+                queueService.add(printerName, new PrintQueueService.QueueEntry(
+                        command, plateInfo.weight(), part.source(), orderRef, part));
                 totalQueued++;
             }
         }

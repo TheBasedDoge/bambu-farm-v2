@@ -36,6 +36,8 @@ public class EtsyOrderPollingService {
     AutoQueueService autoQueue;
     @Inject
     StockService stockService;
+    @Inject
+    PollFailureReporter pollFailures;
 
     private final AtomicReference<List<EtsyApiClient.Receipt>> lastReceipts = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -57,10 +59,15 @@ public class EtsyOrderPollingService {
             lastPolled.set(Instant.now());
             lastError.set(null);
             Log.infof("EtsyOrderPollingService: %d unfulfilled receipt(s)", receipts.size());
+            pollFailures.recordSuccess("Etsy");
+            // Orders that have left the open list are done with, however their print progress ended up
+            tracking.pruneClosed(MARKET, receipts.stream().map(r -> String.valueOf(r.receiptId())).collect(java.util.stream.Collectors.toSet()));
             notifyNewOrders(receipts);
         } catch (Exception ex) {
             lastError.set(ex.getMessage());
             Log.errorf(ex, "EtsyOrderPollingService: poll failed: %s", ex.getMessage());
+            // A failing poll means orders silently stop arriving - notify rather than only logging.
+            pollFailures.recordFailure("Etsy", ex.getMessage());
         }
     }
 
@@ -85,12 +92,19 @@ public class EtsyOrderPollingService {
                     notificationService.notifyEvent("new_order", "Etsy",
                             "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
                                     items.length() > 200 ? items.substring(0, 200) + "…" : items));
-                    // Fulfill from on-hand stock first (decrements + notifies), then auto-queue only what's left to print.
+                    // Work out what on-hand stock would cover and auto-queue only the remainder. The stock is NOT
+                    // consumed yet: processOrder can decline the order for five different reasons, and consuming
+                    // up front deducted the units anyway - so they were spent on something never printed.
                     final String orderLabel = "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName());
                     final java.util.List<AutoQueueService.AutoQueueItem> queueItems = new java.util.ArrayList<>();
+                    final java.util.List<StockService.PlannedCoverage> planned = new java.util.ArrayList<>();
                     for (final EtsyApiClient.Transaction t : r.transactions()) {
                         final java.util.Optional<String> key = mappingService.findKey(t.listingId(), t.variations());
-                        final int toPrint = stockService.applyToOrderLine(MARKET, key, t.quantity(), t.title(), orderLabel);
+                        final int covered = stockService.coverageFor(MARKET, key, t.quantity());
+                        if (covered > 0) {
+                            planned.add(new StockService.PlannedCoverage(key.get(), covered, t.title()));
+                        }
+                        final int toPrint = t.quantity() - covered;
                         if (key.isPresent() && toPrint <= 0) {
                             continue; // whole line covered from stock - nothing to print
                         }
@@ -103,8 +117,20 @@ public class EtsyOrderPollingService {
                                         .map(EtsyMappingService.MappingEntry::parts)
                                         .orElse(java.util.List.of())));
                     }
-                    if (!queueItems.isEmpty()) {
-                        autoQueue.processOrder(MARKET, String.valueOf(r.receiptId()), orderLabel, queueItems);
+                    final String orderId = String.valueOf(r.receiptId());
+                    // Nothing left to print means stock covered the whole order - there's no queueing step to
+                    // accept it, so accept it here. Previously this fell through entirely: the order was never
+                    // marked queued and sat as "not queued" forever despite being fulfillable off the shelf.
+                    final boolean accepted = queueItems.isEmpty()
+                            ? !planned.isEmpty() && autoQueue.isEnabled()
+                            : autoQueue.processOrder(MARKET, orderId, orderLabel, queueItems);
+                    if (accepted) {
+                        planned.forEach(p -> stockService.commitCoverage(MARKET, p, orderLabel));
+                        if (queueItems.isEmpty()) {
+                            tracking.markQueued(MARKET, orderId);
+                            Log.infof("EtsyOrderPollingService: %s fully fulfilled from on-hand stock - nothing to print",
+                                    orderLabel);
+                        }
                     }
                 });
     }

@@ -96,6 +96,25 @@ public class BedReferenceService {
         return Files.isRegularFile(refFile(printerName));
     }
 
+    /**
+     * When this printer's reference was captured, from the file's own timestamp - no extra state to keep in step.
+     * <p>
+     * Surfaced because age is the single best predictor of whether the pixel check still discriminates: the same
+     * empty bed measured 0.19 against a fresh reference and 4.76-5.64 against a day-old one. A reading alone
+     * doesn't tell you which situation you're in; the reading next to the age does.
+     */
+    public Optional<java.time.Instant> referenceCapturedAt(final String printerName) {
+        final Path file = refFile(printerName);
+        if (!Files.exists(file)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Files.getLastModifiedTime(file).toInstant());
+        } catch (IOException ex) {
+            return Optional.empty();
+        }
+    }
+
     public Optional<byte[]> getReference(final String printerName) {
         final Path f = refFile(printerName);
         if (!Files.isRegularFile(f)) {

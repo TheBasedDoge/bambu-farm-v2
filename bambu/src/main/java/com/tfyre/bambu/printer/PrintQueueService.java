@@ -37,17 +37,29 @@ public class PrintQueueService {
     /**
      * @param orderRef the marketplace order this job fulfills, or {@code null} for jobs queued outside the
      *                 order flow (Batch Print page) and entries persisted before this field existed
+     * @param part the mapping part this entry came from, when it originated from an order. Kept so the job can be
+     *             put BACK in the dispatch pool intact if it's removed from this printer's queue - the command
+     *             alone can't reproduce the filament requirement, and losing that would let the job re-dispatch
+     *             onto a printer loaded with the wrong material. Null for manual/batch entries and for entries
+     *             queued before this field existed.
      */
-    public record QueueEntry(BambuPrinter.CommandPPF command, double grams, GcodeSource source, OrderRef orderRef) {
+    public record QueueEntry(BambuPrinter.CommandPPF command, double grams, GcodeSource source, OrderRef orderRef,
+            MappingPart part) {
 
         /** Convenience constructor for the common case: a file from the batch print library. */
         public QueueEntry(final BambuPrinter.CommandPPF command, final double grams) {
-            this(command, grams, GcodeSource.LIBRARY, null);
+            this(command, grams, GcodeSource.LIBRARY, null, null);
         }
 
         /** Backward-compatible constructor for entries with no order linkage. */
         public QueueEntry(final BambuPrinter.CommandPPF command, final double grams, final GcodeSource source) {
-            this(command, grams, source, null);
+            this(command, grams, source, null, null);
+        }
+
+        /** Backward-compatible constructor for entries queued before the part was carried. */
+        public QueueEntry(final BambuPrinter.CommandPPF command, final double grams, final GcodeSource source,
+                final OrderRef orderRef) {
+            this(command, grams, source, orderRef, null);
         }
 
     }
@@ -69,6 +81,9 @@ public class PrintQueueService {
     /** Lazy to avoid an eager circular reference (AutoQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<AutoQueueService> autoQueueInstance;
+    /** Lazy to avoid an eager circular reference (DispatchQueueService injects this service). */
+    @Inject
+    jakarta.enterprise.inject.Instance<DispatchQueueService> dispatchInstance;
 
     private final Map<String, List<QueueEntry>> data = new HashMap<>();
     private boolean dirty;
@@ -140,7 +155,12 @@ public class PrintQueueService {
     /**
      * Removes the given entry (matched by identity, so safe against the queue having shifted since the UI
      * rendered it - a render-time index could silently delete a different job). No-op if the entry is no
-     * longer queued (e.g. already started or removed elsewhere).
+     * longer queued.
+     * <p>
+     * An ORDER job goes back into the dispatch pool rather than being dropped: taking it off
+     * this printer means "not here", not "don't print it" - the order still expects it, and silently losing it
+     * leaves that order stuck at N-1/N forever. Cancelling for real is the bin on the dispatch pool itself, which
+     * also tells the order to stop expecting the job.
      */
     public synchronized void removeEntry(final String printer, final QueueEntry entry) {
         final List<QueueEntry> queue = data.get(printer);
@@ -152,9 +172,24 @@ public class PrintQueueService {
                 queue.remove(i);
                 dirty = true;
                 save();
+                returnToDispatchPool(entry);
                 return;
             }
         }
+    }
+
+    /** True when removing this entry will hand it back to the dispatch pool instead of discarding it. */
+    public static boolean returnsToPool(final QueueEntry entry) {
+        return entry.orderRef() != null && entry.part() != null;
+    }
+
+    private void returnToDispatchPool(final QueueEntry entry) {
+        if (!returnsToPool(entry)) {
+            return;
+        }
+        dispatchInstance.get().enqueue(entry.part(), entry.orderRef());
+        Log.infof("PrintQueueService: %s returned to the dispatch pool (removed from a printer queue)",
+                entry.command().filename());
     }
 
     /** Puts an entry at the FRONT of a printer's queue (used by auto-requeue so the retry goes next). */
@@ -187,20 +222,25 @@ public class PrintQueueService {
      * front of the queue for ONE retry (auto-start's bed-clear gate still applies before it runs again).
      * A second failure of the same job stops and alerts instead of looping filament into the bin.
      */
-    public void onJobEnded(final PrintHistoryService.PrintJob job) {
+    /**
+     * @return true when the job was put back on the queue for a retry. The caller needs this: a requeued job is
+     *         still going to produce its part, so its order must keep expecting it, while one that ends here for
+     *         good must release that expectation or the order can never complete.
+     */
+    public boolean onJobEnded(final PrintHistoryService.PrintJob job) {
         final StartedJob started = lastStarted.get(job.printer());
         if (started == null || !started.effectiveFile().equals(job.file())) {
-            return;
+            return false;
         }
         lastStarted.remove(job.printer());
         final String key = "%s|%s|%s".formatted(job.printer(), started.original().command().filename(),
                 started.original().orderRef() == null ? "" : started.original().orderRef().orderId());
         if ("Finished".equals(job.result())) {
             retryCounts.remove(key);
-            return;
+            return false;
         }
         if (!autoQueueInstance.get().isAutoRequeueEnabled()) {
-            return;
+            return false;
         }
         final int attempts = retryCounts.getOrDefault(key, 0);
         if (attempts >= 1) {
@@ -209,7 +249,7 @@ public class PrintQueueService {
             notificationService.notifyEvent("auto_requeue", job.printer(),
                     "%s failed AGAIN after an automatic retry - not requeueing, needs a human (%s)"
                             .formatted(job.file(), job.result()));
-            return;
+            return false;
         }
         retryCounts.put(key, attempts + 1);
         requeueFront(job.printer(), started.original());
@@ -217,6 +257,7 @@ public class PrintQueueService {
         notificationService.notifyEvent("auto_requeue", job.printer(),
                 "Print %s: %s - automatically requeued for one retry (bed-clear gate still applies)"
                         .formatted(job.result().toLowerCase(), job.file()));
+        return true;
     }
 
     private synchronized void removeFirst(final String printer, final QueueEntry entry) {
@@ -324,9 +365,14 @@ public class PrintQueueService {
                         onError.accept("%s: not in library: %s".formatted(printerName, command.filename()));
                         return;
                     }
-                    final String sdPath = uploadIfNeeded(detail, command.filename(), file);
+                    // A library entry may live in a project subfolder ("MyProject/part.3mf"), but the SD card only
+                    // ever sees a bare filename - FTP upload and the existing-file scan both match on name alone.
+                    // So resolve locally with the sub-path and hand the basename to the SD side.
+                    final String sdName = Path.of(command.filename()).getFileName().toString();
+                    final String sdPath = uploadIfNeeded(detail, sdName, file);
                     if (!sdPath.equals(command.filename())) {
-                        // Identical file found in an SD subfolder - print from there instead of the root copy
+                        // Either a project sub-path that must be flattened, or an identical file found in an SD
+                        // subfolder that we print from instead of re-uploading a duplicate.
                         command = new BambuPrinter.CommandPPF(sdPath, command.plateId(), command.useAms(),
                                 command.timelapse(), command.bedLevelling(), command.flowCalibration(),
                                 command.vibrationCalibration(), command.amsMapping());

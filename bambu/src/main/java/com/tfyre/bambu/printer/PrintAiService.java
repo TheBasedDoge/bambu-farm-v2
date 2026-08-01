@@ -44,6 +44,8 @@ public class PrintAiService {
     RtspSnapshotService rtspSnapshotService;
     @Inject
     BedReferenceService bedReference;
+    @Inject
+    BedDiffService bedDiff;
 
     /**
      * Snapshot of the last AI check result per printer.
@@ -67,11 +69,24 @@ public class PrintAiService {
      * @param severity  display severity; null when the check couldn't complete
      * @param description the model's explanation, or the reason the check couldn't complete
      * @param snapshot  the exact JPEG frame that was analyzed; null when no snapshot could be grabbed
+     * @param pixelDiff measured pixel-diff vs the empty-bed reference (bed-clear checks only); null when the
+     *                  backstop is off, has no reference, or couldn't measure. Recorded on every check so the
+     *                  history doubles as the calibration data for the threshold.
      */
     public record CheckRecord(Instant at, String printer, String checkType, String trigger, String context,
-            Boolean good, OllamaService.Severity severity, String description, byte[] snapshot) {}
+            Boolean good, OllamaService.Severity severity, String description, byte[] snapshot, Double pixelDiff) {
+
+        /** Back-compat: records created before the pixel-diff backstop existed. */
+        public CheckRecord(final Instant at, final String printer, final String checkType, final String trigger,
+                final String context, final Boolean good, final OllamaService.Severity severity,
+                final String description, final byte[] snapshot) {
+            this(at, printer, checkType, trigger, context, good, severity, description, snapshot, null);
+        }
+    }
 
     private static final int MAX_HISTORY = 50;
+    /** How often to sample the layer number while waiting for the first layer to be laid down. */
+    private static final long FIRST_LAYER_POLL_MS = 10_000;
 
     /** Newest-first bounded history of check attempts. In-memory only (images included) - resets on restart. */
     private final Deque<CheckRecord> history = new ArrayDeque<>();
@@ -226,27 +241,114 @@ public class PrintAiService {
                     null, null, "No camera snapshot available", null));
             return Optional.empty();
         }
+        final boolean isBedCheck = "bed-clear".equals(checkType);
+        // Deterministic backstop, measured BEFORE asking the model so its verdict can override a false "clear".
+        // Fails open: no reference / unreadable frame = no opinion, the AI verdict stands alone.
+        final Optional<byte[]> pixelRef = isBedCheck && bedDiff.isEnabled()
+                ? bedReference.getReference(printerName) : Optional.empty();
+        final Optional<BedDiffService.Measurement> pixel = pixelRef.isPresent()
+                ? bedDiff.measureFor(printerName, snapshot.get(), pixelRef.get()) : Optional.empty();
+        // Over the limit = an object. Mid-range = the reference no longer describes an empty bed, so the reading
+        // means nothing - and "means nothing" must not read as "clear". Both fail closed; see whyUntrustworthy.
+        final Optional<String> pixelReason = pixel.flatMap(bedDiff::whyBlocked)
+                .or(() -> pixel.flatMap(bedDiff::whyUntrustworthy));
+        final boolean pixelBlocked = pixelReason.isPresent();
+        // The MEAN, because that is the number the gate actually uses. This recorded the score (max of mean and
+        // worst block) until 2026-08-01, so a dispatch alert read "[pixel diff 18.62]" for a check the gate had
+        // passed at mean 5.08 - the one number you'd reach for to explain the decision was the one that didn't
+        // make it. The worst block has not gated anything since its ordering was found to be inverted.
+        final Double recordedDiff = pixel.map(BedDiffService.Measurement::mean).orElse(null);
+
         // Experimental: for the bed-clear check, if reference-compare mode is on and this printer has a saved
         // empty-bed reference, compare current-vs-reference (two images) instead of judging one image alone.
-        final Optional<byte[]> reference = "bed-clear".equals(checkType) && bedReference.isEnabled()
+        final Optional<byte[]> reference = isBedCheck && bedReference.isEnabled()
                 ? bedReference.getReference(printerName) : Optional.empty();
         final Optional<OllamaService.AiResult> result = reference.isPresent()
                 ? ollama.checkBedClearWithReference(reference.get(), snapshot.get(), context)
                 : check.apply(snapshot.get(), context);
         if (result.isEmpty()) {
+            // The model failed, but a pixel block is still a definite answer - and a definite NO is worth keeping.
+            if (pixelBlocked) {
+                final String why = "Bed NOT clear: pixel check vs the empty-bed reference (%s) - AI did not answer"
+                        .formatted(pixelReason.orElse("over limit"));
+                final OllamaService.AiResult blocked = new OllamaService.AiResult(false, OllamaService.Severity.FAIL, why);
+                if (updateLastResult) {
+                    lastResults.put(printerName, new AiCheckResult(false, OllamaService.Severity.FAIL, why, checkType, Instant.now()));
+                }
+                record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
+                        false, OllamaService.Severity.FAIL, why, snapshot.get(), recordedDiff));
+                return Optional.of(blocked);
+            }
             record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
-                    null, null, "AI did not answer (Ollama error or timeout)", snapshot.get()));
+                    null, null, "AI did not answer (Ollama error or timeout)", snapshot.get(), recordedDiff));
             return result;
         }
-        final OllamaService.AiResult r = result.get();
-        final boolean good = positiveMeansGood == r.positive();
-        final OllamaService.Severity severity = OllamaService.severityFor(good, r.description());
+        OllamaService.AiResult r = result.get();
+        boolean good = positiveMeansGood == r.positive();
+        final boolean pixelOverrode = pixelBlocked && good;
+        if (pixelOverrode) {
+            // The whole reason this backstop exists: the model cannot see a dark part on a dark plate, so when
+            // the pixels disagree with a "clear" verdict, the pixels win. That now includes the pixels being
+            // unable to say anything useful - an untrustworthy reading leaves the model unsupervised, which is
+            // precisely the condition under which it dispatched onto an occupied bed.
+            final String why = "Bed NOT clear - BLOCKED by pixel check (%s). AI said: %s"
+                    .formatted(pixelReason.orElse("over limit"), r.description());
+            Log.warnf("PrintAiService: %s: pixel-diff backstop overrode a 'clear' AI verdict (%s)",
+                    printerName, pixelReason.orElse("over limit"));
+            r = new OllamaService.AiResult(!positiveMeansGood, OllamaService.Severity.FAIL, why);
+            good = false;
+        }
+        // ---- Two-pass verification, bed gate only ----
+        // A single verdict is not stable on a marginal bed: the same plate, at the same pixel reading, was judged
+        // not-clear at 01:12 and clear at 01:16 on 2026-08-01, and the "clear" one started a print onto an
+        // occupied plate. Requiring a second, independently captured frame to agree turns one coin flip into two.
+        //
+        // Gated on `good && !pixelOverrode` exactly as HA gated theirs: it only spends a second inference on the
+        // one decision that can waste filament, and the common bed-dirty path is untouched. A fresh
+        // illuminate/snapshot/restore is used rather than reusing the first frame - two reads of the same image
+        // would just repeat the same answer and verify nothing.
+        boolean secondPassDisagreed = false;
+        if (isBedCheck && good && !pixelOverrode && bedDiff.isTwoPass()) {
+            final Optional<BambuConst.LightMode> priorLight2 = illuminateForCheck(printerName);
+            final Optional<byte[]> snapshot2 = getSnapshot(printerName);
+            restoreLight(printerName, priorLight2);
+            final Optional<OllamaService.AiResult> second = snapshot2.map(s2 -> reference.isPresent()
+                    ? ollama.checkBedClearWithReference(reference.get(), s2, context)
+                    : check.apply(s2, context)).orElse(Optional.empty());
+            // No second frame or no answer is NOT agreement. This gate authorises a print; silence fails closed.
+            secondPassDisagreed = second.map(s -> positiveMeansGood != s.positive()).orElse(true);
+            if (secondPassDisagreed) {
+                final String why = "Bed NOT clear - the first check said clear but a second look disagreed (%s). First said: %s"
+                        .formatted(second.map(OllamaService.AiResult::description)
+                                .orElse("no answer on the second look"), r.description());
+                Log.warnf("PrintAiService: %s: two-pass verification rejected a 'clear' verdict (%s)", printerName,
+                        second.map(s -> "second look: " + s.description()).orElse("no second answer"));
+                r = new OllamaService.AiResult(!positiveMeansGood, OllamaService.Severity.FAIL, why);
+                good = false;
+            }
+        }
+        final OllamaService.Severity severity = pixelOverrode || secondPassDisagreed
+                ? OllamaService.Severity.FAIL : OllamaService.severityFor(good, r.description());
         if (updateLastResult) {
             lastResults.put(printerName, new AiCheckResult(good, severity, r.description(), checkType, Instant.now()));
         }
         record(new CheckRecord(Instant.now(), printerName, checkType, trigger, context.orElse(null),
-                good, severity, r.description(), snapshot.get()));
-        return result;
+                good, severity, r.description(), snapshot.get(), recordedDiff));
+        // Self-refreshing reference. Adoption needs the reading to be COMFORTABLY clear (see canRefreshFrom), not
+        // merely under the limit - a marginal frame walking the baseline towards an occupied bed is exactly how
+        // two printers ended up referencing a bed with a cupholder on it.
+        if (isBedCheck && good && pixel.isPresent() && !pixelBlocked && bedDiff.canRefreshFrom(pixel.get())) {
+            try {
+                bedReference.saveReference(printerName, snapshot.get());
+                // Logged at INFO on purpose: this silently rewrites what "clear" means for this printer, and the
+                // one time it went wrong it did so invisibly. A line per adoption makes drift auditable.
+                Log.infof("PrintAiService: %s: adopted a new bed reference (mean %.2f, model agreed it is clear)",
+                        printerName, pixel.get().mean());
+            } catch (RuntimeException ex) {
+                Log.warnf("PrintAiService: %s: could not auto-refresh the bed reference: %s", printerName, ex.getMessage());
+            }
+        }
+        return Optional.of(r);
     }
 
     public boolean isEnabled() {
@@ -367,27 +469,50 @@ public class PrintAiService {
         if (!firstLayerScheduled.add(printerName)) {
             return; // already scheduled for this print cycle
         }
-        final long delayMs = config.ollama().firstLayerDelay().toMillis();
-        Log.debugf("PrintAiService: %s: first-layer check scheduled in %dms", printerName, delayMs);
+        final long deadlineMs = config.ollama().firstLayerDelay().toMillis();
+        Log.debugf("PrintAiService: %s: waiting for the first layer (up to %dms)", printerName, deadlineMs);
 
         executor.submit(() -> {
-            try {
-                Thread.sleep(delayMs);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
+            // Wait for the LAYER, not for a fixed delay. A fixed delay is only "the first layer" on a print whose
+            // layers happen to be slow: an 8-minute wait on a fast part landed the check on layer 89, which is
+            // neither a first-layer check nor a useful one.
+            final int maxLayer = Math.max(1, config.ollama().firstLayerMaxLayer());
+            final long started = System.currentTimeMillis();
+            int layer;
+            while (true) {
+                final Optional<BambuPrinter> p = findPrinter(printerName);
+                if (p.isEmpty() || !p.get().getGCodeState().isPrinting()) {
+                    Log.debugf("PrintAiService: %s: print ended before the first layer, skipping", printerName);
+                    firstLayerScheduled.remove(printerName);
+                    return;
+                }
+                layer = p.get().getLayerNum();
+                if (layer >= 1) {
+                    break;
+                }
+                if (System.currentTimeMillis() - started > deadlineMs) {
+                    Log.infof("PrintAiService: %s: no layer number reported within %dms, skipping the first-layer check",
+                            printerName, deadlineMs);
+                    firstLayerScheduled.remove(printerName);
+                    return;
+                }
+                try {
+                    Thread.sleep(FIRST_LAYER_POLL_MS);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    firstLayerScheduled.remove(printerName);
+                    return;
+                }
+            }
+            if (layer > maxLayer) {
+                // Layers went by faster than we could sample - checking now would judge a mid-print surface
+                // against a first-layer prompt, which is how you get a confident, meaningless verdict.
+                Log.infof("PrintAiService: %s: already on layer %d (>%d) when first observed - skipping the "
+                        + "first-layer check rather than judging a mid-print surface", printerName, layer, maxLayer);
                 firstLayerScheduled.remove(printerName);
                 return;
             }
-
-            // Only run if still printing
-            final Optional<BambuPrinter> stillPrinting = printers.getPrinters().stream()
-                    .filter(p -> p.getName().equals(printerName) && p.getGCodeState().isPrinting())
-                    .findFirst();
-
-            if (stillPrinting.isEmpty()) {
-                Log.debugf("PrintAiService: %s: print ended before first-layer check, skipping", printerName);
-                return;
-            }
+            final int checkedLayer = layer;
 
             checksInProgress.add(printerName);
             try {
@@ -396,18 +521,74 @@ public class PrintAiService {
                         (bytes, context) -> ollama.checkFirstLayer(bytes, context), true, true)
                         .ifPresent(result -> {
                             if (!result.positive()) {
-                                Log.warnf("PrintAiService: %s: first layer issue — %s", printerName, result.description());
+                                Log.warnf("PrintAiService: %s: first layer issue on layer %d — %s",
+                                        printerName, checkedLayer, result.description());
                                 notificationService.notifyEvent("first_layer_issue", printerName,
-                                        "First layer issue detected: " + truncate(result.description(), 200),
+                                        "First layer issue detected (layer %d): %s".formatted(
+                                                checkedLayer, truncate(result.description(), 900)),
                                         getLastCheck(printerName).map(CheckRecord::snapshot).orElse(null));
                             } else {
-                                Log.infof("PrintAiService: %s: first layer OK — %s", printerName, result.description());
+                                Log.infof("PrintAiService: %s: first layer (layer %d) OK — %s",
+                                        printerName, checkedLayer, result.description());
                             }
                         });
             } finally {
                 checksInProgress.remove(printerName);
             }
         });
+    }
+
+    /**
+     * Runs ONLY the deterministic pixel comparison against this printer's saved reference - no model call. Exists
+     * so the limits can be calibrated by taking an empty-bed reading and a part-on-bed reading back to back,
+     * instead of waiting for real checks to happen.
+     */
+    public Optional<BedDiffService.Measurement> measureBedNow(final String printerName) {
+        final Optional<byte[]> reference = bedReference.getReference(printerName);
+        if (reference.isEmpty()) {
+            return Optional.empty();
+        }
+        final Optional<BambuConst.LightMode> prior = illuminateForCheck(printerName);
+        final Optional<byte[]> snapshot = getSnapshot(printerName);
+        restoreLight(printerName, prior);
+        return snapshot.flatMap(s -> bedDiff.measureFor(printerName, s, reference.get()));
+    }
+
+    /**
+     * Grabs two frames a couple of seconds apart and measures them against EACH OTHER - the bed doesn't move and
+     * nothing is placed on it, so whatever this reads is the pipeline's own noise floor (sensor noise, JPEG
+     * compression, auto-exposure drift).
+     * <p>
+     * This is the decisive diagnostic when empty beds score high: if two frames of the same untouched bed read
+     * near a real part's score, the metric is dominated by frame-to-frame instability and no reference, crop or
+     * threshold can rescue it. If instead this reads near zero, the difference is genuinely between the reference
+     * and now - a stale reference, a moved plate, or changed lighting.
+     */
+    public Optional<BedDiffService.Measurement> measureNoiseFloor(final String printerName) {
+        final Optional<BambuConst.LightMode> prior = illuminateForCheck(printerName);
+        try {
+            final Optional<byte[]> first = getSnapshot(printerName);
+            if (first.isEmpty()) {
+                return Optional.empty();
+            }
+            try {
+                Thread.sleep(2500);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return Optional.empty();
+            }
+            final Optional<byte[]> second = getSnapshot(printerName);
+            if (second.isEmpty()) {
+                return Optional.empty();
+            }
+            if (java.util.Arrays.equals(first.get(), second.get())) {
+                Log.infof("PrintAiService: %s: both frames identical - the camera cache didn't refresh, "
+                        + "so this says nothing about the noise floor", printerName);
+            }
+            return bedDiff.measure(second.get(), first.get());
+        } finally {
+            restoreLight(printerName, prior);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -420,13 +601,14 @@ public class PrintAiService {
                 .findFirst();
     }
 
-    /** How long to wait after switching the chamber light on so the camera's auto-exposure settles before a check. */
-    private static final long LIGHT_SETTLE_MS = 4500;
-
     /**
-     * Turns the printer's chamber light on and waits {@link #LIGHT_SETTLE_MS} for the camera exposure to adjust,
-     * so AI checks always analyze a well-lit frame. Called right before every snapshot grab for a check (including
-     * the AI Settings "Test" button). Best-effort: light-command or interruption failures don't abort the check.
+     * Turns the printer's chamber light on and waits {@code bambu.ollama.light-settle} (default 10s) for the
+     * camera exposure to adjust, so AI checks always analyze a well-lit frame. Called right before every snapshot
+     * grab for a check (including the AI Settings "Test" button). Best-effort: light-command or interruption
+     * failures don't abort the check.
+     * <p>
+     * Don't shorten this without testing: P1-series chamber cameras adapt slowly, and a dim mid-adaptation frame
+     * both confuses the vision model and inflates the pixel-diff backstop's measurement.
      */
     public Optional<BambuConst.LightMode> illuminateForCheck(final String printerName) {
         final Optional<BambuPrinter> printer = findPrinter(printerName);
@@ -434,7 +616,7 @@ public class PrintAiService {
         printer.ifPresent(p -> {
             try {
                 p.commandLight(BambuConst.LightMode.ON);
-                Thread.sleep(LIGHT_SETTLE_MS);
+                Thread.sleep(config.ollama().lightSettle().toMillis());
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
             } catch (RuntimeException ex) {

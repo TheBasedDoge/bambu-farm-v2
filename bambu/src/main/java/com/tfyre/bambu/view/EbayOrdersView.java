@@ -192,23 +192,10 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
         return div;
     }
 
+    /** Delegates to the queuer so mappings, batch print and auto-queue all see the same library (incl. projects). */
     private List<String> getLibraryFiles() {
-        final Path path = Path.of(config.batchPrint().library());
-        if (!Files.isDirectory(path)) {
-            return List.of();
-        }
-        try (Stream<Path> stream = Files.list(path)) {
-            return stream.filter(Files::isRegularFile)
-                    .map(p -> p.getFileName().toString())
-                    .filter(name -> name.toLowerCase().endsWith(".3mf"))
-                    .sorted(String.CASE_INSENSITIVE_ORDER)
-                    .toList();
-        } catch (IOException ex) {
-            Log.error(ex.getMessage(), ex);
-            return List.of();
-        }
+        return queuer.listLibraryFiles();
     }
-
     private Div buildOrderCard(final EbayApiClient.Order order) {
         final Div card = new Div();
         card.addClassName("ai-settings-section");
@@ -278,6 +265,8 @@ public class EbayOrdersView extends VerticalLayout implements NotificationHelper
         final MappingPartsPanel panel = new MappingPartsPanel(
                 this::getLibraryFiles,
                 this::loadPlateIds,
+                queuer::listProjects,
+                queuer::listProjectFiles,
                 printerNames,
                 initialParts,
                 li.quantity(),

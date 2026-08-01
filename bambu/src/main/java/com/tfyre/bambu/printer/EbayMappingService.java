@@ -39,8 +39,19 @@ public class EbayMappingService {
         }
     }
 
-    /** A listing's print recipe: one or more parts, each possibly needing several copies per unit ordered. */
-    public record MappingEntry(List<MappingPart> parts) {
+    /**
+     * A listing's print recipe: one or more parts, each possibly needing several copies per unit ordered.
+     *
+     * @param productCode optional shared-stock identity. On-hand stock is normally keyed per marketplace listing,
+     *                    so the same physical product sold on both Etsy and eBay keeps two unrelated counts - set
+     *                    the same code on both and they draw from one pool instead. Null/blank keeps the old
+     *                    per-listing behaviour, which is what every existing mapping deserialises to.
+     */
+    public record MappingEntry(List<MappingPart> parts, String productCode) {
+
+        public MappingEntry(final List<MappingPart> parts) {
+            this(parts, null);
+        }
     }
 
     @Inject

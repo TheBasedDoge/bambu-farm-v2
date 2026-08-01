@@ -36,6 +36,7 @@ import com.vaadin.flow.component.textfield.TextField;
 import com.vaadin.flow.component.upload.SucceededEvent;
 import com.vaadin.flow.component.upload.Upload;
 import com.vaadin.flow.component.upload.receivers.MemoryBuffer;
+import com.vaadin.flow.component.upload.receivers.MultiFileMemoryBuffer;
 import com.vaadin.flow.data.renderer.ComponentRenderer;
 import com.vaadin.flow.router.BeforeEvent;
 import com.vaadin.flow.router.HasUrlParameter;
@@ -58,6 +59,7 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -661,12 +663,12 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         destPath.setHelperText("e.g. /_S2000 — directory is created automatically if it doesn't exist");
         destPath.setPrefixComponent(new Icon(VaadinIcon.FOLDER));
 
-        // File picker
-        final MemoryBuffer broadcastBuffer = new MemoryBuffer();
+        // File picker - multiple files, all going to every selected printer
+        final MultiFileMemoryBuffer broadcastBuffer = new MultiFileMemoryBuffer();
         final Upload broadcastUpload = new Upload(broadcastBuffer);
         broadcastUpload.setAcceptedFileTypes(BambuConst.EXT.toArray(String[]::new));
         broadcastUpload.setMaxFileSize((int) maxBodySize.asLongValue());
-        broadcastUpload.setDropLabel(new Span("Drop .3mf or .gcode file here"));
+        broadcastUpload.setDropLabel(new Span("Drop .3mf or .gcode files here (multiple allowed)"));
         broadcastUpload.setWidthFull();
         broadcastUpload.addFileRejectedListener(e -> nh.showError(e.getErrorMessage()));
 
@@ -697,26 +699,32 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         startBtn.setEnabled(false);
         startBtn.setWidthFull();
 
-        // Hold the file in memory so each printer gets its own fresh ByteArrayInputStream
-        final String[] pendingFileName = {null};
-        final byte[][] pendingBytes = {null};
+        // Hold every file in memory so each printer gets its own fresh ByteArrayInputStream per file.
+        // Ordered so uploads happen in the order they were added.
+        final Map<String, byte[]> pending = new LinkedHashMap<>();
 
         broadcastUpload.addSucceededListener(e -> {
-            try {
-                pendingBytes[0] = broadcastBuffer.getInputStream().readAllBytes();
-                pendingFileName[0] = e.getFileName();
-                startBtn.setEnabled(true);
+            try (final java.io.InputStream in = broadcastBuffer.getInputStream(e.getFileName())) {
+                pending.put(e.getFileName(), in.readAllBytes());
+                startBtn.setEnabled(!pending.isEmpty());
+                startBtn.setText("Upload %d file%s to selected printers".formatted(
+                        pending.size(), pending.size() == 1 ? "" : "s"));
             } catch (IOException ex) {
                 nh.showError("Failed to buffer file: " + ex.getMessage());
             }
         });
+        broadcastUpload.addFileRemovedListener(e -> {
+            pending.remove(e.getFileName());
+            startBtn.setEnabled(!pending.isEmpty());
+            startBtn.setText(pending.isEmpty() ? "Upload to Selected Printers"
+                    : "Upload %d file%s to selected printers".formatted(pending.size(), pending.size() == 1 ? "" : "s"));
+        });
 
         startBtn.addClickListener(e -> {
-            final String fileName = pendingFileName[0];
-            final byte[] bytes = pendingBytes[0];
-            if (fileName == null || bytes == null) {
+            if (pending.isEmpty()) {
                 return;
             }
+            final Map<String, byte[]> files = new LinkedHashMap<>(pending);
 
             final List<BambuPrinters.PrinterDetail> selected = printerChecks.entrySet().stream()
                     .filter(en -> en.getValue().getValue())
@@ -742,7 +750,8 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
             statusArea.removeAll();
             statusArea.add(new Span("Upload progress:"));
             for (final BambuPrinters.PrinterDetail pd : selected) {
-                final Span s = new Span("⏳ " + pd.name() + ": Queued");
+                final Span s = new Span("⏳ %s: queued (%d file%s)".formatted(pd.name(), files.size(),
+                        files.size() == 1 ? "" : "s"));
                 statusSpans.put(pd.name(), s);
                 statusArea.add(s);
             }
@@ -770,11 +779,21 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
                                 return;
                             }
                         }
-                        ui.access(() -> statusSpan.setText("⬆ " + pd.name() + ": Uploading " + fileName + "…"));
-                        final boolean ok = ftpClient.doUpload(fileName, new ByteArrayInputStream(bytes));
-                        ui.access(() -> statusSpan.setText(ok
-                                ? "✓ " + pd.name() + ": Done"
-                                : "✗ " + pd.name() + ": Upload returned failure"));
+                        // One connection per printer, every file sent over it in turn
+                        int done = 0;
+                        final List<String> failed = new ArrayList<>();
+                        for (final Map.Entry<String, byte[]> file : files.entrySet()) {
+                            final int n = ++done;
+                            ui.access(() -> statusSpan.setText("⬆ %s: uploading %s (%d/%d)…"
+                                    .formatted(pd.name(), file.getKey(), n, files.size())));
+                            if (!ftpClient.doUpload(file.getKey(), new ByteArrayInputStream(file.getValue()))) {
+                                failed.add(file.getKey());
+                            }
+                        }
+                        ui.access(() -> statusSpan.setText(failed.isEmpty()
+                                ? "✓ %s: done (%d file%s)".formatted(pd.name(), files.size(), files.size() == 1 ? "" : "s")
+                                : "✗ %s: %d of %d failed - %s".formatted(pd.name(), failed.size(), files.size(),
+                                        String.join(", ", failed))));
                     } catch (Exception ex) {
                         Log.errorf(ex, "Broadcast upload to %s failed: %s", pd.name(), ex.getMessage());
                         final String msg = ex.getMessage();

@@ -55,13 +55,32 @@ public class OrderTrackingService {
         public int expected;
         public int printed;
         public boolean notified;
+        /**
+         * Parts that were expected, failed or were stopped, and were never put back on a queue. Their expectation
+         * is released so a later re-queue doesn't double-count, but the order still owes them - so while this is
+         * above zero the order can NOT read complete or fire ready-to-ship, however many other parts finish.
+         * Re-queueing the order clears it. Absent from older JSON, which deserialises to 0 - correct, since
+         * nothing was tracking abandonment before.
+         */
+        public int abandoned;
+        /**
+         * What was ordered, captured when the order was queued. Held here rather than looked up on demand
+         * because an order drops out of the marketplace's open list once it's marked shipped, and its progress
+         * can outlive that - without this the UI falls back to showing a meaningless order number.
+         */
+        public String title;
     }
 
     /** Immutable snapshot of an order's print progress for the UI. */
-    public record ProgressView(String orderId, int expected, int printed) {
+    public record ProgressView(String orderId, int expected, int printed, String title, int abandoned) {
 
         public boolean complete() {
-            return expected > 0 && printed >= expected;
+            return expected > 0 && printed >= expected && abandoned == 0;
+        }
+
+        /** True when a part was given up on - the order needs a human, not a shipping label. */
+        public boolean needsAttention() {
+            return abandoned > 0;
         }
     }
 
@@ -166,12 +185,57 @@ public class OrderTrackingService {
      * Drives the "X/Y printed" progress display and the ready-to-ship notification.
      */
     public synchronized void addExpectedJobs(final String market, final String orderId, final int jobs) {
+        addExpectedJobs(market, orderId, jobs, null);
+    }
+
+    /** @param title what was ordered, kept so the UI can name it after the order leaves the open list */
+    public synchronized void addExpectedJobs(final String market, final String orderId, final int jobs, final String title) {
         if (jobs <= 0) {
             return;
         }
         final OrderProgress p = state(market).progress.computeIfAbsent(orderId, k -> new OrderProgress());
         p.expected += jobs;
+        // Queueing work for this order is what un-abandons it: these jobs cover the parts that were given up on.
+        p.abandoned = Math.max(0, p.abandoned - jobs);
         p.notified = false;
+        if (title != null && !title.isBlank()) {
+            p.title = title;
+        }
+        dirty = true;
+        save();
+    }
+
+    /**
+     * Un-registers {@code jobs} expected print jobs for an order - used when a job is cancelled before it ever
+     * printed (e.g. removed from the dispatch pool). Without this the order would sit at "N-1/N printed" forever
+     * and never fire its ready-to-ship notification. Clamped so {@code expected} never drops below what has
+     * already printed; if that leaves the order complete, the next {@link #recordJobPrinted} can still fire.
+     */
+    public synchronized void removeExpectedJobs(final String market, final String orderId, final int jobs) {
+        removeExpectedJobs(market, orderId, jobs, false);
+    }
+
+    /**
+     * @param abandoned true when the part is being given up on rather than deliberately cancelled - it failed and
+     *                  nothing is going to reprint it unless a human intervenes. Releasing the expectation stops a
+     *                  later re-queue from double-counting, but the order must not be able to reach "ready to
+     *                  ship" on the strength of a part that was never made, so it's recorded and blocks completion
+     *                  until the order is queued again. A deliberate cancellation ("don't print this") passes
+     *                  false: the order genuinely needs one part fewer.
+     */
+    public synchronized void removeExpectedJobs(final String market, final String orderId, final int jobs,
+            final boolean abandoned) {
+        if (jobs <= 0) {
+            return;
+        }
+        final OrderProgress p = state(market).progress.get(orderId);
+        if (p == null) {
+            return;
+        }
+        p.expected = Math.max(p.printed, p.expected - jobs);
+        if (abandoned) {
+            p.abandoned += jobs;
+        }
         dirty = true;
         save();
     }
@@ -188,7 +252,9 @@ public class OrderTrackingService {
         }
         p.printed++;
         dirty = true;
-        final boolean justCompleted = p.expected > 0 && p.printed >= p.expected && !p.notified;
+        // p.abandoned == 0: a part that failed and was never reprinted must not be papered over by the others
+        // finishing. Telling you an order is ready to ship when it's short a part is the one wrong answer here.
+        final boolean justCompleted = p.expected > 0 && p.printed >= p.expected && p.abandoned == 0 && !p.notified;
         if (justCompleted) {
             p.notified = true;
         }
@@ -196,10 +262,32 @@ public class OrderTrackingService {
         return justCompleted;
     }
 
+    /**
+     * Drops progress for orders the marketplace no longer lists as open, unless they completed (a completed entry
+     * is what stops the ready-to-ship notification firing twice). Without this, an order that was queued but never
+     * finished - shipped by hand, or queued before jobs carried an order reference - keeps its 0/N entry forever,
+     * inflating "in progress" and growing this file indefinitely.
+     *
+     * @param openOrderIds order IDs the marketplace currently reports as open
+     */
+    public synchronized void pruneClosed(final String market, final Set<String> openOrderIds) {
+        final Map<String, OrderProgress> progress = state(market).progress;
+        final int before = progress.size();
+        progress.entrySet().removeIf(e -> !openOrderIds.contains(e.getKey())
+                && !(e.getValue().expected > 0 && e.getValue().printed >= e.getValue().expected));
+        if (progress.size() != before) {
+            Log.infof("OrderTrackingService: %s: dropped %d progress entry(s) for orders no longer open",
+                    market, before - progress.size());
+            dirty = true;
+            save();
+        }
+    }
+
     /** Progress for all orders of a marketplace that have print jobs registered. */
     public synchronized List<ProgressView> progress(final String market) {
         return state(market).progress.entrySet().stream()
-                .map(e -> new ProgressView(e.getKey(), e.getValue().expected, e.getValue().printed))
+                .map(e -> new ProgressView(e.getKey(), e.getValue().expected, e.getValue().printed, e.getValue().title,
+                        e.getValue().abandoned))
                 .toList();
     }
 

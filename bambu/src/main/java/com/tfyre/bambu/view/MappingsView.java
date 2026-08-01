@@ -67,6 +67,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     @Inject
     BambuConfig config;
     @Inject
+    com.tfyre.bambu.printer.GcodeMappingQueuer queuer;
+    @Inject
     EtsyOAuthService etsyOauth;
     @Inject
     EtsyApiClient etsyClient;
@@ -369,6 +371,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             savedGrid.addColumn(SavedRow::variations).setHeader("Variation").setAutoWidth(true);
             savedGrid.addColumn(SavedRow::summary).setHeader("Print jobs").setFlexGrow(1);
             savedGrid.addComponentColumn(row -> stockField(row.market(), row.storageKey())).setHeader("On-hand").setAutoWidth(true);
+            savedGrid.addComponentColumn(this::productCodeField).setHeader("Product code").setAutoWidth(true);
             savedGrid.addComponentColumn(row -> {
                 final Button edit = new Button(new Icon(VaadinIcon.EDIT));
                 edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
@@ -377,11 +380,14 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                     final List<MappingPart> initial = "etsy".equals(row.market())
                             ? etsyMapping.entries().getOrDefault(row.storageKey(), new EtsyMappingService.MappingEntry(List.of())).parts()
                             : ebayMapping.entries().getOrDefault(row.storageKey(), new EbayMappingService.MappingEntry(List.of())).parts();
+                    // Carry the product code through. Rewriting the entry with the parts alone would silently drop
+                    // it and split a shared stock pool back into two, with nothing on screen to show it happened.
+                    final String keepCode = productCodeOf(row);
                     openEditor("%s: %s %s".formatted(row.market(), row.listing(), row.variations()), initial, parts -> {
                         if ("etsy".equals(row.market())) {
-                            etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts));
+                            etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts, keepCode));
                         } else {
-                            ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts));
+                            ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts, keepCode));
                         }
                         showNotification("Mapping updated");
                         renderAll();
@@ -696,6 +702,56 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         return f;
     }
 
+    /** The product code currently saved against a mapping, or "" when it has none. */
+    private String productCodeOf(final SavedRow row) {
+        final String code = "etsy".equals(row.market())
+                ? Optional.ofNullable(etsyMapping.entries().get(row.storageKey()))
+                        .map(EtsyMappingService.MappingEntry::productCode).orElse(null)
+                : Optional.ofNullable(ebayMapping.entries().get(row.storageKey()))
+                        .map(EbayMappingService.MappingEntry::productCode).orElse(null);
+        return code == null ? "" : code;
+    }
+
+    /**
+     * Editor for a mapping's shared-stock code. Give the Etsy and eBay mappings for one physical product the same
+     * code and their on-hand stock becomes a single pool - without it each marketplace counts separately, so stock
+     * set on the Etsy listing does nothing when the eBay order arrives and the item gets printed anyway.
+     */
+    private com.vaadin.flow.component.textfield.TextField productCodeField(final SavedRow row) {
+        final com.vaadin.flow.component.textfield.TextField f = new com.vaadin.flow.component.textfield.TextField();
+        f.setValue(productCodeOf(row));
+        f.setWidth("150px");
+        f.setPlaceholder("shared code");
+        f.setClearButtonVisible(true);
+        f.setValueChangeMode(com.vaadin.flow.data.value.ValueChangeMode.ON_BLUR);
+        f.setTooltipText("Optional. Put the SAME code on the Etsy and eBay mapping for one physical product and "
+                + "they share one on-hand stock pool. Leave blank to count stock per listing, as before. "
+                + "Any existing on-hand count moves into the shared pool when you set this.");
+        f.addValueChangeListener(e -> {
+            final String raw = e.getValue();
+            final String code = raw == null || raw.isBlank() ? null : raw.trim();
+            final List<MappingPart> parts = "etsy".equals(row.market())
+                    ? etsyMapping.entries().getOrDefault(row.storageKey(), new EtsyMappingService.MappingEntry(List.of())).parts()
+                    : ebayMapping.entries().getOrDefault(row.storageKey(), new EbayMappingService.MappingEntry(List.of())).parts();
+            if ("etsy".equals(row.market())) {
+                etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts, code));
+            } else {
+                ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts, code));
+            }
+            // Order matters: the mapping has to carry the code before the merge runs, because the merge reads the
+            // per-listing key and the resolver now points reads at the pool.
+            if (code != null) {
+                stockService.mergeIntoProduct(row.market(), row.storageKey(), code);
+            }
+            showNotification(code == null
+                    ? "Product code cleared - this listing counts stock on its own again. Units already in the "
+                            + "shared pool stay there; set the on-hand figure for this listing."
+                    : "Sharing stock as '%s'".formatted(code));
+            renderAll();
+        });
+        return f;
+    }
+
     /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */
     private Button hideButton(final String market, final String listingKey, final boolean hidden) {
         final Button b = new Button(new Icon(hidden ? VaadinIcon.EYE : VaadinIcon.EYE_SLASH));
@@ -736,6 +792,8 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         final MappingPartsPanel panel = new MappingPartsPanel(
                 this::getLibraryFiles,
                 this::loadPlateIds,
+                queuer::listProjects,
+                queuer::listProjectFiles,
                 initial,
                 parts -> {
                     onSave.accept(parts);
@@ -746,17 +804,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         dialog.open();
     }
 
+    /** Delegates to the queuer so mappings, batch print and auto-queue all see the same library (incl. projects). */
     private List<String> getLibraryFiles() {
-        try (Stream<Path> stream = Files.list(Path.of(config.batchPrint().library()))) {
-            return stream
-                    .map(p -> p.getFileName().toString())
-                    .filter(name -> name.toLowerCase().endsWith(".3mf"))
-                    .sorted(String.CASE_INSENSITIVE_ORDER)
-                    .toList();
-        } catch (IOException ex) {
-            Log.error(ex.getMessage(), ex);
-            return List.of();
-        }
+        return queuer.listLibraryFiles();
     }
 
     private List<Integer> loadPlateIds(final String filename) {

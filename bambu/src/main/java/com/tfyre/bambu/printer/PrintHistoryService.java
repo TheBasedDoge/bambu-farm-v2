@@ -41,11 +41,18 @@ public class PrintHistoryService {
 
     }
 
-    private record RunningJob(String file, OffsetDateTime started, double grams, String trigger, OrderRef orderRef) {
+    /** A print currently under way. Persisted - see {@link #saveInFlight()}. */
+    public record RunningJob(String file, OffsetDateTime started, double grams, String trigger, OrderRef orderRef) {
 
     }
 
-    private record Pending(String file, double grams, OffsetDateTime expires, String trigger, OrderRef orderRef) {
+    /** A print that has been commanded but hasn't started yet. Persisted - see {@link #saveInFlight()}. */
+    public record Pending(String file, double grams, OffsetDateTime expires, String trigger, OrderRef orderRef) {
+
+    }
+
+    /** Persisted shape of the in-flight state. */
+    public record InFlight(Map<String, RunningJob> running, Map<String, Pending> pending) {
 
     }
 
@@ -87,10 +94,14 @@ public class PrintHistoryService {
     public synchronized void registerExpectedWeight(final String printer, final String file, final double grams,
             final String trigger, final OrderRef orderRef) {
         pending.put(printer, new Pending(file, grams, OffsetDateTime.now().plusMinutes(15), trigger, orderRef));
+        saveInFlight();
     }
 
     private Pending consumePending(final String printer) {
         final Pending p = pending.remove(printer);
+        if (p != null) {
+            saveInFlight();
+        }
         if (p == null || p.expires().isBefore(OffsetDateTime.now())) {
             return null;
         }
@@ -101,20 +112,66 @@ public class PrintHistoryService {
         return Path.of(config.historyFile());
     }
 
-    @PostConstruct
-    synchronized void load() {
-        final Path path = getPath();
+    /**
+     * Sidecar holding the jobs that are mid-flight. Kept next to the history file rather than inside it so the
+     * history format is untouched.
+     * <p>
+     * <b>Why this has to be persisted:</b> {@code running} and {@code pending} carry the trigger and the
+     * {@link OrderRef}. Held only in memory, a restart during a print severed that link - the tick then saw a
+     * printer already printing with no pending entry and rebuilt the job with a null order ref, so when it
+     * finished the order was never credited and sat at 0/N forever.
+     */
+    private Path getInFlightPath() {
+        final Path history = getPath();
+        final String name = history.getFileName().toString().replaceFirst("\\.json$", "") + "-inflight.json";
+        final Path parent = history.getParent();
+        return parent != null ? parent.resolve(name) : Path.of(name);
+    }
+
+    private synchronized void saveInFlight() {
+        try {
+            mapper.writerWithDefaultPrettyPrinter()
+                    .writeValue(getInFlightPath().toFile(), new InFlight(new HashMap<>(running), new HashMap<>(pending)));
+        } catch (IOException ex) {
+            Log.errorf(ex, "PrintHistoryService: cannot save %s: %s", getInFlightPath(), ex.getMessage());
+        }
+    }
+
+    private synchronized void loadInFlight() {
+        final Path path = getInFlightPath();
         if (!Files.exists(path)) {
             return;
         }
         try {
-            final List<PrintJob> loaded = mapper.readValue(path.toFile(), new TypeReference<List<PrintJob>>() {
-            });
-            jobs.addAll(loaded);
-            Log.infof("PrintHistoryService: loaded %d job(s) from %s", loaded.size(), path);
+            final InFlight state = mapper.readValue(path.toFile(), InFlight.class);
+            if (state.running() != null) {
+                running.putAll(state.running());
+            }
+            if (state.pending() != null) {
+                pending.putAll(state.pending());
+            }
+            Log.infof("PrintHistoryService: restored %d running and %d pending job(s) from %s",
+                    running.size(), pending.size(), path);
         } catch (IOException ex) {
             Log.errorf(ex, "PrintHistoryService: cannot load %s: %s", path, ex.getMessage());
         }
+    }
+
+    @PostConstruct
+    synchronized void load() {
+        final Path path = getPath();
+        if (Files.exists(path)) {
+            try {
+                final List<PrintJob> loaded = mapper.readValue(path.toFile(), new TypeReference<List<PrintJob>>() {
+                });
+                jobs.addAll(loaded);
+                Log.infof("PrintHistoryService: loaded %d job(s) from %s", loaded.size(), path);
+            } catch (IOException ex) {
+                Log.errorf(ex, "PrintHistoryService: cannot load %s: %s", path, ex.getMessage());
+            }
+        }
+        // Always - a farm with no history yet can still have been restarted mid-print
+        loadInFlight();
     }
 
     private synchronized void save(final boolean force) {
@@ -129,6 +186,17 @@ public class PrintHistoryService {
         }
     }
 
+    /** Starts tracking a print, taking the trigger and order ref from the pending entry when there is one. */
+    private void startRunning(final String name, final BambuPrinter printer) {
+        final Pending p = consumePending(name);
+        running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
+                p == null ? 0 : p.grams(), p == null ? null : p.trigger(), p == null ? null : p.orderRef()));
+        saveInFlight();
+        if (p == null) {
+            Log.infof("PrintHistoryService: %s: print started with no pending entry - no trigger or order link", name);
+        }
+    }
+
     private boolean isInJob(final BambuConst.GCodeState state) {
         return state.isPrinting() || state == BambuConst.GCodeState.PAUSE;
     }
@@ -140,18 +208,21 @@ public class PrintHistoryService {
             final BambuConst.GCodeState current = printer.getGCodeState();
             final BambuConst.GCodeState previous = lastState.put(name, current);
             if (previous == null || previous == current) {
-                // first observation: pick up a print already in progress
-                if (previous == null && isInJob(current) && !running.containsKey(name)) {
-                    final Pending p = consumePending(name);
-                    running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
-                            p == null ? 0 : p.grams(), p == null ? null : p.trigger(), p == null ? null : p.orderRef()));
+                // First observation. A restored running job (we restarted mid-print) is kept as-is - that's the
+                // whole point of persisting it, since it carries the trigger and the order ref.
+                if (previous == null && !isInJob(current) && running.remove(name) != null) {
+                    // The print ended while we were down. Its result is unknowable, so it isn't recorded - but the
+                    // entry must go, or it would later be closed against an unrelated print.
+                    Log.infof("PrintHistoryService: %s: discarding a restored running job - the printer is idle, "
+                            + "so the print ended while the app was down", name);
+                    saveInFlight();
+                } else if (previous == null && isInJob(current) && !running.containsKey(name)) {
+                    startRunning(name, printer);
                 }
                 return;
             }
             if (!isInJob(previous) && isInJob(current)) {
-                final Pending p = consumePending(name);
-                running.put(name, new RunningJob(printer.getLastPrintFile().orElse(""), OffsetDateTime.now(),
-                        p == null ? 0 : p.grams(), p == null ? null : p.trigger(), p == null ? null : p.orderRef()));
+                startRunning(name, printer);
                 return;
             }
             if (isInJob(previous) && !isInJob(current)) {
@@ -159,6 +230,7 @@ public class PrintHistoryService {
                 if (job == null) {
                     return;
                 }
+                saveInFlight();
                 final String result = switch (current) {
                     case FINISH ->
                         "Finished";
@@ -210,8 +282,10 @@ public class PrintHistoryService {
                     "%s is fully printed - ready to ship".formatted(job.orderRef().label()));
         }
 
-        // Decrement the (non-Bambu) spool assigned to the tray this print used, if any
-        if (job.grams() > 0) {
+        // Decrement the (non-Bambu) spool assigned to the tray this print used, if any.
+        // Only on a completed print: job.grams() is the weight the SLICER estimated for the whole plate, so
+        // charging it against a print that failed or was cancelled part-way would badly over-count the spool.
+        if (job.grams() > 0 && "Finished".equals(job.result())) {
             printers.getPrinters().stream()
                     .filter(p -> p.getName().equals(job.printer()))
                     .findFirst()
@@ -219,7 +293,18 @@ public class PrintHistoryService {
         }
 
         // Give the queue a chance to auto-requeue a failed queue-started job (opt-in, single retry)
-        queueServiceInstance.get().onJobEnded(job);
+        final boolean requeued = queueServiceInstance.get().onJobEnded(job);
+
+        // A print that ended without producing a part must release the expectation it was covering, unless it was
+        // auto-requeued (the retry still owes that part). Otherwise the expectation stays outstanding AND any
+        // re-queue registers a second one for the same part, so the order over-counts and can never reach
+        // "ready to ship": a stopped cupholder left Etsy #4130857746 reading 0/2 for a single-item order.
+        if (job.orderRef() != null && !"Finished".equals(job.result()) && !requeued) {
+            orderTracking.removeExpectedJobs(job.orderRef().market(), job.orderRef().orderId(), 1, true);
+            Log.infof("PrintHistoryService: %s ended %s and was not requeued - released one expected job from %s,"
+                    + " which now needs a re-queue before it can be ready to ship",
+                    job.file(), job.result(), job.orderRef().label());
+        }
     }
 
     @Shutdown

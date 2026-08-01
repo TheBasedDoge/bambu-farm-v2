@@ -4,7 +4,9 @@ import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.YesNoCancelDialog;
 import com.tfyre.bambu.printer.AutoQueueService;
 import com.tfyre.bambu.printer.AutoStartService;
+import com.tfyre.bambu.printer.DispatchQueueService;
 import com.tfyre.bambu.printer.BambuConst;
+import com.vaadin.flow.component.combobox.ComboBox;
 import com.tfyre.bambu.printer.BambuPrinter;
 import com.tfyre.bambu.printer.BambuPrinters;
 import com.tfyre.bambu.printer.OllamaService;
@@ -62,6 +64,10 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
     @Inject
     AutoQueueService autoQueueService;
     @Inject
+    com.tfyre.bambu.printer.DispatchQueueService dispatchQueue;
+    @Inject
+    com.tfyre.bambu.printer.GcodeMappingQueuer queuer;
+    @Inject
     BambuConfig config;
     @Inject
     ScheduledExecutorService ses;
@@ -90,6 +96,7 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
             return;
         }
 
+        add(buildDispatchPoolSection(details));
         details.forEach(detail -> add(buildPrinterSection(detail)));
 
         // Keep state badges, Start Next buttons and queue lists live while the page is open - a printer
@@ -106,6 +113,100 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         super.onDetach(detachEvent);
         future.ifPresent(f -> f.cancel(true));
         future = Optional.empty();
+    }
+
+    private Div buildDispatchPoolSection(final List<BambuPrinters.PrinterDetail> details) {
+        final Div section = new Div();
+        section.addClassName("ai-settings-section");
+        final H4 heading = new H4("Order dispatch pool");
+        final Span count = new Span();
+        count.getStyle().setColor("var(--lumo-secondary-text-color)").set("margin-left", "8px");
+        final HorizontalLayout titleRow = new HorizontalLayout(heading, count);
+        titleRow.setDefaultVerticalComponentAlignment(FlexLayout.Alignment.BASELINE);
+        section.add(titleRow);
+        section.add(new Span("Auto-queued marketplace order jobs wait here and are sent to the first eligible printer "
+                + "(right filament loaded, idle, bed confirmed clear) once the Auto-Start master switch is on. You can "
+                + "also send one to a specific printer now - it drops into that printer's queue below for Start Next."));
+
+        final Div list = new Div();
+        section.add(list);
+
+        final Span blocked = new Span();
+        blocked.getStyle().setColor("var(--lumo-error-text-color)").set("display", "block").set("margin-top", "6px");
+        section.add(blocked);
+
+        final Runnable render = () -> {
+            final List<DispatchQueueService.PendingJob> pool = dispatchQueue.getPool();
+            final int parked = dispatchQueue.parkedCount();
+            count.setText("%d waiting%s".formatted(pool.size(), parked > 0 ? " (%d parked)".formatted(parked) : ""));
+            final Optional<String> why = dispatchQueue.getBlockedStatus();
+            final boolean waiting = dispatchQueue.getBlockedKind() == DispatchQueueService.BlockKind.WAITING;
+            blocked.setText(why.map((waiting ? "⏳ %s" : "⚠ %s")::formatted).orElse(""));
+            blocked.getStyle().setColor(waiting ? "var(--lumo-warning-text-color, #e8a33d)" : "var(--lumo-error-text-color)");
+            blocked.setVisible(why.isPresent());
+            list.removeAll();
+            if (pool.isEmpty()) {
+                final Span empty = new Span("No order jobs waiting.");
+                empty.getStyle().setColor("var(--lumo-secondary-text-color)");
+                list.add(empty);
+                return;
+            }
+            pool.forEach(job -> list.add(buildPoolRow(job, details)));
+        };
+        render.run();
+        tickers.add(render);
+        return section;
+    }
+
+    private HorizontalLayout buildPoolRow(final DispatchQueueService.PendingJob job, final List<BambuPrinters.PrinterDetail> details) {
+        final var part = job.part();
+        final String label = "%s (plate %d)%s%s".formatted(part.path(), part.plateId(),
+                part.filamentType() != null ? " · " + part.filamentType() : "",
+                job.orderRef() != null ? "  [" + job.orderRef().label() + "]" : "");
+        final Optional<String> parked = dispatchQueue.getParkedReason(job.id());
+        final Span text = new Span(label);
+        if (parked.isPresent()) {
+            text.getStyle().setColor("var(--lumo-error-text-color)");
+            text.setTitle("Parked: " + parked.get());
+        }
+        final ComboBox<BambuPrinters.PrinterDetail> sendTo = new ComboBox<>();
+        sendTo.setPlaceholder("Send to…");
+        sendTo.setItems(details.stream().filter(pd -> autoQueueService.resolveSlot(pd, part).isPresent()).toList());
+        sendTo.setItemLabelGenerator(BambuPrinters.PrinterDetail::name);
+        sendTo.setWidth("170px");
+        sendTo.setTooltipText("Only printers that currently have the required filament loaded are listed");
+        sendTo.addValueChangeListener(e -> {
+            final BambuPrinters.PrinterDetail pd = e.getValue();
+            if (pd == null) {
+                return;
+            }
+            final Integer slot = autoQueueService.resolveSlot(pd, part).map(AutoQueueService.Candidate::resolvedSlot).orElse(part.amsSlot());
+            final Optional<String> err = queuer.queuePart(part, pd.name(), slot, job.orderRef());
+            if (err.isPresent()) {
+                showError(err.get());
+                return;
+            }
+            dispatchQueue.markDispatched(job.id());
+            showNotification("Sent to %s - use its Start Next below".formatted(pd.name()));
+        });
+        final Button retry = new Button(new Icon(VaadinIcon.REFRESH), l -> {
+            dispatchQueue.retry(job.id());
+            showNotification("Job un-parked - the dispatcher will try it again");
+        });
+        retry.setTooltipText(parked.map("Parked: %s — click to try again"::formatted).orElse("Retry"));
+        retry.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
+        retry.setVisible(parked.isPresent());
+        final Button remove = new Button(new Icon(VaadinIcon.TRASH), l -> {
+            dispatchQueue.remove(job.id());
+            showNotification("Removed from the dispatch pool - the order no longer expects this job");
+        });
+        remove.setTooltipText("Remove from the pool (won't be printed; the order's expected job count is reduced)");
+        remove.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
+        final HorizontalLayout row = new HorizontalLayout(text, new HorizontalLayout(sendTo, retry, remove));
+        row.setDefaultVerticalComponentAlignment(FlexLayout.Alignment.CENTER);
+        row.setWidthFull();
+        row.setJustifyContentMode(FlexComponent.JustifyContentMode.BETWEEN);
+        return row;
     }
 
     private Div buildPrinterSection(final BambuPrinters.PrinterDetail detail) {
@@ -200,7 +301,8 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
                 queueService.removeEntry(detail.name(), entry);
                 refresh.run();
             });
-            remove.setTooltipText("Remove from queue");
+            remove.setTooltipText(PrintQueueService.returnsToPool(entry)
+                    ? "Take off this printer - goes back to the dispatch pool" : "Remove from queue");
             remove.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
             final String orderSuffix = entry.orderRef() == null ? "" : "  [%s]".formatted(entry.orderRef().label());
             final HorizontalLayout row = new HorizontalLayout(

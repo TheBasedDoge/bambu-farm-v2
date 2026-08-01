@@ -1145,3 +1145,484 @@ img:fullscreen {
     background-color: var(--lumo-primary-color);
     border-radius: 5px;
 }
+
+/* ── Automation overview: KPI strip ─────────────────────────────────────── */
+.automation-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: var(--lumo-space-m);
+    margin-top: var(--lumo-space-m);
+}
+
+.automation-kpi {
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-l);
+    padding: 10px 14px;
+}
+
+.automation-kpi .kpi-label {
+    font-size: var(--lumo-font-size-s);
+    color: var(--lumo-secondary-text-color);
+}
+
+.automation-kpi .kpi-value {
+    font-size: 1.9em;
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.automation-kpi .kpi-sub {
+    font-size: var(--lumo-font-size-s);
+    color: var(--lumo-tertiary-text-color);
+    font-weight: 400;
+}
+
+/* ── Automation overview: printer table ─────────────────────────────────── */
+.printer-table {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+
+.pt-head,
+.pt-row {
+    display: grid;
+    grid-template-columns: 92px 140px minmax(0, 2fr) 165px 130px 90px 120px 125px 105px;
+    gap: var(--lumo-space-s);
+    align-items: center;
+}
+
+/* Live camera tile. Click (not hover) to enlarge - a dashboard you leave open shouldn't fire previews
+   every time the pointer crosses the table. */
+.pt-cam img,
+.pt-cam .pt-cam-none {
+    width: 84px;
+    height: 48px;
+    border-radius: 4px;
+    display: block;
+    object-fit: cover;
+    cursor: pointer;
+}
+
+.pt-cam img {
+    border: 1px solid var(--lumo-contrast-20pct);
+}
+
+.pt-cam img:hover {
+    border-color: var(--lumo-primary-color);
+}
+
+.pt-cam .pt-cam-none {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--lumo-contrast-20pct);
+    font-size: var(--lumo-font-size-xxs, 0.7rem);
+    color: var(--lumo-tertiary-text-color);
+    text-align: center;
+}
+
+.pt-row a.pt-name {
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--lumo-body-text-color);
+}
+
+.pt-row a.pt-name:hover {
+    text-decoration: underline;
+    color: var(--lumo-primary-text-color);
+}
+
+.pt-head {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+    padding-bottom: 6px;
+}
+
+.pt-row {
+    padding: 10px 0;
+    border-top: 1px solid var(--lumo-contrast-10pct);
+    cursor: pointer;
+}
+
+.pt-row:hover {
+    background-color: var(--lumo-contrast-5pct);
+}
+
+.pt-row .pt-name {
+    font-weight: 600;
+}
+
+.pt-ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.pt-bar {
+    background-color: var(--lumo-contrast-10pct);
+    border-radius: 3px;
+    height: 6px;
+    width: 100%;
+    overflow: hidden;
+}
+
+.pt-bar > span {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    background-color: var(--lumo-success-color);
+}
+
+.pt-sub {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+    margin-top: 3px;
+}
+
+.pt-detail {
+    border-top: 1px solid var(--lumo-contrast-10pct);
+    padding: var(--lumo-space-s) 0 var(--lumo-space-m);
+}
+
+.pt-detail-inner {
+    background-color: var(--lumo-contrast-5pct);
+    border-radius: var(--lumo-border-radius-m);
+    padding: var(--lumo-space-s) var(--lumo-space-m);
+}
+
+.pt-qrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--lumo-space-s);
+    padding: 4px 0;
+}
+
+.pt-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--lumo-space-l);
+    margin-top: var(--lumo-space-s);
+    padding-top: var(--lumo-space-s);
+    border-top: 1px solid var(--lumo-contrast-10pct);
+}
+
+@media screen and (max-width: 1100px) {
+    .pt-head {
+        display: none;
+    }
+
+    .pt-row {
+        grid-template-columns: 92px 1fr;
+        row-gap: 4px;
+    }
+}
+
+/* ── Batch print: project contents ──────────────────────────────────────── */
+.batchprint-view .project-files {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: var(--lumo-space-s);
+}
+
+.batchprint-view .project-file {
+    display: flex;
+    align-items: center;
+    gap: var(--lumo-space-xs);
+}
+
+.batchprint-view .project-file vaadin-button:first-child {
+    justify-content: flex-start;
+    flex-grow: 1;
+    min-width: 0;
+}
+
+/* ── Automation overview: bottom strip + order rows ─────────────────────── */
+.automation-bottom {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: var(--lumo-space-l);
+    width: 100%;
+    align-items: start;
+}
+
+@media screen and (max-width: 900px) {
+    .automation-bottom {
+        grid-template-columns: 1fr;
+    }
+}
+
+.order-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--lumo-space-m);
+    padding: 6px 0;
+    border-bottom: 1px solid var(--lumo-contrast-10pct);
+}
+
+.order-line:last-of-type {
+    border-bottom: none;
+}
+
+.order-line-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.order-line-main > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.order-line-sub {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+}
+
+.order-line-status {
+    white-space: nowrap;
+    font-size: var(--lumo-font-size-s);
+}
+
+
+/* ── Automation overview: printer health + filament ─────────────────────── */
+.pt-error {
+    grid-column: 1 / -1;
+    background-color: var(--lumo-error-color-10pct);
+    border-left: 3px solid var(--lumo-error-color);
+    padding: 6px 10px;
+    margin: 0 0 4px;
+    font-size: var(--lumo-font-size-s);
+    color: var(--lumo-error-text-color);
+}
+
+.pt-filament {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+}
+
+.pt-chip {
+    font-size: var(--lumo-font-size-xs);
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--lumo-contrast-20pct);
+    color: var(--lumo-secondary-text-color);
+    white-space: nowrap;
+}
+
+.pt-chip-active {
+    border-color: var(--lumo-success-color);
+    color: var(--lumo-success-text-color);
+}
+
+
+/* ==========================================================================
+   AI Settings - bed protection table, safety layers, bed cards
+   Added with the 2026-08-01 readability pass. The page held every number
+   needed to spot an occupied-bed dispatch, but presented a mid-range reading
+   the same way as a good one; these styles exist to make the verdict, not
+   the raw figure, the thing you see first.
+   ========================================================================== */
+
+.bed-protect {
+    margin-bottom: 18px;
+}
+
+.bed-protect h4 {
+    margin-bottom: 2px;
+}
+
+.bed-protect-sub {
+    display: block;
+    color: var(--lumo-secondary-text-color);
+    font-size: var(--lumo-font-size-s);
+    margin-bottom: 10px;
+}
+
+.bp-head,
+.bp-row {
+    display: grid;
+    grid-template-columns: 1.1fr 1.3fr 1.6fr 1.3fr 3.4fr;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 4px;
+}
+
+.bp-head {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+    padding-bottom: 4px;
+}
+
+.bp-row {
+    border-top: 1px solid var(--lumo-contrast-10pct);
+    font-size: var(--lumo-font-size-s);
+}
+
+.bp-name {
+    font-weight: 500;
+}
+
+.bp-num {
+    font-size: var(--lumo-font-size-l);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.bp-ok { color: var(--lumo-success-text-color); }
+.bp-warn { color: var(--lumo-warning-text-color, #e8a33d); }
+.bp-err { color: var(--lumo-error-text-color); }
+.bp-mut { color: var(--lumo-tertiary-text-color); }
+
+.bp-chip {
+    font-size: var(--lumo-font-size-xs);
+    padding: 2px 9px;
+    border-radius: 10px;
+    border: 1px solid var(--lumo-contrast-20pct);
+    color: var(--lumo-tertiary-text-color);
+    white-space: nowrap;
+}
+
+.bp-chip-ok {
+    border-color: var(--lumo-success-color);
+    color: var(--lumo-success-text-color);
+}
+
+.bp-chip-warn {
+    border-color: var(--lumo-warning-color, #8a6520);
+    color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+.bp-chip-err {
+    border-color: var(--lumo-error-color);
+    color: var(--lumo-error-text-color);
+}
+
+/* ---- safety layers: one row per thing standing between a job and a print ---- */
+
+.ai-layer {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 11px 2px;
+    border-top: 1px solid var(--lumo-contrast-10pct);
+}
+
+.ai-layer:first-of-type {
+    border-top: none;
+}
+
+.ai-layer-sw {
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+.ai-layer-txt {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.ai-layer-ttl {
+    display: block;
+    font-size: var(--lumo-font-size-s);
+}
+
+.ai-layer-desc {
+    display: block;
+    color: var(--lumo-tertiary-text-color);
+    font-size: var(--lumo-font-size-xs);
+    margin-top: 2px;
+    line-height: 1.45;
+}
+
+/* Amber note for a layer that is off ON PURPOSE - an unchecked box cannot say why. */
+.ai-layer-flag {
+    display: inline-block;
+    font-size: var(--lumo-font-size-xs);
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--lumo-warning-color, #8a6520);
+    color: var(--lumo-warning-text-color, #e8a33d);
+    margin-left: 2px;
+}
+
+.ai-layer-val {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--lumo-secondary-text-color);
+    font-size: var(--lumo-font-size-s);
+    white-space: nowrap;
+}
+
+.bed-crop {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--lumo-contrast-10pct);
+}
+
+.bed-crop h4 {
+    margin-bottom: 2px;
+}
+
+/* ---- per-printer bed cards ---- */
+
+.bed-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.bed-card-big {
+    display: block;
+    font-size: 22px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+}
+
+.bed-card-sub {
+    display: block;
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+    line-height: 1.45;
+    margin-top: 4px;
+}
+
+.bed-card-diag {
+    margin-top: 8px;
+}
+
+.bed-card-diag::part(summary) {
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-tertiary-text-color);
+}
+
+@media (max-width: 900px) {
+    .bp-head {
+        display: none;
+    }
+    .bp-row {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+/* Ollama connection reduced to one line - it's reference material that only changes on restart. */
+.ai-conn-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}

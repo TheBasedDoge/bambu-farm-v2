@@ -70,6 +70,9 @@ public class AutoQueueService {
     OrderTrackingService tracking;
     @Inject
     NotificationService notificationService;
+    /** Lazy to avoid an eager circular reference (DispatchQueueService injects this service for eligibility). */
+    @Inject
+    jakarta.enterprise.inject.Instance<DispatchQueueService> dispatchInstance;
 
     private final Map<String, Boolean> settings = new ConcurrentHashMap<>();
 
@@ -140,14 +143,18 @@ public class AutoQueueService {
     /**
      * Attempts to auto-queue one newly-seen order. Called by the polling services for orders whose IDs were
      * never seen before (so restarts and re-polls can't double-queue; the queued-marker is a second guard).
+     *
+     * @return true only when the order was actually queued. The caller uses this to decide whether to commit the
+     *         on-hand stock it set aside for the order: every {@code false} path below is a case where the order
+     *         is NOT being fulfilled, and consuming stock for it would lose the units.
      */
-    public synchronized void processOrder(final String market, final String orderId, final String orderLabel,
+    public synchronized boolean processOrder(final String market, final String orderId, final String orderLabel,
             final List<AutoQueueItem> items) {
         if (!isEnabled()) {
-            return;
+            return false;
         }
         if (tracking.queuedAt(market, orderId).isPresent() || tracking.isDismissed(market, orderId)) {
-            return;
+            return false;
         }
 
         // Hidden + unmapped listings are products that are never printed (digital items, add-ons) - drop them
@@ -157,7 +164,7 @@ public class AutoQueueService {
                 .toList();
         if (relevant.isEmpty()) {
             Log.infof("AutoQueueService: %s: all line items are hidden non-printed listings - nothing to queue", orderLabel);
-            return;
+            return false;
         }
 
         // ---- Pre-validate everything before queueing anything (all-or-nothing) ----
@@ -191,52 +198,35 @@ public class AutoQueueService {
             Log.infof("AutoQueueService: %s not auto-queued: %s", orderLabel, reason);
             notificationService.notifyEvent("auto_queue_skipped", market,
                     "%s NOT auto-queued: %s - queue it manually from the Sales Orders page".formatted(orderLabel, truncate(reason, 300)));
-            return;
+            return false;
         }
 
-        // ---- Queue: per copy, pick the best qualifying printer (ready+idle first, then shortest queue) ----
+        // ---- Add every copy to the GLOBAL dispatch pool (no printer pinned here) ----
+        // The dispatcher (DispatchQueueService) hands each pooled job to whichever eligible printer becomes ready
+        // AND bed-clear first, so an uncleared bed on one printer never stalls the order - it flows to another.
         final OrderRef orderRef = new OrderRef(market, orderId, orderLabel);
-        final Map<String, Integer> assignedThisRun = new HashMap<>();
-        final Map<String, Integer> perPrinter = new LinkedHashMap<>();
         int total = 0;
         for (final AutoQueueItem item : relevant) {
             for (final MappingPart part : item.parts()) {
                 final int copies = Math.max(1, item.quantity()) * part.copiesPerUnit();
                 for (int i = 0; i < copies; i++) {
-                    final List<Candidate> eligible = eligiblePrinters(part);
-                    final Candidate best = eligible.stream()
-                            .min(Comparator
-                                    .comparingInt((Candidate c) -> pendingCount(c, assignedThisRun) == 0 && c.ready() ? 0 : 1)
-                                    .thenComparingInt(c -> pendingCount(c, assignedThisRun))
-                                    .thenComparing(c -> c.detail().name(), String.CASE_INSENSITIVE_ORDER))
-                            .orElse(null);
-                    if (best == null) {
-                        // Shouldn't happen after pre-validation; bail without marking queued
-                        notificationService.notifyEvent("auto_queue_skipped", market,
-                                "%s: auto-queue aborted mid-way - no eligible printer for %s".formatted(orderLabel, part.path()));
-                        return;
-                    }
-                    final Optional<String> error = queuer.queuePart(part, best.detail().name(), best.resolvedSlot(), orderRef);
-                    if (error.isPresent()) {
-                        notificationService.notifyEvent("auto_queue_skipped", market,
-                                "%s: auto-queue aborted - %s".formatted(orderLabel, error.get()));
-                        return;
-                    }
-                    assignedThisRun.merge(best.detail().name(), 1, Integer::sum);
-                    perPrinter.merge(best.detail().name(), 1, Integer::sum);
+                    dispatchInstance.get().enqueue(part, orderRef);
                     total++;
                 }
             }
         }
 
         tracking.markQueued(market, orderId);
-        tracking.addExpectedJobs(market, orderId, total);
-        final String distribution = perPrinter.entrySet().stream()
-                .map(e -> "%s×%d".formatted(e.getKey(), e.getValue()))
-                .collect(Collectors.joining(", "));
-        Log.infof("AutoQueueService: %s auto-queued: %d job(s) → %s", orderLabel, total, distribution);
+        // Capture what was ordered now - once Etsy/eBay marks it shipped it leaves the open list and the title
+        // is no longer looked up anywhere.
+        final String orderTitle = relevant.stream().map(AutoQueueItem::label).limit(2)
+                .collect(Collectors.joining("; "))
+                + (relevant.size() > 2 ? " +%d more".formatted(relevant.size() - 2) : "");
+        tracking.addExpectedJobs(market, orderId, total, orderTitle);
+        Log.infof("AutoQueueService: %s auto-queued: %d job(s) → dispatch pool", orderLabel, total);
         notificationService.notifyEvent("auto_queue", market,
-                "%s auto-queued: %d job(s) → %s".formatted(orderLabel, total, distribution));
+                "%s auto-queued: %d job(s) added to the dispatch pool - will start on the first eligible, bed-clear printer".formatted(orderLabel, total));
+        return true;
     }
 
     /** One line of a dry-run result: what would happen to a part if an order arrived right now. */
@@ -298,7 +288,7 @@ public class AutoQueueService {
     }
 
     /** A printer that qualifies for a part, with the AMS slot the job should be pinned to (null = printer default). */
-    private record Candidate(BambuPrinters.PrinterDetail detail, boolean ready, Integer resolvedSlot) {
+    public record Candidate(BambuPrinters.PrinterDetail detail, boolean ready, Integer resolvedSlot) {
     }
 
     private int pendingCount(final Candidate c, final Map<String, Integer> assignedThisRun) {
@@ -317,7 +307,7 @@ public class AutoQueueService {
      * Decides whether a printer qualifies for a part and which AMS slot to pin the job to.
      * Empty = printer doesn't qualify (mapped filament type isn't loaded where it needs to be).
      */
-    private Optional<Candidate> resolveSlot(final BambuPrinters.PrinterDetail detail, final MappingPart part) {
+    public Optional<Candidate> resolveSlot(final BambuPrinters.PrinterDetail detail, final MappingPart part) {
         final BambuPrinter printer = detail.printer();
         final boolean ready = printer.getGCodeState().isReady() && !printer.isBlocked();
         if (part.filamentType() == null) {

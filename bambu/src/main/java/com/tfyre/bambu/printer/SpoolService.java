@@ -64,6 +64,11 @@ public class SpoolService {
         return printer + "|" + tray;
     }
 
+    /** "Tray 3" / "external spool" - the external sentinel (254) must not be printed as "tray 255". */
+    private static String trayLabel(final int tray) {
+        return tray == BambuConst.AMS_TRAY_VIRTUAL ? "external spool" : "tray %d".formatted(tray + 1);
+    }
+
     @PostConstruct
     synchronized void load() {
         final Path path = getPath();
@@ -201,10 +206,11 @@ public class SpoolService {
         spools.put(spoolId, new Spool(s.id(), s.name(), s.material(), s.color(), s.totalGrams(), after, s.lowThresholdGrams()));
         dirty = true;
         save();
-        Log.infof("SpoolService: %s tray %d used %.1fg from '%s' (%.0fg left)", printer, tray + 1, grams, s.name(), after);
+        final String where = trayLabel(tray);
+        Log.infof("SpoolService: %s %s used %.1fg from '%s' (%.0fg left)", printer, where, grams, s.name(), after);
         if (before > s.lowThresholdGrams() && after <= s.lowThresholdGrams()) {
             notificationService.notifyEvent("spool_low", printer,
-                    "Spool '%s' (%s) is low: %.0fg left (used on %s tray %d)".formatted(s.name(), s.material(), after, printer, tray + 1));
+                    "Spool '%s' (%s) is low: %.0fg left (used on %s %s)".formatted(s.name(), s.material(), after, printer, where));
         }
     }
 }

@@ -37,11 +37,15 @@ public class MappingPartsPanel extends Div {
 
     private final Supplier<List<String>> libraryFilesSupplier;
     private final Function<String, List<Integer>> plateIdsSupplier;
+    private final Supplier<List<String>> projectsSupplier;
+    private final Function<String, List<String>> projectFilesSupplier;
     private final int orderedQuantity;
 
     public MappingPartsPanel(
             final Supplier<List<String>> libraryFilesSupplier,
             final Function<String, List<Integer>> plateIdsSupplier,
+            final Supplier<List<String>> projectsSupplier,
+            final Function<String, List<String>> projectFilesSupplier,
             final List<String> printerNames,
             final List<MappingPart> initialParts,
             final int orderedQuantity,
@@ -49,6 +53,8 @@ public class MappingPartsPanel extends Div {
             final BiConsumer<List<MappingPart>, List<String>> onQueue) {
         this.libraryFilesSupplier = libraryFilesSupplier;
         this.plateIdsSupplier = plateIdsSupplier;
+        this.projectsSupplier = projectsSupplier;
+        this.projectFilesSupplier = projectFilesSupplier;
         this.orderedQuantity = orderedQuantity;
         addClassName("mapping-parts-panel");
 
@@ -60,6 +66,42 @@ public class MappingPartsPanel extends Div {
         } else {
             initialParts.forEach(this::addRow);
         }
+
+        // "Map to a project": adds one part row per file in the project. Deliberately an expansion rather than a
+        // stored project reference - the saved mapping is still a plain list of MappingPart, so existing mappings,
+        // auto-queue, dispatch, the dry run and stock all behave exactly as before. Trade-off: adding a file to the
+        // project later does NOT update mappings already saved; re-pick the project to refresh them.
+        final ComboBox<String> projectSelect = new ComboBox<>();
+        projectSelect.setPlaceholder("Add all files from project…");
+        projectSelect.setWidth("260px");
+        projectSelect.setItems(projectsSupplier.get());
+        projectSelect.setTooltipText("Adds one part per file in that project. Each part keeps its own plate, "
+                + "copies, AMS slot and filament - edit them individually afterwards.");
+        projectSelect.addValueChangeListener(e -> {
+            final String project = e.getValue();
+            if (project == null || !e.isFromClient()) {
+                return;
+            }
+            final List<String> files = projectFilesSupplier.apply(project);
+            if (files.isEmpty()) {
+                return;
+            }
+            // Drop a single empty starter row so picking a project on a fresh mapping doesn't leave a blank part
+            if (rows.size() == 1 && rows.get(0).toMappingPart() == null) {
+                removeRow(rows.get(0));
+            }
+            final java.util.Set<String> already = rows.stream()
+                    .map(PartRow::toMappingPart)
+                    .filter(Objects::nonNull)
+                    .filter(part -> part.source() == GcodeSource.LIBRARY)
+                    .map(MappingPart::path)
+                    .collect(java.util.stream.Collectors.toSet());
+            files.stream()
+                    .filter(f -> !already.contains(f))
+                    .forEach(f -> addRow(new MappingPart(GcodeSource.LIBRARY, f, 1, 1, null, null)));
+            projectSelect.clear();
+        });
+        add(projectSelect);
 
         final Button addPart = new Button("+ Add part", new Icon(VaadinIcon.PLUS));
         addPart.addThemeVariants(ButtonVariant.LUMO_TERTIARY);
@@ -95,9 +137,12 @@ public class MappingPartsPanel extends Div {
     public MappingPartsPanel(
             final Supplier<List<String>> libraryFilesSupplier,
             final Function<String, List<Integer>> plateIdsSupplier,
+            final Supplier<List<String>> projectsSupplier,
+            final Function<String, List<String>> projectFilesSupplier,
             final List<MappingPart> initialParts,
             final Consumer<List<MappingPart>> onSave) {
-        this(libraryFilesSupplier, plateIdsSupplier, List.of(), initialParts, 1, onSave, null);
+        this(libraryFilesSupplier, plateIdsSupplier, projectsSupplier, projectFilesSupplier,
+                List.of(), initialParts, 1, onSave, null);
     }
 
     private void addRow(final MappingPart initial) {

@@ -99,6 +99,24 @@ public interface BambuPrinter {
      */
     int getActiveTrayId();
 
+    /**
+     * Sticky current layer number, or -1 when not printing / not yet reported. Sticky for the same reason as the
+     * rest: most delta pushes omit {@code layer_num} entirely.
+     */
+    int getLayerNum();
+
+    /**
+     * Sticky print progress 0-100, or -1 when not printing / not yet reported. Sticky because Bambu sends partial
+     * delta pushes: most messages omit {@code mc_percent}, so anything polling "the latest message" reads 0.
+     */
+    int getProgressPercent();
+
+    /** Sticky minutes remaining on the current print, or -1 when unknown. Same delta-push caveat as above. */
+    int getRemainingMinutes();
+
+    /** Sticky name of the job currently printing (the sliced project's subtask name), empty when unknown. */
+    Optional<String> getSubtaskName();
+
     void commandFilamentLoad(final int amsTrayId);
 
     void commandFilamentUnload();

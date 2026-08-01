@@ -47,6 +47,13 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
                     "A queued print was started automatically after the AI confirmed the bed was clear"),
             new EventDef("auto_start_blocked", "Auto-Start Blocked",
                     "Auto-start held back: bed not clear, AI unavailable, or the start failed"),
+            new EventDef("poll_failed", "Order Polling Failed",
+                    "Etsy or eBay order polling has failed repeatedly - NEW ORDERS ARE NOT BEING PICKED UP "
+                    + "(expired login, API outage). Also fires once when polling recovers. Leave this one on"),
+            new EventDef("dispatch_blocked", "Order Dispatch Held",
+                    "Order jobs are waiting in the dispatch pool and nothing could start: every printer busy (sent once "
+                    + "per occurrence), no printer with the required filament, none opted in, AI checks off, Ollama "
+                    + "unreachable, the Auto-Start master switch off, a dirty bed, or a job parked after repeated failures"),
             new EventDef("auto_requeue", "Auto-Requeue",
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
             new EventDef("order_printed", "Order Fully Printed",

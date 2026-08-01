@@ -11,6 +11,8 @@ import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
 import com.vaadin.flow.component.checkbox.Checkbox;
+import com.vaadin.flow.component.orderedlayout.FlexComponent;
+import com.vaadin.flow.component.textfield.NumberField;
 import com.vaadin.flow.component.combobox.ComboBox;
 import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.component.grid.Grid;
@@ -23,6 +25,8 @@ import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.icon.Icon;
 import com.vaadin.flow.component.icon.VaadinIcon;
 import com.vaadin.flow.component.orderedlayout.HorizontalLayout;
+import com.vaadin.flow.component.tabs.Tab;
+import com.vaadin.flow.component.tabs.Tabs;
 import com.vaadin.flow.component.orderedlayout.VerticalLayout;
 import com.vaadin.flow.component.textfield.TextArea;
 import com.vaadin.flow.router.PageTitle;
@@ -64,11 +68,14 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     @Inject
     com.tfyre.bambu.printer.BedReferenceService bedReference;
     @Inject
+    com.tfyre.bambu.printer.BedDiffService bedDiff;
+    @Inject
     org.eclipse.microprofile.context.ManagedExecutor executor;
 
     private final Grid<PrinterAiRow> grid = new Grid<>();
     private final Grid<PrintAiService.CheckRecord> historyGrid = new Grid<>();
-    private final Div lastChecksDiv = new Div();
+    /** Per-printer bed-card refreshers, so changing the compared region re-renders every preview immediately. */
+    private final List<Runnable> bedCardRefreshers = new ArrayList<>();
     private final Span statusSpan = new Span();
 
     @Override
@@ -78,20 +85,43 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         build();
     }
 
+    /**
+     * Four sub-tabs rather than seven stacked sections. Everything here used to be on one page, which meant
+     * several screens of scrolling to reach the prompts - and the day-to-day view (is it connected, what did it
+     * last decide) was buried above content you only touch while tuning.
+     */
     private void build() {
         addClassName("ai-settings-view");
         addClassName("ai-settings-wide");
         setPadding(true);
         setSpacing(true);
 
-        add(new H3("AI Print Monitoring — Settings"));
-        add(buildConnectionSection());
+        add(new H3("AI Print Monitoring"));
         add(buildControlSection());
-        add(buildBedReferenceSection());
-        add(buildResultsSection());
-        add(buildLastChecksSection());
-        add(buildHistorySection());
-        add(buildPromptsSection());
+
+        final Tab statusTab = new Tab("Status");
+        final Tab bedTab = new Tab("Bed reference");
+        final Tab historyTab = new Tab("History");
+        final Tab promptsTab = new Tab("Prompts");
+        final Tabs subTabs = new Tabs(statusTab, bedTab, historyTab, promptsTab);
+        final Div body = new Div();
+        body.setWidthFull();
+        subTabs.addSelectedChangeListener(e -> {
+            body.removeAll();
+            final Tab sel = e.getSelectedTab();
+            if (sel == bedTab) {
+                body.add(buildBedReferenceSection());
+            } else if (sel == historyTab) {
+                body.add(buildHistorySection());
+            } else if (sel == promptsTab) {
+                body.add(buildPromptsSection());
+            } else {
+                body.add(buildResultsSection(), buildConnectionSection());
+            }
+        });
+        add(subTabs);
+        add(body);
+        body.add(buildResultsSection(), buildConnectionSection());
     }
 
     // -------------------------------------------------------------------------
@@ -101,6 +131,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     private Div buildBedReferenceSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
+        section.add(buildProtectionTable());
         section.add(new H4("Empty-bed reference (experimental)"));
         section.add(new Span("Save a photo of each printer's EMPTY bed. When enabled, the bed-clear check compares "
                 + "the live frame against that reference (two images to the model) instead of judging one image "
@@ -115,40 +146,548 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             showNotification("Empty-bed reference compare " + (bedReference.isEnabled() ? "enabled" : "disabled"));
         });
         section.add(toggle);
+        section.add(buildPixelDiffControls());
 
         final Div cards = new Div();
         cards.getStyle().set("display", "flex").set("flex-wrap", "wrap").set("gap", "16px").set("margin-top", "12px");
+        bedCardRefreshers.clear();
         printers.getPrinters().forEach(p -> cards.add(buildBedReferenceCard(p.getName())));
         section.add(cards);
         return section;
     }
 
+    /**
+     * Answers "can the pixel check currently tell an empty bed from an occupied one, per printer?" - which is the
+     * question this page never answered, and the reason an occupied-bed print got through on 2026-08-01.
+     * <p>
+     * Every number needed to catch that was already on the page: reference age, last reading, limit. But a bare
+     * "5.57" next to a limit of 6.0 reads like a pass, when in fact an empty bed on a good reference reads about
+     * 0.2 and anything mid-range means the reference has stopped describing an empty bed. The verdict and the
+     * plain-English meaning are therefore rendered, not left to be inferred.
+     */
+    private Div buildProtectionTable() {
+        final Div wrap = new Div();
+        wrap.addClassName("bed-protect");
+        wrap.add(new H4("Bed protection"));
+        final Span sub = new Span("Whether the pixel backstop can currently tell an empty bed from an occupied one.");
+        sub.addClassName("bed-protect-sub");
+        wrap.add(sub);
+
+        final Div head = new Div();
+        head.addClassName("bp-head");
+        head.add(cell("Printer"), cell("Reference"), cell("Last reading"), cell("State"), cell("Meaning"));
+        wrap.add(head);
+
+        printers.getPrinters().forEach(p -> wrap.add(buildProtectionRow(p.getName())));
+        return wrap;
+    }
+
+    private static Span cell(final String text) {
+        return new Span(text);
+    }
+
+    private Div buildProtectionRow(final String printerName) {
+        final Div row = new Div();
+        row.addClassName("bp-row");
+
+        final Span name = new Span(printerName);
+        name.addClassName("bp-name");
+
+        // Reference age. Age is the best single predictor of whether the check still discriminates, so it is a
+        // column rather than something to go hunting for.
+        final Div refCell = new Div();
+        final Optional<Instant> capturedAt = bedReference.referenceCapturedAt(printerName);
+        if (capturedAt.isEmpty()) {
+            final Span none = new Span("none saved");
+            none.addClassName("bp-mut");
+            refCell.add(none);
+        } else {
+            final Duration age = Duration.between(capturedAt.get(), Instant.now());
+            final Span when = new Span(referenceAge(age));
+            when.addClassName(age.toHours() >= 12 ? "bp-warn" : "bp-ok");
+            refCell.add(when);
+        }
+
+        final Div readingCell = new Div();
+        final Div stateCell = new Div();
+        final Span meaning = new Span();
+        meaning.addClassName("bp-mut");
+
+        final Optional<com.tfyre.bambu.printer.BedDiffService.Measurement> m = bedDiff.getLastMeasurement(printerName);
+        if (m.isEmpty()) {
+            final Span dash = new Span(capturedAt.isEmpty() ? "no reference" : "not measured yet");
+            dash.addClassName("bp-mut");
+            readingCell.add(dash);
+            final Span chip = new Span("unknown");
+            chip.addClassName("bp-chip");
+            stateCell.add(chip);
+            meaning.setText(capturedAt.isEmpty()
+                    ? "Save a frame of the empty bed to switch this printer's backstop on."
+                    : "No reading since the last restart - press Measure now on the card below.");
+        } else {
+            final com.tfyre.bambu.printer.BedDiffService.Measurement meas = m.get();
+            final com.tfyre.bambu.printer.BedDiffService.Trust trust = bedDiff.trustOf(meas);
+            final Span num = new Span("%.2f".formatted(meas.mean()));
+            num.addClassName("bp-num");
+            num.addClassName(switch (trust) {
+                case PROTECTING ->
+                    "bp-ok";
+                case CANNOT_TELL ->
+                    "bp-warn";
+                case OVER_LIMIT ->
+                    "bp-err";
+            });
+            final Span of = new Span(" / %.1f".formatted(bedDiff.getThreshold()));
+            of.addClassName("bp-mut");
+            readingCell.add(num, of);
+
+            final Span chip = new Span(switch (trust) {
+                case PROTECTING ->
+                    "protecting";
+                case CANNOT_TELL ->
+                    "can't tell";
+                case OVER_LIMIT ->
+                    "over limit";
+            });
+            chip.addClassName("bp-chip");
+            chip.addClassName(switch (trust) {
+                case PROTECTING ->
+                    "bp-chip-ok";
+                case CANNOT_TELL ->
+                    "bp-chip-warn";
+                case OVER_LIMIT ->
+                    "bp-chip-err";
+            });
+            stateCell.add(chip);
+            meaning.setText(bedDiff.meaningOf(meas));
+        }
+
+        row.add(name, refCell, readingCell, stateCell, meaning);
+        return row;
+    }
+
+    /** "4h ago" / "2 days ago" - an exact timestamp is less useful here than how stale it is. */
+    private static String referenceAge(final Duration age) {
+        final long days = age.toDays();
+        if (days >= 1) {
+            return days == 1 ? "1 day ago" : "%d days ago".formatted(days);
+        }
+        final long hours = age.toHours();
+        if (hours >= 1) {
+            return "%dh ago".formatted(hours);
+        }
+        final long mins = Math.max(0, age.toMinutes());
+        return mins <= 1 ? "just now" : "%d min ago".formatted(mins);
+    }
+
+    /**
+     * The deterministic pixel-diff backstop. Deliberately sits with the reference controls: it compares against
+     * the same saved empty-bed image, but WITHOUT involving the model - which is the entire point, since local
+     * vision models cannot reliably see a dark part on the dark plate.
+     */
+    /**
+     * One safety layer: its switch, what it protects against, and its current value.
+     *
+     * @param toggle the on/off control, or null for a layer that is switched off by setting its value to zero
+     * @param flag   an amber note when a layer is deliberately off - an unchecked box cannot distinguish
+     *               "disabled on purpose, and here is why" from "nobody ever turned this on"
+     */
+    private Div layerRow(final Checkbox toggle, final String title, final String description,
+            final com.vaadin.flow.component.Component value, final String flag) {
+        final Div row = new Div();
+        row.addClassName("ai-layer");
+
+        final Div sw = new Div();
+        sw.addClassName("ai-layer-sw");
+        if (toggle != null) {
+            // The checkbox carries its own label, which IS the layer title - nothing to keep in step.
+            sw.add(toggle);
+        }
+        row.add(sw);
+
+        final Div text = new Div();
+        text.addClassName("ai-layer-txt");
+        if (title != null) {
+            final Span titleSpan = new Span(title);
+            titleSpan.addClassName("ai-layer-ttl");
+            text.add(titleSpan);
+        }
+        if (flag != null) {
+            final Span flagSpan = new Span(flag);
+            flagSpan.addClassName("ai-layer-flag");
+            text.add(flagSpan);
+        }
+        final Span desc = new Span(description);
+        desc.addClassName("ai-layer-desc");
+        text.add(desc);
+        row.add(text);
+
+        final Div val = new Div();
+        val.addClassName("ai-layer-val");
+        val.add(value);
+        row.add(val);
+        return row;
+    }
+
+    private Div buildPixelDiffControls() {
+        final Div box = new Div();
+        box.getStyle().set("margin-top", "12px").set("padding-top", "10px")
+                .set("border-top", "1px solid var(--lumo-contrast-10pct)");
+
+        box.add(new H4("Safety layers"));
+        final Span blurb = new Span("What stands between a pooled job and a print starting.");
+        blurb.addClassName("bed-protect-sub");
+        box.add(blurb);
+
+        final Checkbox pixelToggle = new Checkbox("Enable the pixel-diff backstop");
+        pixelToggle.setValue(bedDiff.isEnabled());
+        pixelToggle.addValueChangeListener(e -> {
+            bedDiff.setEnabled(Boolean.TRUE.equals(e.getValue()));
+            showNotification("Pixel-diff backstop " + (bedDiff.isEnabled() ? "enabled" : "disabled"));
+        });
+
+        final NumberField limit = new NumberField("Mean limit");
+        limit.setValue(bedDiff.getThreshold());
+        limit.setStep(0.5);
+        limit.setMin(0.5);
+        limit.setWidth("130px");
+        limit.setHelperText("avg over region");
+        limit.setTooltipText("Calibrate from the measured values below: run a check on a KNOWN EMPTY bed and on a "
+                + "bed with a part, then set the limit between the two. Thresholds from other setups do not transfer.");
+        limit.addValueChangeListener(e -> {
+            if (e.getValue() != null && e.getValue() > 0) {
+                bedDiff.setThreshold(e.getValue());
+                showNotification("Mean limit set to %.1f".formatted(e.getValue()));
+            }
+        });
+
+        // Not a gate. On this fleet the worst block read 19.91 with a cupholder on the plate and 21.24 / 23.15
+        // on two EMPTY ones - it ranked the occupied bed as the cleanest of the three. It is kept because the
+        // heatmap below is shaded against it and it is useful to eyeball, but nothing blocks on it.
+        final NumberField blockLimit = new NumberField("Worst-block scale");
+        blockLimit.setValue(bedDiff.getBlockThreshold());
+        blockLimit.setStep(0.5);
+        blockLimit.setMin(0.5);
+        blockLimit.setWidth("150px");
+        blockLimit.setHelperText("shading only, does not block");
+        blockLimit.setTooltipText("Sets how the \"What differs\" heatmap is shaded. The worst-block reading does "
+                + "not decide anything - measured on real beds it rated an occupied plate cleaner than two empty "
+                + "ones. Only the mean blocks.");
+        blockLimit.addValueChangeListener(e -> {
+            if (e.getValue() != null && e.getValue() > 0) {
+                bedDiff.setBlockThreshold(e.getValue());
+                showNotification("Heatmap scale set to %.1f".formatted(e.getValue()));
+            }
+        });
+
+        final Checkbox autoRefresh = new Checkbox("Self-refresh the reference after a passing check");
+        autoRefresh.setValue(bedDiff.isAutoRefresh());
+        autoRefresh.setTooltipText("Keeps the reference current by replacing it whenever the model AND the pixel "
+                + "check both call the bed clear and the reading is at or below half the limit. A stale reference "
+                + "is the biggest error here: the same empty bed reads about 5 against an old reference and 0.19 "
+                + "against a fresh one. Turn it off if you would rather manage references by hand.");
+        autoRefresh.addValueChangeListener(e -> {
+            bedDiff.setAutoRefresh(Boolean.TRUE.equals(e.getValue()));
+            showNotification("Reference self-refresh " + (bedDiff.isAutoRefresh() ? "on" : "off"));
+        });
+
+        final Checkbox strict = new Checkbox("Block when the reading can't be trusted");
+        strict.setValue(bedDiff.isStrict());
+        strict.setTooltipText("Treats a reading above half the limit as 'cannot tell' and refuses to start, instead "
+                + "of passing it. A reference only discriminates while an empty bed reads near zero; mid-range means "
+                + "it has stopped describing an empty bed, which is how a print started on an occupied one. LEAVE "
+                + "OFF until an empty bed measures near zero no matter what printed last - the plate parks at a "
+                + "different height after every differently-sized print, and until that is handled this would block "
+                + "nearly every auto-start.");
+        strict.addValueChangeListener(e -> {
+            bedDiff.setStrict(Boolean.TRUE.equals(e.getValue()));
+            showNotification("Untrusted-reading blocking " + (bedDiff.isStrict() ? "ON" : "off"));
+        });
+
+        final Checkbox twoPass = new Checkbox("Confirm a clear bed with a second look");
+        twoPass.setValue(bedDiff.isTwoPass());
+        twoPass.setTooltipText("A 'bed is clear' verdict has to survive a second, freshly captured snapshot before "
+                + "a print starts. One verdict isn't stable on a marginal bed - the same plate was judged not-clear "
+                + "and then clear four minutes later, and the clear one printed onto a part. Only runs when the "
+                + "first look approves, so a dirty bed costs nothing extra.");
+        twoPass.addValueChangeListener(e -> {
+            bedDiff.setTwoPass(Boolean.TRUE.equals(e.getValue()));
+            showNotification("Second-look confirmation " + (bedDiff.isTwoPass() ? "on" : "off"));
+        });
+
+        final com.vaadin.flow.component.textfield.IntegerField cooldown
+                = new com.vaadin.flow.component.textfield.IntegerField();
+        cooldown.setValue((int) bedDiff.getPostPrintCooldown().toMinutes());
+        cooldown.setMin(0);
+        cooldown.setStepButtonsVisible(true);
+        cooldown.setWidth("170px");
+        cooldown.setHelperText("0 = off");
+        cooldown.setTooltipText("How long a printer is held after a print finishes before the dispatch pool can "
+                + "give it another job. The bed is certainly occupied in that window - the part that just finished "
+                + "is on it - so a bed check there is being asked to be right at the worst possible moment. Auto-"
+                + "start has always had its own 3-minute settle; this is the same idea for pooled order jobs.");
+        cooldown.addValueChangeListener(e -> {
+            if (e.getValue() == null) {
+                return;
+            }
+            bedDiff.setPostPrintCooldownMinutes(e.getValue());
+            showNotification(e.getValue() == 0
+                    ? "Post-print hold off - a printer can take a job as soon as it reports ready"
+                    : "Holding printers %d min after a print".formatted(e.getValue()));
+        });
+
+        // One row per layer, each stating what it protects against. The previous single wrapping row of seven
+        // controls gave no clue which of them mattered, or that one was switched off deliberately.
+        box.add(layerRow(pixelToggle, null,
+                "Compares the live frame with the saved empty-bed reference, with no model involved. This is what "
+                + "catches a dark part on the dark plate. No reference saved means it is skipped (fails open).",
+                limit, null));
+        box.add(layerRow(strict, null,
+                "Treats a mid-range reading as \"cannot tell\" rather than a pass. An empty bed on a good reference "
+                + "reads about 0.2, so anything much higher means the reference has stopped describing an empty bed.",
+                new Span("above %.1f".formatted(bedDiff.trustCeiling())),
+                bedDiff.isStrict() ? null
+                        : "off on purpose - would block every printer until references are re-captured"));
+        box.add(layerRow(twoPass, null,
+                "A \"clear\" verdict must survive a second, freshly captured snapshot. Only runs when the first look "
+                + "approves, so a bed that is obviously dirty costs nothing extra.",
+                new Span("2 passes"), null));
+        box.add(layerRow(null, "Hold after a print finishes",
+                "The bed is certainly occupied straight after a print, so no job is dispatched to that printer "
+                + "during this window. Deterministic - it does not rely on the camera at all.",
+                cooldown, null));
+        box.add(layerRow(autoRefresh, null,
+                "Adopts a passing frame as the new baseline, but only at or below half the limit - so it keeps a "
+                + "good reference current and cannot rescue a stale one. Capture the first one by hand.",
+                new Span("≤ %.1f adopts".formatted(bedDiff.trustCeiling())), null));
+
+        final Div cropBox = new Div();
+        cropBox.addClassName("bed-crop");
+        cropBox.add(new H4("Compared region"));
+        final Span cropBlurb = new Span("The fraction of the camera frame that is build plate. This matters more "
+                + "than the limit - if the region includes chamber walls or a blown-out highlight, the plate gets "
+                + "averaged away and an occupied bed can measure NO higher than an empty one. Check the preview on "
+                + "each card: it should be mostly plate.");
+        cropBlurb.addClassName("bed-protect-sub");
+        cropBox.add(cropBlurb);
+        final HorizontalLayout crop = new HorizontalLayout(
+                cropField("left", "Left"), cropField("top", "Top"),
+                cropField("right", "Right"), cropField("bottom", "Bottom"), blockLimit);
+        crop.setDefaultVerticalComponentAlignment(FlexComponent.Alignment.BASELINE);
+        crop.getStyle().set("flex-wrap", "wrap");
+        cropBox.add(crop);
+        box.add(cropBox);
+
+        // Both layers use the same reference image, but only ONE of them should be judging with it.
+        if (bedReference.isEnabled() && bedDiff.isEnabled()) {
+            final Span clash = new Span("⚠ Both reference modes are on. The AI compare (above) and the pixel-diff "
+                    + "backstop use the same reference image, but the model is unreliable at comparing two frames - "
+                    + "it reports normal glue marks, lighting and plate shifts as \"an object that wasn't in the "
+                    + "reference\" and blocks clear beds. Recommended: turn the AI compare OFF and leave the "
+                    + "pixel-diff backstop ON - the single-image bed prompt plus a deterministic diff is the "
+                    + "combination that holds up.");
+            clash.getStyle().setColor("var(--lumo-warning-text-color, #e8a33d)").set("display", "block")
+                    .set("margin-top", "8px");
+            box.add(clash);
+        }
+        return box;
+    }
+
+    /** One edge of the compared region, as a 0-1 fraction of the frame. */
+    private NumberField cropField(final String edge, final String label) {
+        final NumberField f = new NumberField(label);
+        f.setValue(bedDiff.getCrop(edge));
+        f.setStep(0.01);
+        f.setMin(0);
+        f.setMax(1);
+        f.setWidth("110px");
+        f.addValueChangeListener(e -> {
+            if (e.getValue() == null) {
+                return;
+            }
+            bedDiff.setCrop(edge, e.getValue());
+            // Re-render every card so the preview shows the new region straight away - without this the
+            // control silently appears to do nothing until the tab is reopened.
+            bedCardRefreshers.forEach(Runnable::run);
+        });
+        return f;
+    }
+
+    private static Div newFlexRow() {
+        final Div d = new Div();
+        d.getStyle().set("display", "flex").set("flex-wrap", "wrap").set("gap", "8px");
+        return d;
+    }
+
+    /** A captioned thumbnail sized to sit two-up inside a bed card. */
+    private static Div labelledThumb(final String caption, final String name, final byte[] bytes, final String outline) {
+        final Div box = new Div();
+        box.getStyle().set("flex", "1 1 132px").set("min-width", "0");
+        final Span cap = new Span(caption);
+        cap.getStyle().setColor("var(--lumo-secondary-text-color)")
+                .set("font-size", "var(--lumo-font-size-xs)").set("display", "block");
+        final Image img = new Image(new StreamResource(name, () -> new ByteArrayInputStream(bytes)), caption);
+        img.setWidthFull();
+        img.getStyle().set("border-radius", "4px").set("display", "block");
+        if (outline != null) {
+            img.getStyle().set("outline", "2px solid " + outline).set("outline-offset", "-2px");
+        }
+        box.add(cap, img);
+        return box;
+    }
+
     private Div buildBedReferenceCard(final String printerName) {
         final Div card = new Div();
         card.addClassName("ai-settings-section");
-        card.getStyle().set("max-width", "300px");
+        // Fixed width + wrapping button row: three buttons overflowed the old 300px card and the last one
+        // ended up drawn on top of the image.
+        card.getStyle().set("width", "330px").set("flex", "0 0 330px").set("box-sizing", "border-box");
+
+        // Header: name on the left, the trust verdict as a chip on the right.
+        final Div head = new Div();
+        head.addClassName("bed-card-head");
         final Span title = new Span(printerName);
         title.getStyle().setFontWeight("bold");
-        card.add(new Div(title));
+        final Span chip = new Span();
+        chip.addClassName("bp-chip");
+        head.add(title, chip);
+        card.add(head);
 
-        final Div imgHolder = new Div();
-        card.add(imgHolder);
+        // The reading leads, at a size you can read across the room. The old card buried it in a run-on sentence
+        // under two thumbnails, which is how a mid-range number went unnoticed for a fortnight.
+        final Span big = new Span();
+        big.addClassName("bed-card-big");
+        card.add(big);
+        final Span measured = new Span();
+        measured.addClassName("bed-card-sub");
+        card.add(measured);
+
+        // Diagnostics: only looked at when a number surprises you, so they fold away. They were also what made
+        // the old 300px card overflow its button row onto the image.
+        final Div frames = newFlexRow();
+        final Div cropHolder = new Div();
+        cropHolder.getStyle().set("margin-top", "6px");
+        final Div diagBody = new Div(frames, cropHolder);
+        final com.vaadin.flow.component.details.Details diag
+                = new com.vaadin.flow.component.details.Details("Frames & diagnosis", diagBody);
+        diag.addClassName("bed-card-diag");
+        card.add(diag);
+
         final Runnable[] refresh = new Runnable[1];
         refresh[0] = () -> {
-            imgHolder.removeAll();
-            bedReference.getReference(printerName).ifPresentOrElse(bytes -> {
-                final Image img = new Image(new StreamResource("bed-ref-%s.jpg".formatted(printerName),
-                        () -> new ByteArrayInputStream(bytes)), "empty-bed reference for " + printerName);
-                img.setWidth("280px");
-                img.getStyle().set("border-radius", "6px");
-                imgHolder.add(img);
+            frames.removeAll();
+            bedReference.getReference(printerName).ifPresentOrElse(
+                    bytes -> frames.add(labelledThumb("Reference", "bed-ref-%s.jpg".formatted(printerName), bytes, null)),
+                    () -> {
+                        final Span none = new Span("No reference saved yet");
+                        none.getStyle().setColor("var(--lumo-secondary-text-color)");
+                        frames.add(none);
+                    });
+            bedDiff.getLastFrame(printerName).ifPresent(bytes ->
+                    frames.add(labelledThumb("Last measured", "bed-cur-%s.jpg".formatted(printerName), bytes, null)));
+
+            bedDiff.getLastMeasurement(printerName).ifPresentOrElse(m -> {
+                final com.tfyre.bambu.printer.BedDiffService.Trust trust = bedDiff.trustOf(m);
+                final String tone = switch (trust) {
+                    case PROTECTING ->
+                        "bp-ok";
+                    case CANNOT_TELL ->
+                        "bp-warn";
+                    case OVER_LIMIT ->
+                        "bp-err";
+                };
+                big.setText("%.2f / %.1f".formatted(m.mean(), bedDiff.getThreshold()));
+                big.setClassName("bed-card-big");
+                big.addClassName(tone);
+                chip.setText(switch (trust) {
+                    case PROTECTING ->
+                        "protecting";
+                    case CANNOT_TELL ->
+                        "can't tell";
+                    case OVER_LIMIT ->
+                        "over limit";
+                });
+                chip.setClassName("bp-chip");
+                chip.addClassName(switch (trust) {
+                    case PROTECTING ->
+                        "bp-chip-ok";
+                    case CANNOT_TELL ->
+                        "bp-chip-warn";
+                    case OVER_LIMIT ->
+                        "bp-chip-err";
+                });
+                measured.setText("mean · worst block %.2f (display only)%n%s%n%s"
+                        .formatted(m.worst(), bedDiff.meaningOf(m), m.detail()));
+                measured.getStyle().set("white-space", "pre-line");
             }, () -> {
-                final Span none = new Span("No reference saved yet");
-                none.getStyle().setColor("var(--lumo-secondary-text-color)");
-                imgHolder.add(none);
+                big.setText("—");
+                big.setClassName("bed-card-big");
+                big.addClassName("bp-mut");
+                chip.setText(bedReference.hasReference(printerName) ? "not measured" : "no reference");
+                chip.setClassName("bp-chip");
+                measured.setText(bedReference.hasReference(printerName)
+                        ? "No reading since the last restart - press Measure now."
+                        : "Save a frame of the empty bed to switch this printer's backstop on.");
+                measured.getStyle().set("white-space", "normal");
             });
+
+            // Show exactly what the comparison sees, so a bad crop is obvious rather than invisible.
+            // Prefer the last measured frame - that's the one whose number you're trying to explain.
+            cropHolder.removeAll();
+            bedDiff.getLastFrame(printerName)
+                    .or(() -> bedReference.getReference(printerName))
+                    .flatMap(bedDiff::renderCrop)
+                    .ifPresent(bytes -> cropHolder.add(labelledThumb("Compared region",
+                            "bed-crop-%s.jpg".formatted(printerName), bytes, "var(--lumo-primary-color)")));
+            // What the number is actually reacting to. Red = the blocks driving the reading; if those land on
+            // bare plate rather than on an object, the metric is measuring something that isn't a part.
+            bedDiff.getLastFrame(printerName).ifPresent(cur -> bedReference.getReference(printerName)
+                    .flatMap(ref -> bedDiff.renderDiff(cur, ref))
+                    .ifPresent(bytes -> cropHolder.add(labelledThumb("What differs",
+                            "bed-diff-%s.jpg".formatted(printerName), bytes, "var(--lumo-error-color)"))));
         };
         refresh[0].run();
+        bedCardRefreshers.add(refresh[0]);
+
+        // Measure without involving the AI, so an empty bed and a bed with a part can be read back to back.
+        // Calibrating off real checks alone means waiting for real checks.
+        final Button measureBtn = new Button("Measure now", new Icon(VaadinIcon.CROSSHAIRS));
+        measureBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        measureBtn.setTooltipText("Compare the live frame against this printer's reference right now and show both "
+                + "readings - the quick way to calibrate: measure an empty bed, then a bed with a part.");
+        measureBtn.setEnabled(bedReference.hasReference(printerName));
+        measureBtn.addClickListener(e -> {
+            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+            showNotification("%s: measuring…".formatted(printerName));
+            executor.submit(() -> {
+                final Optional<com.tfyre.bambu.printer.BedDiffService.Measurement> m =
+                        aiService.measureBedNow(printerName);
+                ui.ifPresent(u -> u.access(() -> {
+                    m.ifPresentOrElse(v -> showNotification("%s: mean %.2f, worst block %.2f"
+                            .formatted(printerName, v.mean(), v.worst())),
+                            () -> showError("%s: could not measure (no snapshot or no reference)".formatted(printerName)));
+                    refresh[0].run();
+                }));
+            });
+        });
+
+        // Two live frames against each other - the pipeline's own noise floor, with the bed untouched
+        final Button noiseBtn = new Button("Noise floor", new Icon(VaadinIcon.CHART));
+        noiseBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        noiseBtn.setTooltipText("Compare two live frames taken seconds apart. Whatever this reads is noise, not "
+                + "an object - if it's close to a real part's score, the metric can't work here.");
+        noiseBtn.addClickListener(e -> {
+            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+            showNotification("%s: sampling…".formatted(printerName));
+            executor.submit(() -> {
+                final Optional<com.tfyre.bambu.printer.BedDiffService.Measurement> m =
+                        aiService.measureNoiseFloor(printerName);
+                ui.ifPresent(u -> u.access(() -> m.ifPresentOrElse(
+                        v -> showNotification("%s noise floor: mean %.2f, worst block %.2f".formatted(
+                                printerName, v.mean(), v.worst())),
+                        () -> showError("%s: could not sample two frames".formatted(printerName)))));
+            });
+        });
 
         final Button saveBtn = new Button("Save current frame", new Icon(VaadinIcon.CAMERA));
         saveBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_PRIMARY);
@@ -183,7 +722,11 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             refresh[0].run();
             showNotification("%s: reference cleared".formatted(printerName));
         });
-        card.add(new HorizontalLayout(saveBtn, clearBtn));
+        // A plain HorizontalLayout doesn't wrap, so the third button overflowed the card and drew over the image
+        final Div buttons = newFlexRow();
+        buttons.getStyle().set("margin-top", "8px").set("align-items", "center");
+        buttons.add(saveBtn, measureBtn, noiseBtn, clearBtn);
+        card.add(buttons);
         return card;
     }
 
@@ -207,15 +750,24 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                 .setColor(configured ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)")
                 .setFontWeight("bold");
 
-        section.add(new H4("Ollama Connection"));
-        section.add(row("Status:", connectionBadge));
-        section.add(row("URL:", new Span(urlText)));
-        section.add(row("Model:", new Span(model)));
-        section.add(row("Failure check interval:", new Span(failureInterval)));
-        section.add(row("First-layer delay:", new Span(firstLayerDelay)));
-        section.add(row("Request timeout:", new Span(timeout)));
-        section.add(new Span("To change these, edit bambu.ollama.* in your configuration file and restart."));
+        // One line, because none of this changes without a restart - it's reference material, not a dashboard.
+        // Six labelled rows of static config were taking as much vertical space as the results they sat above.
+        final Div head = new Div();
+        head.addClassName("ai-conn-line");
+        final Span summary = new Span(configured ? "%s · %s".formatted(model, urlText) : "no Ollama URL configured");
+        summary.addClassName("bp-mut");
+        head.add(connectionBadge, summary);
 
+        final Div detail = new Div(
+                row("Failure check interval:", new Span(failureInterval)),
+                row("First-layer delay:", new Span(firstLayerDelay)),
+                row("Request timeout:", new Span(timeout)),
+                new Span("To change these, edit bambu.ollama.* in your configuration file and restart."));
+        final com.vaadin.flow.component.details.Details more
+                = new com.vaadin.flow.component.details.Details("Ollama connection details", detail);
+        more.addClassName("bed-card-diag");
+
+        section.add(head, more);
         return section;
     }
 
@@ -251,16 +803,38 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     // Results section
     // -------------------------------------------------------------------------
 
+    /**
+     * Every printer's last check, once. This was two sections - a grid of results and, below it, a stack of
+     * snapshot cards - which listed the same five printers twice in two different shapes, the same duplication
+     * the Automation overview had before its printer table. The snapshot is now a column, so a row carries the
+     * frame, the verdict and the reason together instead of making you match them up by name across two lists.
+     */
     private Div buildResultsSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Last Check Results per Printer"));
+        section.add(new H4("Last check per printer"));
+        final Span sub = new Span("The exact frame the model looked at, why the check ran, and what it concluded. "
+                + "Click a thumbnail to enlarge.");
+        sub.addClassName("bed-protect-sub");
+        section.add(sub);
 
         if (grid.getColumns().isEmpty()) {
             // Guard: this view can be re-attached (it lives inside the Automation page's tabs) and the grids
             // are fields - reconfiguring columns on every attach would duplicate them.
             grid.addColumn(PrinterAiRow::printerName).setHeader("Printer").setAutoWidth(true);
+            // The analyzed frame, pulled from the same CheckRecord the old snapshot cards used.
+            grid.addComponentColumn(row -> aiService.getLastCheck(row.printerName())
+                    .filter(rec -> rec.snapshot() != null)
+                    .map(rec -> (com.vaadin.flow.component.Component) snapshotImage(rec, "96px"))
+                    .orElseGet(() -> {
+                        final Span none = new Span("no frame");
+                        none.addClassName("bp-mut");
+                        return none;
+                    })).setHeader("Snapshot").setAutoWidth(true);
             grid.addColumn(PrinterAiRow::checkType).setHeader("Check").setAutoWidth(true);
+            grid.addComponentColumn(row -> aiService.getLastCheck(row.printerName())
+                    .map(rec -> (com.vaadin.flow.component.Component) triggerChip(rec.trigger()))
+                    .orElseGet(Span::new)).setHeader("Trigger").setAutoWidth(true);
             grid.addComponentColumn(row -> {
                 final Span s = new Span(row.resultText());
                 s.getStyle().setColor(switch (row.severity()) {
@@ -302,49 +876,6 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     // Last checked snapshot per printer
     // -------------------------------------------------------------------------
 
-    private Div buildLastChecksSection() {
-        final Div section = new Div();
-        section.addClassName("ai-settings-section");
-        section.add(new H4("Last Checked Snapshot per Printer"));
-        section.add(new Span("The exact camera frame the AI analyzed last, why the check ran, and what it concluded. Click an image to enlarge."));
-        lastChecksDiv.getStyle().set("display", "flex").set("flex-wrap", "wrap").set("gap", "16px");
-        section.add(lastChecksDiv);
-        populateLastChecks();
-        return section;
-    }
-
-    private void populateLastChecks() {
-        lastChecksDiv.removeAll();
-        printers.getPrinters().forEach(printer -> aiService.getLastCheck(printer.getName()).ifPresent(rec -> {
-            final Div card = new Div();
-            card.getStyle().set("max-width", "340px");
-            final Span title = new Span("%s — %s".formatted(rec.printer(), checkTypeLabel(rec.checkType())));
-            title.getStyle().setFontWeight("bold");
-            final Div details = new Div(
-                    new Div(title),
-                    new Div(triggerChip(rec.trigger())),
-                    new Div(resultSpan(rec)),
-                    new Div(timeSpan(rec)));
-            if (rec.context() != null && !rec.context().isBlank()) {
-                final Span ctx = new Span("HMS/error hint given to the model: " + rec.context());
-                ctx.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-style", "italic");
-                details.add(new Div(ctx));
-            }
-            if (rec.snapshot() != null) {
-                card.add(snapshotImage(rec, "320px"));
-            } else {
-                final Span none = new Span("(no snapshot could be grabbed)");
-                none.getStyle().setColor("var(--lumo-error-text-color)");
-                card.add(new Div(none));
-            }
-            card.add(details);
-            lastChecksDiv.add(card);
-        }));
-        if (lastChecksDiv.getComponentCount() == 0) {
-            lastChecksDiv.add(new Span("No checks have run yet this session."));
-        }
-    }
-
     // -------------------------------------------------------------------------
     // History
     // -------------------------------------------------------------------------
@@ -362,6 +893,10 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             historyGrid.addColumn(rec -> checkTypeLabel(rec.checkType())).setHeader("Check").setAutoWidth(true);
             historyGrid.addComponentColumn(rec -> triggerChip(rec.trigger())).setHeader("Trigger").setAutoWidth(true);
             historyGrid.addComponentColumn(this::resultSpan).setHeader("Result").setAutoWidth(true);
+            // The calibration data: every bed check records its measured diff, so the threshold can be set from
+            // real numbers (empty beds vs beds with a part) instead of guessed.
+            historyGrid.addColumn(rec -> rec.pixelDiff() == null ? "—" : "%.2f".formatted(rec.pixelDiff()))
+                    .setHeader("Pixel diff").setAutoWidth(true);
             historyGrid.addColumn(PrintAiService.CheckRecord::description).setHeader("Description").setFlexGrow(1);
             historyGrid.setWidth("100%");
             historyGrid.setAllRowsVisible(true);
@@ -460,11 +995,6 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         return s;
     }
 
-    private static Span timeSpan(final PrintAiService.CheckRecord rec) {
-        final Span s = new Span("%s (%s)".formatted(TIME_FMT.format(rec.at().atZone(ZoneId.systemDefault())), formatTimeAgo(rec.at())));
-        s.getStyle().setColor("var(--lumo-secondary-text-color)");
-        return s;
-    }
 
     // -------------------------------------------------------------------------
     // Prompt editors
@@ -789,7 +1319,6 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             }
         });
         grid.setItems(rows);
-        populateLastChecks();
         historyGrid.setItems(aiService.getHistory());
         statusSpan.setText("Last refreshed: " + java.time.LocalTime.now().withNano(0));
     }

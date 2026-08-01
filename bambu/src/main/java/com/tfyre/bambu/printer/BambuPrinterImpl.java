@@ -78,6 +78,10 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private volatile java.util.Map<Integer, String> amsTrayTypes = java.util.Map.of();
     private volatile Optional<BambuConst.LightMode> lightMode = Optional.empty();
     private volatile int activeTrayId = -1;
+    private volatile int layerNum = -1;
+    private volatile int mcPercent = -1;
+    private volatile int mcRemainingMinutes = -1;
+    private volatile String subtaskName = "";
     private int totalLayerNum;
     private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.IDLE;
     private PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
@@ -124,6 +128,35 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         updateAmsTrayTypes(print);
         updateLightMode(print);
         updateActiveTray(print);
+        updateProgress(print);
+    }
+
+    /**
+     * Sticky print progress. Bambu pushes partial deltas, so most messages carry no {@code mc_percent} at all -
+     * reading "the latest message" gives 0 far more often than it gives the real value. Only overwrite when the
+     * message actually carries the field, exactly like the AMS tray state above. Cleared when the printer goes
+     * idle so a finished job's numbers don't bleed into the next one.
+     */
+    private void updateProgress(final Print print) {
+        if (gcodeState.isIdle()) {
+            layerNum = -1;
+            mcPercent = -1;
+            mcRemainingMinutes = -1;
+            subtaskName = "";
+            return;
+        }
+        if (print.hasLayerNum()) {
+            layerNum = print.getLayerNum();
+        }
+        if (print.hasMcPercent()) {
+            mcPercent = Math.min(print.getMcPercent(), 100);
+        }
+        if (print.hasMcRemainingTime()) {
+            mcRemainingMinutes = print.getMcRemainingTime();
+        }
+        if (print.hasSubtaskName() && !print.getSubtaskName().isBlank()) {
+            subtaskName = print.getSubtaskName();
+        }
     }
 
     /** Track the chamber-light mode when a message carries a lights report (used to restore state after AI checks). */
@@ -306,6 +339,26 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public int getActiveTrayId() {
         return activeTrayId;
+    }
+
+    @Override
+    public int getLayerNum() {
+        return layerNum;
+    }
+
+    @Override
+    public int getProgressPercent() {
+        return mcPercent;
+    }
+
+    @Override
+    public int getRemainingMinutes() {
+        return mcRemainingMinutes;
+    }
+
+    @Override
+    public Optional<String> getSubtaskName() {
+        return subtaskName.isBlank() ? Optional.empty() : Optional.of(subtaskName);
     }
 
     @Override

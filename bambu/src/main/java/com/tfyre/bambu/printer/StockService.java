@@ -32,6 +32,11 @@ public class StockService {
     BambuConfig config;
     @Inject
     NotificationService notificationService;
+    // Needed to resolve a listing's product code. Neither mapping service injects this one back, so no cycle.
+    @Inject
+    EtsyMappingService etsyMapping;
+    @Inject
+    EbayMappingService ebayMapping;
 
     /** "market|storageKey" → on-hand count. Absent = 0. */
     private final Map<String, Integer> stock = new ConcurrentHashMap<>();
@@ -74,8 +79,66 @@ public class StockService {
         save();
     }
 
-    private static String composite(final String market, final String storageKey) {
-        return market + "|" + storageKey;
+    /** Prefix marking a shared pool, so it can never collide with a "etsy|…"/"ebay|…" per-listing key. */
+    private static final String PRODUCT_PREFIX = "product|";
+
+    /**
+     * The pool a listing's stock lives in.
+     * <p>
+     * Normally per marketplace listing (`etsy|1389360052|Size=…`), which means the same physical product sold on
+     * both Etsy and eBay keeps two unrelated counts - stock set against the Etsy listing did nothing when the eBay
+     * order arrived, and it printed. When the mapping carries a <b>product code</b>, both listings resolve to the
+     * same `product|<code>` pool instead.
+     * <p>
+     * Resolving here rather than at each call site is deliberate: the stock editor in the UI and the order poller
+     * both go through this, so they cannot disagree about which pool they are touching. That disagreement is the
+     * whole bug class.
+     */
+    private String composite(final String market, final String storageKey) {
+        return productCodeFor(market, storageKey)
+                .map(code -> PRODUCT_PREFIX + code)
+                .orElseGet(() -> market + "|" + storageKey);
+    }
+
+    private Optional<String> productCodeFor(final String market, final String storageKey) {
+        if (storageKey == null) {
+            return Optional.empty();
+        }
+        final String code = switch (market == null ? "" : market) {
+            case "etsy" ->
+                Optional.ofNullable(etsyMapping.entries().get(storageKey))
+                        .map(EtsyMappingService.MappingEntry::productCode).orElse(null);
+            case "ebay" ->
+                Optional.ofNullable(ebayMapping.entries().get(storageKey))
+                        .map(EbayMappingService.MappingEntry::productCode).orElse(null);
+            default ->
+                null;
+        };
+        return Optional.ofNullable(code).filter(c -> !c.isBlank());
+    }
+
+    /**
+     * Moves any per-listing stock into the shared pool after a product code is assigned, so the count already on
+     * hand isn't orphaned under a key nothing reads any more.
+     * <p>
+     * Additive into the pool and zeroing the source, so running it twice is harmless - the second call finds
+     * nothing to move. Call it after saving a mapping whose product code was set.
+     */
+    public synchronized void mergeIntoProduct(final String market, final String storageKey, final String productCode) {
+        if (productCode == null || productCode.isBlank() || storageKey == null) {
+            return;
+        }
+        final String listingKey = market + "|" + storageKey;
+        final int orphaned = stock.getOrDefault(listingKey, 0);
+        if (orphaned <= 0) {
+            return;
+        }
+        final String pool = PRODUCT_PREFIX + productCode;
+        stock.put(pool, stock.getOrDefault(pool, 0) + orphaned);
+        stock.remove(listingKey);
+        dirty = true;
+        save();
+        Log.infof("StockService: moved %d unit(s) from %s into shared pool %s", orphaned, listingKey, pool);
     }
 
     /** On-hand count for a mapping storage key (0 when never set). */
@@ -117,24 +180,54 @@ public class StockService {
     }
 
     /**
-     * Applies stock to one order line: consumes what it can, fires an {@code order_from_stock} notification if any
-     * units were covered, and returns how many units still need to be printed. When no mapping key is known (the
-     * line isn't mapped) nothing is consumed and the full quantity is returned.
+     * One order line's planned stock coverage: decided up front, committed later.
+     *
+     * @param storageKey the mapping key the units come off
+     * @param units      how many of the ordered quantity stock would cover
+     * @param itemLabel  what it is, for the notification
      */
-    public int applyToOrderLine(final String market, final Optional<String> storageKey, final int quantity,
-            final String itemLabel, final String orderLabel) {
-        if (storageKey.isEmpty()) {
-            return quantity;
+    public record PlannedCoverage(String storageKey, int units, String itemLabel) {
+    }
+
+    /**
+     * How many of {@code quantity} on-hand stock could cover, <b>without consuming anything</b>. Zero when the line
+     * isn't mapped, since there's no key to draw against.
+     * <p>
+     * This is deliberately split from {@link #commitCoverage}. Consuming at the point the order is read means the
+     * units are gone even when the order is subsequently skipped - and it is skipped for any of five reasons,
+     * including buyer personalization, an unmapped sibling line, and the global auto-queue switch simply being off.
+     * The stock was then deducted for something that never printed, and printing it by hand later spent it twice.
+     * Decide here; commit only once the order is accepted.
+     */
+    public synchronized int coverageFor(final String market, final Optional<String> storageKey, final int quantity) {
+        if (storageKey.isEmpty() || quantity <= 0) {
+            return 0;
         }
-        final int consumed = consume(market, storageKey.get(), quantity);
-        if (consumed > 0) {
-            final int left = get(market, storageKey.get());
-            notificationService.notifyEvent("order_from_stock", marketLabel(market),
-                    "%s: %d× %s fulfilled from on-hand stock, not printed (%d left)".formatted(
-                            orderLabel, consumed, itemLabel, left));
-            Log.infof("StockService: %s: %d× %s from stock (%d left)", orderLabel, consumed, itemLabel, left);
+        return Math.min(get(market, storageKey.get()), quantity);
+    }
+
+    /**
+     * Commits a coverage decided earlier by {@link #coverageFor}: decrements, persists, and fires
+     * {@code order_from_stock}. Call this only once the order is definitely being fulfilled.
+     * <p>
+     * Re-checks availability rather than trusting the planned figure, so a concurrent consumer can only make this
+     * take fewer units, never drive stock negative. A shortfall is logged because it means the order needed more
+     * printing than was queued for it.
+     */
+    public synchronized void commitCoverage(final String market, final PlannedCoverage planned, final String orderLabel) {
+        final int consumed = consume(market, planned.storageKey(), planned.units());
+        if (consumed <= 0) {
+            return;
         }
-        return quantity - consumed;
+        if (consumed < planned.units()) {
+            Log.warnf("StockService: %s: only %d of the %d planned %s were still in stock - the shortfall was NOT queued",
+                    orderLabel, consumed, planned.units(), planned.itemLabel());
+        }
+        final int left = get(market, planned.storageKey());
+        notificationService.notifyEvent("order_from_stock", marketLabel(market),
+                "%s: %d× %s fulfilled from on-hand stock, not printed (%d left)".formatted(
+                        orderLabel, consumed, planned.itemLabel(), left));
+        Log.infof("StockService: %s: %d× %s from stock (%d left)", orderLabel, consumed, planned.itemLabel(), left);
     }
 
     private static String marketLabel(final String market) {
