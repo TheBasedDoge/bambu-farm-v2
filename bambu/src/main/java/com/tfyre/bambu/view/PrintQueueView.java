@@ -230,8 +230,7 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         // AI-gated auto-start: opt-in per printer, with a live status line showing the watcher's last decision
         final Checkbox autoStart = new Checkbox("Auto-start next when bed is clear (AI-checked)");
         autoStart.setValue(autoStartService.isEnabled(detail.name()));
-        autoStart.setTooltipText("When idle with jobs queued, run the AI bed-clear check and start the next job "
-                + "automatically if the bed is confirmed clear. Fails closed: no AI answer = no start.");
+        autoStart.setTooltipText("Start the next job when the AI confirms the bed is clear. No answer means no start.");
         final Span autoStartStatus = new Span();
         autoStartStatus.getStyle().setColor("var(--lumo-secondary-text-color)");
         autoStart.addValueChangeListener(e -> {
@@ -246,9 +245,7 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         // so this only ever narrows the global "Auto-queue new orders" toggle (Sales Orders / Automation pages).
         final Checkbox autoQueue = new Checkbox("Auto-queue new orders to this printer");
         autoQueue.setValue(autoQueueService.isPrinterEnabled(detail.name()));
-        autoQueue.setTooltipText("Only matters when the global \"Auto-queue new orders\" toggle is on. Uncheck to "
-                + "keep new marketplace orders from auto-queueing onto this printer (it can still be used for manual "
-                + "and batch prints) - e.g. run lights-out only on the P1S units and leave the H2D for manual jobs.");
+        autoQueue.setTooltipText("Uncheck to keep marketplace orders off this printer. Manual and batch prints still work.");
         autoQueue.addValueChangeListener(e -> {
             autoQueueService.setPrinterEnabled(detail.name(), Boolean.TRUE.equals(e.getValue()));
             showNotification("Auto-queue to %s %s".formatted(detail.name(),

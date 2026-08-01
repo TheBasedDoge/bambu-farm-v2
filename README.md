@@ -426,7 +426,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `dispatch_blocked`, `poll_failed`, `order_printed`, `order_from_stock`, `spool_low`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `dispatch_blocked`, `poll_failed`, `order_printed`, `order_needs_requeue`, `order_from_stock`, `spool_low`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
@@ -511,6 +511,8 @@ Orders are polled on a schedule and filtered to unfulfilled/open only; poll erro
 **Order progress & ready-to-ship**: every job queued from an order (auto or manual) is linked back to it. The Automation overview shows in-flight orders as "Etsy #123 — 2/4 printed", and when the LAST part finishes an `order_printed` notification fires: "Etsy order #123 is fully printed - ready to ship". Shipping itself stays manual.
 
 **A print that fails releases its claim on the order.** When a queued print ends failed or stopped and isn't auto-requeued, the order stops expecting that job. Without this, re-queueing the part by hand registers a *second* expected job for the same physical part, so the order over-counts and can never reach "ready to ship" - a single-item order read `0/2` after one stopped print and one re-queue.
+
+An **`order_needs_requeue`** notification fires at the same moment, with the camera frame attached. It's deliberately a separate event from the ordinary `stopped` alert: a stop that costs you an order is a different thing from one you performed on purpose, and it needs an action, because nothing will reprint that part on its own. An eBay order sat abandoned for five hours because the only alert said "print stopped", which doesn't read as something to act on.
 
 The released part is remembered as **abandoned**, and an order with abandoned parts **cannot go green**. It shows red "⚠ N parts failed - re-queue" until you queue it again, at which point the re-queued jobs clear the flag and normal counting resumes. That distinction matters: releasing the count alone would let the *other* parts finishing mark a short order as ready to ship, which is the one wrong answer here. Deliberately removing a job from the dispatch pool is different - that's "don't print this", so it lowers the expected count without flagging anything.
 

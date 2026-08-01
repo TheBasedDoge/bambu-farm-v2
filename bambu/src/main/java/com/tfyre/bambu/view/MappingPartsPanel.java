@@ -228,9 +228,7 @@ public class MappingPartsPanel extends Div {
             amsSlotSelect.setWidth("140px");
             amsSlotSelect.setClearButtonVisible(true);
             amsSlotSelect.setPlaceholder("Printer default");
-            amsSlotSelect.setTooltipText("Force this print to load filament from one specific AMS tray (or the "
-                    + "external spool) instead of using whatever the printer currently has loaded. Leave blank to "
-                    + "use the printer's current/default filament.");
+            amsSlotSelect.setTooltipText("Force one specific AMS tray. Blank uses whatever is loaded.");
 
             filamentSelect.setItems("PLA", "PETG", "ASA", "ABS", "TPU", "PC", "PA", "PVA", "PET-CF", "PA-CF", "PLA-CF");
             filamentSelect.setAllowCustomValue(true);
@@ -238,10 +236,7 @@ public class MappingPartsPanel extends Div {
             filamentSelect.setWidth("120px");
             filamentSelect.setClearButtonVisible(true);
             filamentSelect.setPlaceholder("Any");
-            filamentSelect.setTooltipText("Filament this part must print in, matched against each printer's live "
-                    + "AMS telemetry. Auto-queue only sends this part to a printer that actually has this material "
-                    + "loaded (in the specific AMS slot if one is set, otherwise any tray - the job is then pinned "
-                    + "to that tray). Leave blank for no material requirement.");
+            filamentSelect.setTooltipText("Only send this part to a printer with this material loaded. Blank means no requirement.");
 
             removeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
             removeBtn.setTooltipText("Remove this part");

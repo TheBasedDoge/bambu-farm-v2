@@ -58,6 +58,9 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
             new EventDef("order_printed", "Order Fully Printed",
                     "Every print job for a marketplace order has finished - ready to ship"),
+            new EventDef("order_needs_requeue", "Order Needs Re-Queue",
+                    "A print for an order failed or was stopped and nothing will reprint it - the order is short a "
+                    + "part until you queue it again"),
             new EventDef("order_from_stock", "Fulfilled From Stock",
                     "An order line was covered from on-hand stock and skipped printing (stock was decremented)"),
             new EventDef("spool_low", "Spool Low",
@@ -107,7 +110,7 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     private Div buildConfigSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Current Configuration"));
+        section.add(new H4("Current configuration"));
 
         final BambuConfig.Notify notif = config.notifications();
 
@@ -146,7 +149,7 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     private Div buildEventsSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Event Filters"));
+        section.add(new H4("Event filters"));
         section.add(new Span("Toggle events on or off at runtime without restarting. Choices are saved and survive restarts."));
 
         final Div list = new Div();
@@ -191,7 +194,7 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     private Div buildTestSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Test Notification"));
+        section.add(new H4("Test notification"));
         section.add(new Span("Send a test event to all configured channels (always delivered, not affected by filters above)."));
 
         final Span result = new Span();

@@ -44,6 +44,7 @@ param(
     [switch]$Force,
     [switch]$SkipBuild,
     [switch]$NoRestart,
+    [switch]$NoPauseSync,
     [string]$ProdPath = 'C:\Users\Vishal\Downloads\bambu-farm-web\bambu-liveview'
 )
 
@@ -73,6 +74,32 @@ function Warn($msg) { Write-Host "   $msg" -ForegroundColor Yellow }
     observed on an EMPTY folder created seconds earlier by the build itself. Retrying a few times clears it,
     where Maven simply gives up.
 #>
+<#
+    OneDrive and a Java build fight over the same thousands of small files, and OneDrive wins - it holds
+    handles on files while it uploads them. Observed three separate ways in one day:
+      - maven-clean-plugin could not delete an EMPTY folder the build had just created;
+      - vaadin-maven-plugin could not read BambuPrinter.class, which Maven had written seconds earlier;
+      - and, before any of that, the .git object database lost objects during a move.
+    There is no supported way to pause OneDrive from a script, so this stops the process outright and starts
+    it again afterwards. That is safe: OneDrive picks up where it left off and syncs the finished output.
+#>
+function Suspend-OneDrive {
+    $proc = Get-Process OneDrive -ErrorAction SilentlyContinue
+    if (-not $proc) { return $null }
+    $exe = $proc[0].Path
+    Warn 'pausing OneDrive for the build (it holds file handles that break Maven)'
+    Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    return $exe
+}
+
+function Resume-OneDrive($exe) {
+    if (-not $exe) { return }
+    if (Get-Process OneDrive -ErrorAction SilentlyContinue) { return }
+    Start-Process $exe -ErrorAction SilentlyContinue
+    Ok 'OneDrive restarted'
+}
+
 function Clear-Target {
     $targets = @('bambu\target', 'common\target', 'server\target', 'target') |
                ForEach-Object { Join-Path $PSScriptRoot $_ } |
@@ -133,20 +160,37 @@ if ($SkipBuild) {
     # -Dvaadin.force.production.build=true and handed Maven ".force.production.build=true" as its own token,
     # which it then read as a lifecycle phase ("Unknown lifecycle phase"). Quoting each element stops
     # PowerShell interpreting anything inside it - the dots are what it was reacting to.
-    # We do the clean ourselves (with retries) and then run WITHOUT maven's `clean` phase, so a OneDrive file
-    # lock can't abort the build before a single class is compiled.
-    if ($forced) {
-        Clear-Target
+    # Stop OneDrive for the duration. The repo lives inside a synced folder, and OneDrive's file handles have
+    # broken this build in three different places. Restarted in the finally below, whatever happens.
+    $oneDriveExe = $null
+    if (-not $NoPauseSync -and $PSScriptRoot -match 'OneDrive') {
+        $oneDriveExe = Suspend-OneDrive
     }
-    $mvnArgs = if ($forced) {
-        @('install', '-Pproduction', '-Dvaadin.force.production.build=true', '-DskipTests')
-    } else {
-        @('package', '-DskipTests', '-Pproduction')
+    try {
+        # We do the clean ourselves (with retries) and then run WITHOUT maven's `clean` phase, so a file lock
+        # can't abort the build before a single class is compiled.
+        if ($forced) {
+            Clear-Target
+        }
+        $mvnArgs = if ($forced) {
+            @('install', '-Pproduction', '-Dvaadin.force.production.build=true', '-DskipTests')
+        } else {
+            @('package', '-DskipTests', '-Pproduction')
+        }
+        Write-Host "   $mvn $($mvnArgs -join ' ')"
+        & $mvn @mvnArgs
+        $mvnExit = $LASTEXITCODE
+    } finally {
+        Resume-OneDrive $oneDriveExe
     }
-    Write-Host "   $mvn $($mvnArgs -join ' ')"
-    & $mvn @mvnArgs
     # $ErrorActionPreference does NOT catch a non-zero exit from a native command.
-    if ($LASTEXITCODE -ne 0) { throw "Maven failed with exit code $LASTEXITCODE - nothing was copied." }
+    if ($mvnExit -ne 0) {
+        if ($oneDriveExe -or $NoPauseSync) {
+            Warn 'If this mentions "used by another process", something still holds a handle on target\ -'
+            Warn 'antivirus and Windows Search index it too. Building outside OneDrive is the durable fix.'
+        }
+        throw "Maven failed with exit code $mvnExit - nothing was copied."
+    }
 
     if (-not (Test-Path $jarSource)) { throw "Build reported success but $jarSource is missing." }
     if ((Get-Item $jarSource).LastWriteTime -lt $started) {

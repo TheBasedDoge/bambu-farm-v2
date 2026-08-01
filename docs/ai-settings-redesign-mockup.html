@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BambuFarm — AI Settings redesign mockup</title>
+<style>
+  :root{
+    --bg:#000; --card:#0d0d0f; --card2:#141417; --line:#232327;
+    --tx:#e8e8ea; --tx2:#9a9aa2; --tx3:#6a6a72;
+    --ok:#3ecf7a; --warn:#e8a33d; --err:#e35c5c; --acc:#4c8dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 "Segoe UI",system-ui,sans-serif;padding:20px 24px 60px}
+  h1{font-size:20px;font-weight:500;margin:0 0 14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .card h2{font-size:14px;font-weight:500;margin:0 0 4px}
+  .card h2 .sub{font-weight:400;color:var(--tx3);font-size:12px;margin-left:8px}
+  .hint{background:#101014;border:1px dashed #2c2c33;border-radius:8px;padding:10px 12px;font-size:12px;color:var(--tx2);margin-bottom:14px}
+  .hint b{color:var(--tx)}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .mut{color:var(--tx3)} .acc{color:var(--acc)}
+  .btn{background:transparent;border:1px solid var(--line);color:var(--tx2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .btn.p{background:#1b4dd8;border-color:#1b4dd8;color:#fff}
+
+  /* tabs */
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px}
+  .tabs div{padding:8px 16px;font-size:13px;color:var(--tx2);cursor:pointer;border-bottom:2px solid transparent}
+  .tabs div.on{color:var(--tx);border-bottom-color:var(--acc)}
+
+  /* ---- protection strip: the headline answer to "is the bed check actually working?" ---- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-weight:400;font-size:11px;color:var(--tx3);padding-bottom:8px}
+  td{padding:10px 8px 10px 0;border-top:1px solid var(--line);vertical-align:middle}
+  .nm{font-weight:500}
+  .reading{font-variant-numeric:tabular-nums;font-size:15px;font-weight:500}
+  .of{color:var(--tx3);font-size:12px;font-weight:400}
+  .verdict{font-size:12px;padding:2px 9px;border-radius:10px;border:1px solid var(--line);background:#16161a;white-space:nowrap}
+  .verdict.good{border-color:#2c5c3c;color:var(--ok)}
+  .verdict.stale{border-color:#5c4a2c;color:var(--warn)}
+  .verdict.none{border-color:#333;color:var(--tx3)}
+  .age{font-size:12px;color:var(--tx2)}
+  .age.old{color:var(--warn)}
+  .bar{background:#1c1c20;border-radius:3px;height:5px;width:120px;margin-top:5px;position:relative}
+  .bar i{display:block;height:5px;border-radius:3px}
+  .bar u{position:absolute;top:-2px;width:1px;height:9px;background:var(--tx3)}
+
+  /* ---- safety layers ---- */
+  .layer{display:flex;align-items:flex-start;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+  .layer:first-of-type{border-top:none}
+  .layer .sw{width:34px;height:19px;border-radius:10px;background:#26262c;position:relative;flex:0 0 34px;margin-top:2px;cursor:pointer}
+  .layer .sw i{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#6a6a72;transition:.15s}
+  .layer .sw.on{background:#1b4dd8}
+  .layer .sw.on i{left:17px;background:#fff}
+  .layer .txt{flex:1;min-width:0}
+  .layer .ttl{font-size:13px}
+  .layer .desc{font-size:12px;color:var(--tx3);margin-top:2px}
+  .layer .val{font-size:12px;color:var(--tx2);white-space:nowrap;display:flex;align-items:center;gap:6px}
+  .layer input{background:#16161a;border:1px solid var(--line);color:var(--tx);border-radius:6px;
+               padding:3px 6px;width:58px;font-size:12px;text-align:right}
+  .flag{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid #5c4a2c;color:var(--warn);white-space:nowrap}
+
+  /* ---- per printer detail ---- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+  .pc{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .pc .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+  .pc .big{font-size:22px;font-variant-numeric:tabular-nums;font-weight:500;line-height:1.1}
+  .pc .lbl{font-size:11px;color:var(--tx3)}
+  .frames{display:flex;gap:8px;margin:10px 0 8px}
+  .fr{flex:1}
+  .fr .cap{font-size:10px;color:var(--tx3);margin-bottom:3px}
+  .fr .img{height:72px;border-radius:5px;background:linear-gradient(160deg,#2a2a33,#15151a);
+           border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+           font-size:10px;color:var(--tx3)}
+  .fr .img.diff{background:linear-gradient(160deg,#3a2626,#1a1416)}
+  .pcbtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  details.more{margin-top:9px}
+  details.more summary{font-size:11px;color:var(--tx3);cursor:pointer;list-style:none}
+  details.more summary::-webkit-details-marker{display:none}
+  details.more summary:before{content:"▸ ";}
+  details.more[open] summary:before{content:"▾ ";}
+</style>
+</head>
+<body>
+
+<h1>AI Settings — redesign mockup</h1>
+
+<div class="hint">
+  <b>What's wrong with the page today.</b> Every number needed to spot the 2026-08-01 occupied-bed print was
+  already on this page — reference age, last reading, limit — but you had to hunt for it across four stacked
+  sections and a row of seven controls, with the reasoning buried in tooltips. Three changes:<br>
+  <b>1.</b> Lead with a <b>protection status table</b> that answers "is the bed check actually working right now?"
+  per printer, instead of making you infer it from a reading.
+  <b>2.</b> Turn the seven-control row into <b>four named safety layers</b>, each one line: what it does, its
+  value, and whether it's currently doing anything.
+  <b>3.</b> Per-printer cards lead with the <b>reading as a headline number</b>; the four images collapse behind
+  a disclosure, since they're for diagnosis, not monitoring.<br>
+  Numbers below are real ones from 2026-08-01.
+</div>
+
+<div class="tabs">
+  <div>Status</div><div class="on">Bed reference</div><div>History</div><div>Prompts</div>
+</div>
+
+<!-- ============ 1. PROTECTION STATUS ============ -->
+<div class="card">
+  <h2>Bed protection <span class="sub">whether the pixel backstop can currently tell an empty bed from an occupied one</span></h2>
+  <table>
+    <tr><th style="width:15%">Printer</th><th style="width:17%">Reference</th><th style="width:22%">Last reading</th>
+        <th style="width:20%">State</th><th>Meaning</th></tr>
+
+    <tr><td class="nm">P1S</td>
+        <td><span class="age old">yesterday 17:12</span><div class="lbl mut">8h ago</div></td>
+        <td><span class="reading err">7.38</span> <span class="of">/ 6.0</span>
+            <div class="bar"><i style="width:100%;background:var(--err)"></i><u style="left:50%"></u></div></td>
+        <td><span class="verdict stale">over limit</span></td>
+        <td class="mut">Blocks. Either a part is on it or the reference has drifted.</td></tr>
+
+    <tr><td class="nm">P1S-2</td>
+        <td><span class="age old">07-30 01:02</span><div class="lbl mut">2 days ago</div></td>
+        <td><span class="reading warn">4.62</span> <span class="of">/ 6.0</span>
+            <div class="bar"><i style="width:77%;background:var(--warn)"></i><u style="left:50%"></u></div></td>
+        <td><span class="verdict stale">can't tell</span></td>
+        <td class="mut">Above the trust mark (3.0). An empty bed should read ~0.2 — recapture.</td></tr>
+
+    <tr><td class="nm">P1S-3</td>
+        <td><span class="age old">07-30 00:41</span><div class="lbl mut">2 days ago</div></td>
+        <td><span class="reading warn">5.57</span> <span class="of">/ 6.0</span>
+            <div class="bar"><i style="width:93%;background:var(--warn)"></i><u style="left:50%"></u></div></td>
+        <td><span class="verdict stale">can't tell</span></td>
+        <td class="mut">This printer started a print onto a part at this reading.</td></tr>
+
+    <tr><td class="nm">P1P</td>
+        <td><span class="age">07-31 22:14</span><div class="lbl mut">4h ago</div></td>
+        <td><span class="reading warn">5.26</span> <span class="of">/ 6.0</span>
+            <div class="bar"><i style="width:88%;background:var(--warn)"></i><u style="left:50%"></u></div></td>
+        <td><span class="verdict stale">can't tell</span></td>
+        <td class="mut">Was 0.22 right after capture. Drifted in one day.</td></tr>
+
+    <tr><td class="nm">H2D</td>
+        <td><span class="age old">07-24 22:38</span><div class="lbl mut">8 days ago</div></td>
+        <td class="mut">not measured yet</td>
+        <td><span class="verdict none">unknown</span></td>
+        <td class="mut">No reading since restart — press Measure.</td></tr>
+  </table>
+  <div class="hint" style="margin:12px 0 0">
+    The <b>Meaning</b> column is the point. A bare "5.57" reads like a pass because it's under 6.0 — but an
+    empty bed on a good reference reads ~0.2, so anything mid-range means the reference has stopped describing
+    an empty bed. That distinction is what the page never made, and it's why a mid-range number looked fine.
+  </div>
+</div>
+
+<!-- ============ 2. SAFETY LAYERS ============ -->
+<div class="card">
+  <h2>Safety layers <span class="sub">what stands between a pooled job and a print starting</span></h2>
+
+  <div class="layer">
+    <div class="sw on"><i></i></div>
+    <div class="txt">
+      <div class="ttl">Pixel backstop</div>
+      <div class="desc">Compares the live frame with the saved empty-bed reference. Catches a dark part on a dark
+        plate, which vision models routinely miss.</div>
+    </div>
+    <div class="val">limit <input value="6.0"></div>
+  </div>
+
+  <div class="layer">
+    <div class="sw"><i></i></div>
+    <div class="txt">
+      <div class="ttl">Block when the reading can't be trusted <span class="flag">off — waiting on bed-height fix</span></div>
+      <div class="desc">Treats a mid-range reading as "cannot tell" rather than a pass. Would have stopped the
+        2026-08-01 print. Turning it on today blocks all five printers until references are recaptured.</div>
+    </div>
+    <div class="val mut">above 3.0</div>
+  </div>
+
+  <div class="layer">
+    <div class="sw on"><i></i></div>
+    <div class="txt">
+      <div class="ttl">Confirm with a second look</div>
+      <div class="desc">A "clear" verdict must survive a second, freshly captured snapshot. Only runs when the
+        first look approves, so a dirty bed costs nothing.</div>
+    </div>
+    <div class="val mut">2 passes</div>
+  </div>
+
+  <div class="layer">
+    <div class="sw on"><i></i></div>
+    <div class="txt">
+      <div class="ttl">Hold after a print finishes</div>
+      <div class="desc">The bed is certainly occupied straight after a print, so no check runs during this window.
+        Deterministic — doesn't rely on the camera at all.</div>
+    </div>
+    <div class="val"><input value="30"> min</div>
+  </div>
+
+  <div class="layer">
+    <div class="sw on"><i></i></div>
+    <div class="txt">
+      <div class="ttl">Self-refresh the reference</div>
+      <div class="desc">Adopts a passing frame as the new baseline, but only at or below 3.0 — so it keeps a good
+        reference current and cannot rescue a stale one. Capture the first one by hand.</div>
+    </div>
+    <div class="val mut">≤ 3.0 adopts</div>
+  </div>
+
+  <div class="hint" style="margin:12px 0 0">
+    Replaces the seven-control wrapping row. Each layer states <b>what it protects against</b> and whether it's
+    currently doing anything — the amber flag on layer 2 is a deliberate reminder that a written, tested safety
+    layer is switched off on purpose, which a bare unchecked box would never convey.
+  </div>
+</div>
+
+<!-- ============ 3. COMPARED REGION ============ -->
+<div class="card">
+  <h2>Compared region <span class="sub">the part of the frame that is build plate — matters more than the limit</span></h2>
+  <div class="val" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--tx2)">
+    <span>Left <input value="0.146"></span><span>Top <input value="0.45"></span>
+    <span>Right <input value="0.896"></span><span>Bottom <input value="1"></span>
+    <span class="mut">If this includes chamber wall or a blown-out highlight, the plate gets averaged away and an
+      occupied bed can measure no higher than an empty one.</span>
+  </div>
+</div>
+
+<!-- ============ 4. PER PRINTER ============ -->
+<div class="card">
+  <h2>Per printer</h2>
+  <div class="grid">
+
+    <div class="pc">
+      <div class="hd"><span class="nm">P1S-3</span><span class="verdict stale">can't tell</span></div>
+      <div class="big warn">5.57 <span class="of">/ 6.0</span></div>
+      <div class="lbl">mean · worst block 18.39 (display only) · reference 2 days old</div>
+      <div class="pcbtns">
+        <button class="btn p">Save current frame</button>
+        <button class="btn">Measure now</button>
+        <button class="btn">Noise floor</button>
+        <button class="btn">Clear</button>
+      </div>
+      <details class="more"><summary>Frames &amp; diagnosis</summary>
+        <div class="frames">
+          <div class="fr"><div class="cap">Reference</div><div class="img">empty bed</div></div>
+          <div class="fr"><div class="cap">Last measured</div><div class="img">live frame</div></div>
+        </div>
+        <div class="frames">
+          <div class="fr"><div class="cap">Compared region</div><div class="img">crop</div></div>
+          <div class="fr"><div class="cap">What differs</div><div class="img diff">heatmap</div></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="pc">
+      <div class="hd"><span class="nm">P1P</span><span class="verdict stale">can't tell</span></div>
+      <div class="big warn">5.26 <span class="of">/ 6.0</span></div>
+      <div class="lbl">mean · worst block 21.96 (display only) · reference 4h old</div>
+      <div class="pcbtns">
+        <button class="btn p">Save current frame</button>
+        <button class="btn">Measure now</button>
+        <button class="btn">Noise floor</button>
+        <button class="btn">Clear</button>
+      </div>
+      <details class="more"><summary>Frames &amp; diagnosis</summary>
+        <div class="frames">
+          <div class="fr"><div class="cap">Reference</div><div class="img">empty bed</div></div>
+          <div class="fr"><div class="cap">Last measured</div><div class="img">live frame</div></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="pc">
+      <div class="hd"><span class="nm">H2D</span><span class="verdict none">no reading</span></div>
+      <div class="big mut">—</div>
+      <div class="lbl">reference 8 days old · never measured this session</div>
+      <div class="pcbtns">
+        <button class="btn p">Save current frame</button>
+        <button class="btn">Measure now</button>
+        <button class="btn">Noise floor</button>
+        <button class="btn">Clear</button>
+      </div>
+    </div>
+
+  </div>
+  <div class="hint" style="margin:12px 0 0">
+    Card leads with the number and the verdict; the four images move behind a disclosure. They're diagnostic —
+    you look at them when a reading surprises you, not every visit — and they were what made the old cards
+    overflow. Cards widen from 300px to ~330px so the button row stops wrapping onto the image.
+  </div>
+</div>
+
+<div class="hint">
+  <b>Not changed:</b> History and Prompts tabs. <b>Status tab:</b> would fold "Runtime Controls", "Last Check
+  Results" and "Last Checked Snapshot" — three stacked sections listing the same five printers — into one table,
+  the same fix as the overview's duplicated printer lists. Mocked separately if you want it.
+</div>
+
+</body>
+</html>

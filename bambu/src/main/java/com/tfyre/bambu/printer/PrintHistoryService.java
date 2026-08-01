@@ -304,6 +304,14 @@ public class PrintHistoryService {
             Log.infof("PrintHistoryService: %s ended %s and was not requeued - released one expected job from %s,"
                     + " which now needs a re-queue before it can be ready to ship",
                     job.file(), job.result(), job.orderRef().label());
+            // Its own event, separate from the generic "print stopped" one. A stop that costs you an ORDER is a
+            // different thing from a stop you performed deliberately, and it needs an action: nothing will
+            // reprint that part on its own. Found the hard way - an eBay order sat abandoned for five hours
+            // because the only alert said "print stopped", which is not obviously something to act on.
+            notificationService.notifyEvent("order_needs_requeue", job.orderRef().market(),
+                    "%s: %s ended %s and nothing will reprint it. Re-queue the order from the Sales Orders page."
+                            .formatted(job.orderRef().label(), job.file(), job.result().toLowerCase()),
+                    aiService.getSnapshot(job.printer()).orElse(null));
         }
     }
 

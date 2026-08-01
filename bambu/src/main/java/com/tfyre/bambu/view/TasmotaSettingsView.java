@@ -143,9 +143,7 @@ public class TasmotaSettingsView extends VerticalLayout implements NotificationH
         autoOff.setStepButtonsVisible(true);
         autoOff.setWidth("260px");
         autoOff.setValue(tasmotaService.getAutoOffMinutes(printerName));
-        autoOff.setTooltipText("Automatically switch this plug OFF once the printer has been finished/idle with an "
-                + "empty print queue for this many minutes. Never fires while jobs are queued or printing. "
-                + "0 disables it.");
+        autoOff.setTooltipText("Cut power after this many idle minutes with an empty queue. 0 disables.");
         autoOff.addValueChangeListener(e -> {
             tasmotaService.setAutoOffMinutes(printerName, e.getValue() == null ? 0 : e.getValue());
             showNotification("%s: auto-off %s".formatted(printerName,

@@ -33,7 +33,6 @@ import io.quarkus.logging.Log;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -43,7 +42,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Mappings — every listing → gcode assignment in one place (a tab on the Automation page, also
@@ -724,9 +722,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         f.setPlaceholder("shared code");
         f.setClearButtonVisible(true);
         f.setValueChangeMode(com.vaadin.flow.data.value.ValueChangeMode.ON_BLUR);
-        f.setTooltipText("Optional. Put the SAME code on the Etsy and eBay mapping for one physical product and "
-                + "they share one on-hand stock pool. Leave blank to count stock per listing, as before. "
-                + "Any existing on-hand count moves into the shared pool when you set this.");
+        f.setTooltipText("Same code on two listings = one shared stock pool. Blank counts stock per listing.");
         f.addValueChangeListener(e -> {
             final String raw = e.getValue();
             final String code = raw == null || raw.isBlank() ? null : raw.trim();

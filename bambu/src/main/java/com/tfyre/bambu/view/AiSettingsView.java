@@ -352,8 +352,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         limit.setMin(0.5);
         limit.setWidth("130px");
         limit.setHelperText("avg over region");
-        limit.setTooltipText("Calibrate from the measured values below: run a check on a KNOWN EMPTY bed and on a "
-                + "bed with a part, then set the limit between the two. Thresholds from other setups do not transfer.");
+        limit.setTooltipText("Measure a known-empty bed, then one with a part, and set this between them.");
         limit.addValueChangeListener(e -> {
             if (e.getValue() != null && e.getValue() > 0) {
                 bedDiff.setThreshold(e.getValue());
@@ -370,9 +369,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         blockLimit.setMin(0.5);
         blockLimit.setWidth("150px");
         blockLimit.setHelperText("shading only, does not block");
-        blockLimit.setTooltipText("Sets how the \"What differs\" heatmap is shaded. The worst-block reading does "
-                + "not decide anything - measured on real beds it rated an occupied plate cleaner than two empty "
-                + "ones. Only the mean blocks.");
+        blockLimit.setTooltipText("Shading only for the heatmap. Gates nothing.");
         blockLimit.addValueChangeListener(e -> {
             if (e.getValue() != null && e.getValue() > 0) {
                 bedDiff.setBlockThreshold(e.getValue());
@@ -382,10 +379,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
 
         final Checkbox autoRefresh = new Checkbox("Self-refresh the reference after a passing check");
         autoRefresh.setValue(bedDiff.isAutoRefresh());
-        autoRefresh.setTooltipText("Keeps the reference current by replacing it whenever the model AND the pixel "
-                + "check both call the bed clear and the reading is at or below half the limit. A stale reference "
-                + "is the biggest error here: the same empty bed reads about 5 against an old reference and 0.19 "
-                + "against a fresh one. Turn it off if you would rather manage references by hand.");
+        autoRefresh.setTooltipText("Keeps a good reference current. Cannot rescue a stale one.");
         autoRefresh.addValueChangeListener(e -> {
             bedDiff.setAutoRefresh(Boolean.TRUE.equals(e.getValue()));
             showNotification("Reference self-refresh " + (bedDiff.isAutoRefresh() ? "on" : "off"));
@@ -393,12 +387,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
 
         final Checkbox strict = new Checkbox("Block when the reading can't be trusted");
         strict.setValue(bedDiff.isStrict());
-        strict.setTooltipText("Treats a reading above half the limit as 'cannot tell' and refuses to start, instead "
-                + "of passing it. A reference only discriminates while an empty bed reads near zero; mid-range means "
-                + "it has stopped describing an empty bed, which is how a print started on an occupied one. LEAVE "
-                + "OFF until an empty bed measures near zero no matter what printed last - the plate parks at a "
-                + "different height after every differently-sized print, and until that is handled this would block "
-                + "nearly every auto-start.");
+        strict.setTooltipText("Refuses to start when the reading is mid-range.");
         strict.addValueChangeListener(e -> {
             bedDiff.setStrict(Boolean.TRUE.equals(e.getValue()));
             showNotification("Untrusted-reading blocking " + (bedDiff.isStrict() ? "ON" : "off"));
@@ -406,10 +395,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
 
         final Checkbox twoPass = new Checkbox("Confirm a clear bed with a second look");
         twoPass.setValue(bedDiff.isTwoPass());
-        twoPass.setTooltipText("A 'bed is clear' verdict has to survive a second, freshly captured snapshot before "
-                + "a print starts. One verdict isn't stable on a marginal bed - the same plate was judged not-clear "
-                + "and then clear four minutes later, and the clear one printed onto a part. Only runs when the "
-                + "first look approves, so a dirty bed costs nothing extra.");
+        twoPass.setTooltipText("Costs one extra check, and only when the bed looks clear.");
         twoPass.addValueChangeListener(e -> {
             bedDiff.setTwoPass(Boolean.TRUE.equals(e.getValue()));
             showNotification("Second-look confirmation " + (bedDiff.isTwoPass() ? "on" : "off"));
@@ -422,10 +408,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         cooldown.setStepButtonsVisible(true);
         cooldown.setWidth("170px");
         cooldown.setHelperText("0 = off");
-        cooldown.setTooltipText("How long a printer is held after a print finishes before the dispatch pool can "
-                + "give it another job. The bed is certainly occupied in that window - the part that just finished "
-                + "is on it - so a bed check there is being asked to be right at the worst possible moment. Auto-"
-                + "start has always had its own 3-minute settle; this is the same idea for pooled order jobs.");
+        cooldown.setTooltipText("Minutes to wait after a print before this printer can take a job.");
         cooldown.addValueChangeListener(e -> {
             if (e.getValue() == null) {
                 return;
@@ -439,26 +422,24 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         // One row per layer, each stating what it protects against. The previous single wrapping row of seven
         // controls gave no clue which of them mattered, or that one was switched off deliberately.
         box.add(layerRow(pixelToggle, null,
-                "Compares the live frame with the saved empty-bed reference, with no model involved. This is what "
-                + "catches a dark part on the dark plate. No reference saved means it is skipped (fails open).",
+                "Compares the live frame with the saved reference, no model involved. Catches a dark part on a "
+                + "dark plate.",
                 limit, null));
         box.add(layerRow(strict, null,
-                "Treats a mid-range reading as \"cannot tell\" rather than a pass. An empty bed on a good reference "
-                + "reads about 0.2, so anything much higher means the reference has stopped describing an empty bed.",
+                "A mid-range reading means the reference has aged out, so it is treated as \"cannot tell\" "
+                + "rather than a pass.",
                 new Span("above %.1f".formatted(bedDiff.trustCeiling())),
                 bedDiff.isStrict() ? null
                         : "off on purpose - would block every printer until references are re-captured"));
         box.add(layerRow(twoPass, null,
-                "A \"clear\" verdict must survive a second, freshly captured snapshot. Only runs when the first look "
-                + "approves, so a bed that is obviously dirty costs nothing extra.",
+                "A clear verdict must survive a second, freshly captured snapshot.",
                 new Span("2 passes"), null));
         box.add(layerRow(null, "Hold after a print finishes",
-                "The bed is certainly occupied straight after a print, so no job is dispatched to that printer "
-                + "during this window. Deterministic - it does not rely on the camera at all.",
+                "The bed is certainly occupied right after a print, so nothing is dispatched during this window.",
                 cooldown, null));
         box.add(layerRow(autoRefresh, null,
-                "Adopts a passing frame as the new baseline, but only at or below half the limit - so it keeps a "
-                + "good reference current and cannot rescue a stale one. Capture the first one by hand.",
+                "Adopts a passing frame as the new baseline, but only well under the limit. Capture the first "
+                + "one by hand.",
                 new Span("≤ %.1f adopts".formatted(bedDiff.trustCeiling())), null));
 
         final Div cropBox = new Div();
@@ -653,8 +634,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         // Calibrating off real checks alone means waiting for real checks.
         final Button measureBtn = new Button("Measure now", new Icon(VaadinIcon.CROSSHAIRS));
         measureBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-        measureBtn.setTooltipText("Compare the live frame against this printer's reference right now and show both "
-                + "readings - the quick way to calibrate: measure an empty bed, then a bed with a part.");
+        measureBtn.setTooltipText("Compare against the reference now, without asking the model.");
         measureBtn.setEnabled(bedReference.hasReference(printerName));
         measureBtn.addClickListener(e -> {
             final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
@@ -674,8 +654,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         // Two live frames against each other - the pipeline's own noise floor, with the bed untouched
         final Button noiseBtn = new Button("Noise floor", new Icon(VaadinIcon.CHART));
         noiseBtn.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-        noiseBtn.setTooltipText("Compare two live frames taken seconds apart. Whatever this reads is noise, not "
-                + "an object - if it's close to a real part's score, the metric can't work here.");
+        noiseBtn.setTooltipText("Two live frames against each other. Whatever it reads is noise, not an object.");
         noiseBtn.addClickListener(e -> {
             final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
             showNotification("%s: sampling…".formatted(printerName));
@@ -778,7 +757,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     private Div buildControlSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Runtime Controls"));
+        section.add(new H4("Runtime controls"));
 
         final Checkbox enableToggle = new Checkbox("AI checks enabled");
         enableToggle.setValue(aiService.isRuntimeEnabled());
@@ -883,7 +862,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     private Div buildHistorySection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Check History"));
+        section.add(new H4("Check history"));
         section.add(new Span("The last %d check attempts across the farm, newest first (in-memory - resets on restart). Click a row to see the analyzed snapshot.".formatted(50)));
 
         if (historyGrid.getColumns().isEmpty()) {
@@ -1003,7 +982,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
     private Div buildPromptsSection() {
         final Div section = new Div();
         section.addClassName("ai-settings-section");
-        section.add(new H4("Check Prompts"));
+        section.add(new H4("Check prompts"));
         section.add(new Span("The exact prompts sent to the model (%s) for each check, editable at runtime (saved to bambu-ai-prompts.json, applies to the next check immediately). "
                 .formatted(config.ollama().model())
                 + "Keep the leading answer keyword instructions intact - result parsing looks for that first word."));
@@ -1013,11 +992,10 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         final ComboBox<String> testPrinter = new ComboBox<>("Test against printer");
         testPrinter.setItems(printers.getPrinters().stream().map(p -> p.getName()).sorted().toList());
         testPrinter.setClearButtonVisible(true);
-        testPrinter.setTooltipText("The Test button on each prompt below grabs this printer's current camera frame "
-                + "and runs the prompt in the editor against it right now (results are recorded in the check history).");
+        testPrinter.setTooltipText("Printer whose current camera frame the prompt tests below will use.");
         final Button testAll = new Button("Test all three now", new Icon(VaadinIcon.FLASK));
         testAll.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
-        testAll.setTooltipText("Run all three SAVED prompts against the selected printer's current frame in one capture, and record them in the history below");
+        testAll.setTooltipText("Runs all three saved prompts against one capture.");
         testAll.addClickListener(e -> runAllPromptsTest(testPrinter.getValue()));
         final HorizontalLayout testBar = new HorizontalLayout(testPrinter, testAll);
         testBar.setDefaultVerticalComponentAlignment(com.vaadin.flow.component.orderedlayout.FlexComponent.Alignment.END);

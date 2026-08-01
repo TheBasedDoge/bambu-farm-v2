@@ -30,7 +30,6 @@ import io.quarkus.logging.Log;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -38,7 +37,6 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Stream;
 
 /**
  * Etsy Sales Orders — pulls paid/unshipped receipts from Etsy, lets each listing (or a specific variation
@@ -175,10 +173,7 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
             final com.vaadin.flow.component.checkbox.Checkbox autoQueueToggle
                     = new com.vaadin.flow.component.checkbox.Checkbox("Auto-queue new orders");
             autoQueueToggle.setValue(autoQueue.isEnabled());
-            autoQueueToggle.setTooltipText("When a poll finds a new order whose line items are all mapped, queue "
-                    + "the print jobs automatically - each part goes to a printer that currently has its required "
-                    + "filament loaded (idle printers first, then shortest queue). Orders with unmapped items or "
-                    + "no filament match are skipped with a notification. One global switch, shared with eBay.");
+            autoQueueToggle.setTooltipText("Automatically queue new fully-mapped orders to a printer with the right filament. Shared with eBay.");
             autoQueueToggle.addValueChangeListener(e -> {
                 autoQueue.setEnabled(Boolean.TRUE.equals(e.getValue()));
                 showNotification("Auto-queue " + (autoQueue.isEnabled() ? "enabled" : "disabled"));

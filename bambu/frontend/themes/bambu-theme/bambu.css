@@ -1409,20 +1409,23 @@ img:fullscreen {
     min-width: 0;
 }
 
-.pt-chip {
+/* One chip, used by both the Automation printer table (.pt-) and the AI Settings tables (.bp-).
+   These were two near-identical rules that had already drifted a pixel of padding apart. */
+.pt-chip,
+.bp-chip {
     font-size: var(--lumo-font-size-xs);
-    padding: 1px 8px;
+    padding: 2px 9px;
     border-radius: 10px;
     border: 1px solid var(--lumo-contrast-20pct);
     color: var(--lumo-secondary-text-color);
     white-space: nowrap;
 }
 
-.pt-chip-active {
+.pt-chip-active,
+.bp-chip-ok {
     border-color: var(--lumo-success-color);
     color: var(--lumo-success-text-color);
 }
-
 
 /* ==========================================================================
    AI Settings - bed protection table, safety layers, bed cards
@@ -1481,20 +1484,6 @@ img:fullscreen {
 .bp-warn { color: var(--lumo-warning-text-color, #e8a33d); }
 .bp-err { color: var(--lumo-error-text-color); }
 .bp-mut { color: var(--lumo-tertiary-text-color); }
-
-.bp-chip {
-    font-size: var(--lumo-font-size-xs);
-    padding: 2px 9px;
-    border-radius: 10px;
-    border: 1px solid var(--lumo-contrast-20pct);
-    color: var(--lumo-tertiary-text-color);
-    white-space: nowrap;
-}
-
-.bp-chip-ok {
-    border-color: var(--lumo-success-color);
-    color: var(--lumo-success-text-color);
-}
 
 .bp-chip-warn {
     border-color: var(--lumo-warning-color, #8a6520);
