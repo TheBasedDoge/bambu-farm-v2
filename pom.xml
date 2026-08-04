@@ -105,7 +105,21 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${compiler-plugin.version}</version>
-                </plugin>                    
+                </plugin>
+                <!--
+                    Pinned rather than left to Maven's default: whether the tests run at all depends on the
+                    surefire version, since only 3.x discovers JUnit 5 without extra providers. A silently
+                    skipped suite is worse than no suite - it reads as passing.
+
+                    3.5.x specifically, not 3.2.x: the Quarkus BOM brings JUnit Platform 1.13, and the older
+                    surefire builds its provider against an earlier platform API - the mismatch shows up as
+                    "failed to discover tests", i.e. a green build that ran nothing.
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.6</version>
+                </plugin>
                 <plugin>
                     <groupId>org.codehaus.mojo</groupId>
                     <artifactId>jaxb2-maven-plugin</artifactId>

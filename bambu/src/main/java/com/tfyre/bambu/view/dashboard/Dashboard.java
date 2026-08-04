@@ -208,6 +208,7 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
         }).setHeader("Remaining / ETA").setFlexGrow(2);
         grid.getColumns().forEach(c -> c.setResizable(true));
         grid.setColumnReorderingAllowed(true);
+        com.tfyre.bambu.view.GridLayoutMemory.remember(grid, "dashboard-table");
         grid.setAllRowsVisible(true);
         grid.setItems(overviewPrinters);
         add(grid);
@@ -526,11 +527,17 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
     }
 
     private void resetLayout() {
+        // Also clears every remembered grid column layout (bambufarm-grid-*), swept by prefix rather than listed
+        // one by one - there are twelve of them across the app and a new grid should not have to remember to
+        // register itself here. This is the escape hatch if a saved column layout ever ends up unusable.
         getElement().executeJs("""
                 localStorage.removeItem($0);
                 localStorage.removeItem($1);
                 localStorage.removeItem($2);
                 localStorage.removeItem($3);
+                Object.keys(localStorage)
+                      .filter(k => k.startsWith('bambufarm-grid-'))
+                      .forEach(k => localStorage.removeItem(k));
                 location.reload();""",
                 JS_ORDER_KEY, JS_SIZE_KEY, JS_SORT_KEY, JS_COLS_KEY);
     }

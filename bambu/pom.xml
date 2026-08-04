@@ -78,10 +78,45 @@
             <groupId>org.bouncycastle</groupId>
             <artifactId>bctls-jdk18on</artifactId>
         </dependency>
+
+        <!--
+            Plain JUnit 5, not quarkus-junit5: the logic worth testing here is static and pure (verdict parsing,
+            order arithmetic), so it needs no CDI container. Keeping it out of @QuarkusTest means the suite runs
+            in about a second, which is the difference between tests that run on every build and tests that get
+            skipped. Version comes from the Quarkus BOM.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            Declared explicitly, though surefire would otherwise supply its own: when the launcher's version
+            drifts from the platform the BOM pulls in, surefire reports "failed to discover tests" and the
+            build goes green having run nothing. Pinning it to the BOM's version removes that failure mode.
+        -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <defaultGoal>package quarkus:dev</defaultGoal>
         <plugins>
+            <!--
+                failIfNoTests, only in this module (common and server have no tests, and would fail on it).
+                The whole point of the suite is to catch a wrong answer before it reaches five printers; a
+                misconfiguration that quietly runs nothing and reports success would defeat that silently,
+                which is the worst way for a safety net to fail. Version comes from the parent.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>

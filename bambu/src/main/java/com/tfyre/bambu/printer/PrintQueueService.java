@@ -78,6 +78,8 @@ public class PrintQueueService {
     BambuPrinters printers;
     @Inject
     NotificationService notificationService;
+    @Inject
+    SimulationService simulation;
     /** Lazy to avoid an eager circular reference (AutoQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<AutoQueueService> autoQueueInstance;
@@ -359,6 +361,21 @@ public class PrintQueueService {
         executor.submit(() -> {
             try {
                 BambuPrinter.CommandPPF command = entry.command();
+                // Rehearsal: everything that got us here ran for real - eligibility, filament match, the
+                // bed-clear gate - but the irreversible half is skipped. No SD upload (don't leave files on a
+                // printer), no expected-weight registration (no print will arrive to match it), no lastStarted
+                // (nothing will end), and no print command. The entry still leaves the queue and onSuccess still
+                // runs, so the dispatcher drains and reports exactly as it would for real.
+                if (simulation.isEnabled()) {
+                    removeFirst(printerName, entry);
+                    Log.warnf("PrintQueueService: [SIMULATED] %s: would have started %s (plate %d) - simulate mode "
+                            + "is on, so nothing was sent to the printer", printerName, command.filename(),
+                            command.plateId());
+                    notificationService.notifyEvent("simulate_mode", printerName,
+                            "[SIMULATED] would have started %s on %s".formatted(command.filename(), printerName));
+                    onSuccess.run();
+                    return;
+                }
                 if (entry.source() == GcodeSource.LIBRARY) {
                     final File file = Path.of(config.batchPrint().library()).resolve(command.filename()).toFile();
                     if (!file.isFile()) {

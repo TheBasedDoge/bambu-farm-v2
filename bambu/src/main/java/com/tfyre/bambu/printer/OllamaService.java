@@ -100,6 +100,7 @@ public class OllamaService {
         if (urlOpt.isEmpty()) {
             return Optional.empty();
         }
+        final HttpResponse<String> response;
         try {
             final List<String> base64 = imagesJpeg.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList();
             final Map<String, Object> body = Map.of(
@@ -108,13 +109,16 @@ public class OllamaService {
                     "images", base64,
                     "stream", false
             );
-            final HttpRequest request = HttpRequest.newBuilder(URI.create(urlOpt.get() + "/api/generate"))
-                    .timeout(config.ollama().timeout())
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                    .build();
-
-            final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            final String json = mapper.writeValueAsString(body);
+            response = sendWithFallback(json);
+        } catch (Exception ex) {
+            Log.errorf(ex, "OllamaService: analyze failed: %s", ex.getMessage());
+            return Optional.empty();
+        }
+        if (response == null) {
+            return Optional.empty();
+        }
+        try {
             if (response.statusCode() >= 300) {
                 Log.errorf("OllamaService: HTTP %d: %s", response.statusCode(), response.body());
                 return Optional.empty();
@@ -168,6 +172,49 @@ public class OllamaService {
      */
     public Optional<AiResult> analyzePrompt(final byte[] imageJpeg, final String prompt, final String positiveKeyword, final Optional<String> context) {
         return analyze(imageJpeg, prompt, positiveKeyword, context);
+    }
+
+    /**
+     * POSTs to the primary Ollama server, falling back to {@code bambu.ollama.fallback-url} when it cannot be
+     * reached at all. Returns null when every endpoint fails, which callers treat as "no answer" - fail-closed.
+     * <p>
+     * <b>Only connection-level failures fail over</b> - unreachable host, timeout. An HTTP error status is
+     * returned as-is and an unreadable reply is handled upstream, because those mean the model DID answer, and
+     * asking a second model until you get a usable answer is not a safety check, it is shopping for one.
+     */
+    private HttpResponse<String> sendWithFallback(final String json) throws Exception {
+        final List<String> endpoints = new java.util.ArrayList<>();
+        config.ollama().url().ifPresent(endpoints::add);
+        config.ollama().fallbackUrl().filter(u -> !u.isBlank()).ifPresent(endpoints::add);
+
+        Exception last = null;
+        for (int i = 0; i < endpoints.size(); i++) {
+            final String base = endpoints.get(i);
+            try {
+                final HttpResponse<String> response = http.send(
+                        HttpRequest.newBuilder(URI.create(base + "/api/generate"))
+                                .timeout(config.ollama().timeout())
+                                .header("Content-Type", "application/json")
+                                .POST(HttpRequest.BodyPublishers.ofString(json))
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString());
+                if (i > 0) {
+                    Log.warnf("OllamaService: primary Ollama was unreachable - answered by the fallback at %s", base);
+                }
+                return response;
+            } catch (java.io.IOException | InterruptedException ex) {
+                if (ex instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                last = ex;
+                Log.warnf("OllamaService: %s unreachable (%s)%s", base, ex.getMessage(),
+                        i + 1 < endpoints.size() ? " - trying the fallback" : "");
+            }
+        }
+        if (last != null) {
+            Log.errorf("OllamaService: no Ollama endpoint answered - checks will fail closed");
+        }
+        return null;
     }
 
     /** Findings line: everything after "Problems:" / "Objects:" up to the next labelled line or the end. */

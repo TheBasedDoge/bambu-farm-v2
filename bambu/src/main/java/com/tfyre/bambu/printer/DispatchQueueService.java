@@ -82,6 +82,8 @@ public class DispatchQueueService {
     PrintAiService aiService;
     @Inject
     BedDiffService bedDiff;
+    @Inject
+    SimulationService simulation;
     // Only to re-derive post-print cooldowns after a restart - see seedCooldownsFromHistory().
     @Inject
     PrintHistoryService historyService;
@@ -609,8 +611,13 @@ public class DispatchQueueService {
                     () -> {
                         Log.infof("DispatchQueueService: dispatched %s to %s (%d left in pool)", job.part().path(), pd.name(), pool.size());
                         // The command was accepted - but "accepted" isn't "printing". Verify shortly.
-                        pendingStarts.put(pd.name(), new PendingStart(pd.name(), job.part(), job.orderRef(),
-                                Instant.now().plus(START_VERIFY_AFTER)));
+                        // Not while rehearsing: nothing was sent, so the printer will still be idle in 90s and
+                        // every simulated dispatch would "fail" verification, dumping the job back into the pool
+                        // and holding the printer for 20 minutes.
+                        if (!simulation.isEnabled()) {
+                            pendingStarts.put(pd.name(), new PendingStart(pd.name(), job.part(), job.orderRef(),
+                                    Instant.now().plus(START_VERIFY_AFTER)));
+                        }
                         notificationService.notifyEvent("auto_start", pd.name(),
                                 "Dispatched order job to %s: %s%s%s".formatted(pd.name(), job.part().path(),
                                         job.orderRef() == null ? "" : " (" + job.orderRef().label() + ")",

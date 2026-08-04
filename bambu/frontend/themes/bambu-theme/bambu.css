@@ -68,12 +68,34 @@
     }
 }
 
-/* Sidebar: narrower drawer with icon links */
+/* The app mark in the navbar - the same artwork as the browser tab and the installed PWA icon. */
+.main-header .header-mark {
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    border-radius: 6px;
+    display: block;
+}
+
+/* Sidebar: narrower drawer with icon links.
+   --bambu-rail-ms is the single source of truth for the collapse timing: the CSS transitions below and the
+   delayed resize dispatch in MainLayout both key off it, and they have to agree or the content reflows at the
+   wrong moment. Change one, change the other. */
+:root {
+    --bambu-rail-ms: 220ms;
+    --bambu-rail-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 vaadin-app-layout::part(drawer) {
     width: 200px;
     min-width: 200px;
     display: flex;
     flex-direction: column;
+    /* overflow-x hidden is what makes the collapse read as a flyout rather than a reflow: the labels slide
+       out under the edge instead of wrapping or being cut mid-glyph on the way. */
+    overflow-x: hidden;
+    transition: width var(--bambu-rail-ms) var(--bambu-rail-ease),
+                min-width var(--bambu-rail-ms) var(--bambu-rail-ease);
 }
 
 [slot="drawer"] a.drawer-link {
@@ -90,9 +112,27 @@ vaadin-app-layout::part(drawer) {
     color: var(--lumo-secondary-text-color);
 }
 
+/* The label animates via max-width + opacity, NOT display:none - display isn't animatable, and toggling it is
+   what made the old collapse snap. The label fades first and finishes narrowing after, so the icons settle
+   into the rail rather than arriving with text still on top of them. */
+[slot="drawer"] a.drawer-link > span {
+    max-width: 140px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-width var(--bambu-rail-ms) var(--bambu-rail-ease),
+                opacity calc(var(--bambu-rail-ms) * 0.6) ease;
+}
+
 /* Settings / logout pinned to the bottom of the drawer */
 [slot="drawer"].drawer-controls {
     margin-top: auto;
+    opacity: 1;
+    transition: opacity calc(var(--bambu-rail-ms) * 0.6) ease;
+}
+
+.drawer-reset-order {
+    margin-top: var(--lumo-space-xs);
+    color: var(--lumo-secondary-text-color);
 }
 
 /* Icon-only rail mode (desktop, toggled via the menu button) */
@@ -102,11 +142,52 @@ vaadin-app-layout.drawer-rail::part(drawer) {
 }
 
 vaadin-app-layout.drawer-rail [slot="drawer"] a.drawer-link > span {
-    display: none;
+    max-width: 0;
+    opacity: 0;
 }
 
+/* Hidden by opacity rather than display so it fades with everything else. pointer-events and visibility both
+   matter: an invisible checkbox that still takes clicks is worse than a visible one. */
 vaadin-app-layout.drawer-rail [slot="drawer"].drawer-controls {
-    display: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* Set while the rail state is restored from localStorage on load, so a remembered collapse doesn't play as an
+   animation on every page view. */
+vaadin-app-layout.no-anim::part(drawer),
+vaadin-app-layout.no-anim [slot="drawer"] a.drawer-link > span,
+vaadin-app-layout.no-anim [slot="drawer"].drawer-controls {
+    transition: none !important;
+}
+
+/* Drag-to-reorder the menu. The line marks where the item will land, on the edge the pointer is nearest -
+   an outline around the hovered row would say "drop onto this", which isn't what happens. */
+[slot="drawer"] a.drawer-link.nav-dragging {
+    opacity: 0.4;
+}
+
+[slot="drawer"] a.drawer-link.nav-drop-before {
+    box-shadow: inset 0 2px 0 0 var(--lumo-primary-color);
+}
+
+[slot="drawer"] a.drawer-link.nav-drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--lumo-primary-color);
+}
+
+/* Deliberately no cursor: grab on these. They are navigation links first - clicking is what you do with them
+   ninety-nine times out of a hundred - and a grab cursor would signal the rare action at the expense of the
+   common one. The "Reset menu order" button at the bottom is what tells you the order is yours to change. */
+
+/* Motion here is decoration - the rail works identically without it. Anyone who has asked their OS not to
+   animate things has asked for a reason. */
+@media (prefers-reduced-motion: reduce) {
+    vaadin-app-layout::part(drawer),
+    [slot="drawer"] a.drawer-link > span,
+    [slot="drawer"].drawer-controls {
+        transition: none;
+    }
 }
 
 .dashboard-view {
@@ -962,7 +1043,7 @@ img:fullscreen {
 /* Automation overview: responsive grid of stage cards */
 .automation-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
     gap: var(--lumo-space-l);
     width: 100%;
     align-items: start;
@@ -1275,10 +1356,17 @@ img:fullscreen {
     background-color: var(--lumo-success-color);
 }
 
+/* Secondary line under a cell's main value.
+   display:block is load-bearing, not cosmetic: this is rendered as a <span>, and after another inline
+   element (the AI verdict) an inline sub-line simply continues the same line - "- stalebed check unreliable" -
+   and its margin-top is ignored, because vertical margins do nothing on inline boxes. It only looked right in
+   the progress cell because the bar above it happens to be a <div>. */
 .pt-sub {
+    display: block;
     font-size: var(--lumo-font-size-xs);
     color: var(--lumo-tertiary-text-color);
     margin-top: 3px;
+    line-height: 1.3;
 }
 
 .pt-detail {
@@ -1614,4 +1702,706 @@ img:fullscreen {
     gap: 10px;
     flex-wrap: wrap;
     margin-bottom: 4px;
+}
+
+/* ── Automation overview: phone layout for the printer table ────────────────
+   The >=1101px layout is a 9-column grid. The existing <=1100px rule collapses
+   it to "92px 1fr", which pairs cells two-per-line in DOM order - readable on a
+   tablet, but on a phone the pairs are cramped and, because .pt-head is hidden,
+   a column of bare "-", "2 queued" and a tick has nothing saying what any of it
+   is. Below 700px each row becomes a stacked card instead, one field per line,
+   each labelled from the data-label the row stamps on every cell.
+   ------------------------------------------------------------------------- */
+@media screen and (max-width: 700px) {
+    .printer-table {
+        /* Already a column flex container; rows stop reading as table rows here, so space them as cards. */
+        gap: var(--lumo-space-s);
+    }
+
+    .pt-row {
+        grid-template-columns: 1fr;
+        row-gap: 5px;
+        padding: 12px 0 14px;
+    }
+
+    .pt-row > * {
+        display: flex;
+        align-items: baseline;
+        gap: var(--lumo-space-s);
+        min-width: 0;
+    }
+
+    .pt-row > *[data-label]:not([data-label=""]):not([data-label="Printer"]):not([data-label="View"])::before {
+        content: attr(data-label);
+        flex: 0 0 86px;
+        color: var(--lumo-tertiary-text-color);
+        font-size: var(--lumo-font-size-xs);
+        line-height: 1.5;
+    }
+
+    /* The printer name is the card's heading, not a labelled field - pull it to
+       the top and drop its label. The camera thumbnail follows it. */
+    .pt-row > *[data-label="Printer"] {
+        order: -2;
+        font-weight: 500;
+        font-size: var(--lumo-font-size-m);
+    }
+
+    .pt-row > *[data-label="View"] {
+        order: -1;
+    }
+
+    /* The progress cell holds the bar and its "21% - 912m left" line as SIBLINGS. As a flex row that puts
+       them beside each other and the text wraps mid-value. Grid instead: label in column 1, and both the bar
+       and its text land in column 2 on their own rows, which is the stacking the desktop layout has. */
+    .pt-row > *[data-label="Progress"] {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr);
+        column-gap: var(--lumo-space-s);
+        row-gap: 4px;
+        align-items: center;
+    }
+
+    .pt-row > *[data-label="Progress"] > * {
+        grid-column: 2;
+    }
+
+    .pt-row > *[data-label="Progress"] .pt-sub {
+        margin-top: 0;
+        white-space: nowrap;
+    }
+
+    /* Filament chips wrap rather than pushing the row wider than the screen. */
+    .pt-row > *[data-label="Filament"] {
+        flex-wrap: wrap;
+    }
+
+    /* Start next is a real target on a phone, and shouldn't sit under a label. */
+    .pt-row > *[data-label=""] vaadin-button {
+        width: 100%;
+    }
+
+    .pt-error {
+        margin-top: 6px;
+    }
+}
+
+/* Order title links straight to the order on Etsy/eBay - the reason you open this card is usually to go
+   print the label. Styled as a link only on hover so the card stays calm to read at a glance. */
+.order-line-link {
+    color: inherit;
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.order-line-link:hover,
+.order-line-link:focus-visible {
+    color: var(--lumo-primary-text-color);
+    text-decoration: underline;
+}
+
+/* Dispatch pool, merged into the top controls block underneath the live timer strip. A sub-block of that
+   card rather than a card of its own - a rule above it does the separating that a border used to. */
+.automation-timerslot:empty {
+    display: none;
+}
+
+.automation-pool {
+    margin-top: var(--lumo-space-m);
+    padding-top: var(--lumo-space-m);
+    border-top: 1px solid var(--lumo-contrast-10pct);
+}
+
+.automation-pool h4 {
+    margin-top: 0;
+}
+
+/* ── Horizontal overflow on narrow screens ──────────────────────────────────
+   Fixing the TRACK minimum (minmax(min(100%, …), 1fr)) is only half of it: a
+   grid or flex ITEM defaults to min-width:auto, i.e. it refuses to shrink below
+   its min-content width. One nowrap child - an order status, a long title - then
+   pushes the item past its track and the whole page scrolls sideways. These
+   containers hold text that is allowed to ellipsise, so their items may shrink.
+   ------------------------------------------------------------------------- */
+.automation-grid > *,
+.automation-bottom > *,
+.automation-full > * {
+    min-width: 0;
+}
+
+/* The order title is an <a> now, so the older ".order-line-main > span:first-child"
+   ellipsis rule no longer matches it. Blockify it inside the column flex so
+   overflow/ellipsis actually apply rather than the link forcing the row wide. */
+.order-line-main > * {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* A long buyer name or order number should wrap, never widen the card. */
+.order-line-sub {
+    overflow-wrap: anywhere;
+}
+
+/* =========================================================================
+   Overview - the wall display. Read from across the room, left on for months.
+
+   Everything scales off --wall-u, one number tied to viewport width. Making the
+   whole board readable from further away is a single edit, not forty; and on a
+   4K panel the layout grows with the screen instead of stranding 11px text in
+   the middle of it.
+
+   The rule the whole file follows: colour only ever means "something is wrong".
+   Nothing here is tinted for decoration, so a glance from three metres is a
+   binary question - is there colour, or isn't there.
+   ========================================================================= */
+.wall-view {
+    --wall-u: 1vw;
+    width: 100%;
+    height: 100%;
+    /* Containing block for the exit toggle. Without it that button positions itself against whatever ancestor
+       happens to be positioned - in an AppLayout, somewhere off in the app's own chrome. */
+    position: relative;
+    /* The burn-in walk and the overnight dim are both applied to THIS element - it is the one the view's
+       executeJs runs against, and it survives every rebuild. Putting the transition on the inner .wall instead
+       would leave the transform jumping between positions with nothing to ease it. */
+    transition: transform 4s linear, opacity 2s linear;
+}
+
+/* Dimmed rather than blanked overnight: the farm still runs at 3am and a red banner should be readable from
+   the doorway - it just shouldn't light the room. */
+.wall-view.wall-night {
+    opacity: 0.32;
+}
+
+.wall {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--wall-u) * 0.75);
+    padding: calc(var(--wall-u) * 0.9);
+}
+
+/* --- top bar --- */
+.wall-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.wall-brand {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--wall-u) * 0.6);
+}
+
+/* The app mark doubles as the way back to the menu - see OverviewView.buildBar. It sits in the layout rather
+   than floating in a corner, so it cannot land on top of the clock the way the old pill did. */
+.wall-mark {
+    width: calc(var(--wall-u) * 2.2);
+    height: calc(var(--wall-u) * 2.2);
+    border-radius: calc(var(--wall-u) * 0.5);
+    display: block;
+    cursor: pointer;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    transition: outline-color 150ms ease;
+}
+
+.wall-mark:hover {
+    outline-color: var(--lumo-contrast-30pct);
+}
+
+.wall-title {
+    font-size: calc(var(--wall-u) * 1.5);
+    font-weight: 500;
+}
+
+.wall-meta {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--wall-u) * 1.4);
+    font-size: calc(var(--wall-u) * 0.95);
+    color: var(--lumo-tertiary-text-color);
+}
+
+/* Ticked by the browser, never by the server. A frozen clock is the clearest
+   possible signal that what you are looking at is no longer true. */
+.wall-clock {
+    font-size: calc(var(--wall-u) * 1.5);
+    font-weight: 500;
+    color: var(--lumo-secondary-text-color);
+    font-variant-numeric: tabular-nums;
+    /* Wide enough for "12:47 pm" at its longest. Fixed rather than shrink-to-fit so the bar doesn't twitch
+       every time the hour rolls from 9 to 10, which on a screen in your peripheral vision reads as movement. */
+    min-width: calc(var(--wall-u) * 6.5);
+    text-align: right;
+}
+
+/* --- the banner ---
+   A persistent slot, so the banner appearing or disappearing never disturbs the printer row below it - which
+   holds a live stream that must not be re-parented. contents rather than block: the slot itself takes no space
+   and adds no gap, so the flex column reads exactly as if the banner were a direct child. */
+.wall-alert-slot {
+    display: contents;
+}
+
+.wall-alert {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--wall-u) * 1.2);
+    border-radius: calc(var(--wall-u) * 0.8);
+    padding: calc(var(--wall-u) * 1) calc(var(--wall-u) * 1.3);
+}
+
+.wall-alert.crit {
+    background: var(--lumo-error-color-10pct);
+    color: var(--lumo-error-text-color);
+    /* Only the critical banner breathes, and slowly. A warning that blinks is a
+       warning you cover with a sticky note. */
+    animation: wall-breathe 2.6s ease-in-out infinite;
+}
+
+.wall-alert.warn {
+    background: var(--lumo-warning-color-10pct, rgba(232, 163, 61, 0.12));
+    color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+@keyframes wall-breathe {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.72; }
+}
+
+.wall-alert-glyph {
+    font-size: calc(var(--wall-u) * 3);
+    line-height: 1;
+}
+
+.wall-alert-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.wall-alert-head {
+    font-size: calc(var(--wall-u) * 2);
+    font-weight: 500;
+    line-height: 1.15;
+}
+
+.wall-alert-sub {
+    font-size: calc(var(--wall-u) * 1);
+    opacity: 0.8;
+    margin-top: calc(var(--wall-u) * 0.2);
+}
+
+.wall-alert-aside {
+    text-align: right;
+    font-size: calc(var(--wall-u) * 1);
+    opacity: 0.9;
+    line-height: 1.5;
+    flex: none;
+}
+
+/* --- headline numbers --- */
+.wall-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: calc(var(--wall-u) * 0.75);
+}
+
+.wall-kpi {
+    background: var(--lumo-contrast-5pct);
+    border-radius: calc(var(--wall-u) * 0.8);
+    padding: calc(var(--wall-u) * 0.8) calc(var(--wall-u) * 1);
+}
+
+.wall-kpi-label {
+    font-size: calc(var(--wall-u) * 0.95);
+    color: var(--lumo-secondary-text-color);
+}
+
+.wall-kpi-value {
+    font-size: calc(var(--wall-u) * 3.2);
+    font-weight: 500;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-kpi-unit {
+    font-size: calc(var(--wall-u) * 1.3);
+    color: var(--lumo-tertiary-text-color);
+    font-weight: 400;
+}
+
+.wall-kpi-sub {
+    font-size: calc(var(--wall-u) * 0.95);
+    color: var(--lumo-secondary-text-color);
+}
+
+/* One tone vocabulary for the whole board, so the same colour never means two
+   things on one screen. */
+.tone-ok { color: var(--lumo-success-text-color); }
+.tone-warn { color: var(--lumo-warning-text-color, #e8a33d); }
+.tone-bad { color: var(--lumo-error-text-color); }
+
+/* --- printer tiles --- */
+.wall-printers {
+    display: grid;
+    gap: calc(var(--wall-u) * 0.75);
+    flex: 1;
+    /* Without this the camera tiles refuse to shrink and the row pushes the page
+       taller than the screen, which on a display nobody scrolls means the bottom
+       panels simply never appear. */
+    min-height: 0;
+}
+
+.wall-p {
+    background: var(--lumo-contrast-5pct);
+    border-radius: calc(var(--wall-u) * 0.8);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+    transition: outline-color 400ms ease, background 400ms ease;
+}
+
+.wall-p.bad {
+    background: var(--lumo-error-color-10pct);
+    outline-color: var(--lumo-error-color);
+}
+
+.wall-p.warn {
+    background: var(--lumo-warning-color-10pct, rgba(232, 163, 61, 0.12));
+    outline-color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+/* A still frame refreshed in place, never a live stream - five feeds running
+   permanently would hold the CPU forever, and a still answers the only question
+   this screen asks of a camera: is there a part on that plate. */
+.wall-cam {
+    flex: 1;
+    min-height: 0;
+    background: var(--lumo-shade-20pct);
+    position: relative;
+    /* Does the cropping for the live stream, which is deliberately sized larger than this box. Also stops a
+       tall camera image from ever pushing the tile's text off the bottom of the screen. */
+    overflow: hidden;
+}
+
+/* The live WebRTC player, for printers with stream.url configured (the H2D here). pointer-events:none is
+   deliberate: the mediamtx page has its own controls, and a wall display must not be pausable by anyone who
+   rests a hand on the desk.
+
+   Sized to CROP rather than fit. At 100% x 100% the player letterboxes a 16:9 stream inside a much taller
+   tile, which spent about a third of the tile on black bars - the one tile with a live picture was the one
+   showing the least of it. Instead the iframe is given the stream's own aspect ratio and sized from the
+   tile's HEIGHT, so it overflows sideways and the tile clips it: same behaviour as object-fit:cover on the
+   thumbnail tiles, and no magic zoom factor to re-tune when the tile geometry changes.
+
+   --wall-stream-aspect is the camera's ratio, not the tile's. Bambu chamber cams are 1920x1080; change it
+   here if a future model isn't. */
+.wall-cam-stream {
+    --wall-stream-aspect: 16 / 9;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    height: 100%;
+    width: auto;
+    aspect-ratio: var(--wall-stream-aspect);
+    /* For the rare tile that is WIDER than the stream - few printers on an ultrawide - fall back to filling
+       the width, which letterboxes top and bottom rather than leaving the sides bare. */
+    min-width: 100%;
+    border: 0;
+    display: block;
+    pointer-events: none;
+    background: var(--lumo-shade-20pct);
+}
+
+.wall-cam img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* Age of the frame, top-right of the camera tile. Not decoration: everything else on this screen is current by
+   construction, so a picture that silently isn't would be the one element quietly lying to you. Only ever
+   present on FALLBACK frames - the live JPEG stream is refreshed in place and needs no badge. */
+.wall-cam-age {
+    position: absolute;
+    top: calc(var(--wall-u) * 0.25);
+    right: calc(var(--wall-u) * 0.3);
+    font-size: calc(var(--wall-u) * 0.7);
+    line-height: 1.4;
+    padding: 0 calc(var(--wall-u) * 0.3);
+    border-radius: 99px;
+    background: var(--lumo-shade-50pct);
+    color: var(--lumo-tertiary-text-color);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+}
+
+/* Past ten minutes this stopped being "the current view of the plate" and became a photograph. */
+.wall-cam-age.stale {
+    color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+/* Past a day it is history. An H2D was showing a bed reference from ten days earlier, framed exactly like a
+   live thumbnail from twenty seconds ago - loud enough to notice is the whole point. */
+.wall-cam-age.ancient {
+    color: var(--lumo-error-text-color);
+    background: var(--lumo-error-color-50pct);
+}
+
+.wall-cam-none {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(var(--wall-u) * 0.85);
+    color: var(--lumo-tertiary-text-color);
+}
+
+.wall-p-body {
+    padding: calc(var(--wall-u) * 0.55) calc(var(--wall-u) * 0.8) calc(var(--wall-u) * 0.7);
+}
+
+.wall-p-name {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--wall-u) * 0.4);
+    font-size: calc(var(--wall-u) * 1.35);
+    font-weight: 500;
+}
+
+.wall-dot {
+    width: calc(var(--wall-u) * 0.6);
+    height: calc(var(--wall-u) * 0.6);
+    border-radius: 50%;
+    flex: none;
+    background: var(--lumo-contrast-30pct);
+}
+
+.wall-dot.ok { background: var(--lumo-success-color); }
+.wall-dot.warn { background: var(--lumo-warning-text-color, #e8a33d); }
+.wall-dot.bad { background: var(--lumo-error-color); }
+.wall-dot.off { background: var(--lumo-contrast-30pct); }
+
+.wall-p-job {
+    font-size: calc(var(--wall-u) * 0.95);
+    color: var(--lumo-secondary-text-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: calc(var(--wall-u) * 0.15);
+}
+
+.wall-track {
+    height: calc(var(--wall-u) * 0.45);
+    background: var(--lumo-contrast-20pct);
+    border-radius: 99px;
+    margin: calc(var(--wall-u) * 0.45) 0 calc(var(--wall-u) * 0.3);
+    overflow: hidden;
+}
+
+.wall-fill {
+    height: 100%;
+    background: var(--lumo-success-color);
+    border-radius: 99px;
+    transition: width 600ms ease;
+}
+
+.wall-fill.bad {
+    background: var(--lumo-error-color);
+}
+
+.wall-p-foot {
+    display: flex;
+    justify-content: space-between;
+    font-size: calc(var(--wall-u) * 0.9);
+    color: var(--lumo-secondary-text-color);
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- bottom panels --- */
+.wall-bottom {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    gap: calc(var(--wall-u) * 0.75);
+}
+
+.wall-panel {
+    background: var(--lumo-contrast-5pct);
+    border-radius: calc(var(--wall-u) * 0.8);
+    padding: calc(var(--wall-u) * 0.7) calc(var(--wall-u) * 1);
+    min-width: 0;
+}
+
+.wall-panel-h {
+    font-size: calc(var(--wall-u) * 0.95);
+    color: var(--lumo-secondary-text-color);
+    margin-bottom: calc(var(--wall-u) * 0.55);
+}
+
+.wall-stages {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: calc(var(--wall-u) * 0.5);
+}
+
+.wall-stage {
+    background: var(--lumo-contrast-5pct);
+    border-radius: calc(var(--wall-u) * 0.5);
+    padding: calc(var(--wall-u) * 0.4) 0;
+    text-align: center;
+}
+
+/* Tinted only when the count is above zero - a green "0 ready to ship" is a
+   cheerful way of saying nothing happened. */
+.wall-stage.ship {
+    background: var(--lumo-success-color-10pct);
+}
+
+.wall-stage.ship .wall-stage-n,
+.wall-stage.ship .wall-stage-l {
+    color: var(--lumo-success-text-color);
+}
+
+.wall-stage-n {
+    font-size: calc(var(--wall-u) * 2);
+    font-weight: 500;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-stage-l {
+    font-size: calc(var(--wall-u) * 0.85);
+    color: var(--lumo-secondary-text-color);
+}
+
+.wall-row {
+    display: flex;
+    justify-content: space-between;
+    gap: calc(var(--wall-u) * 0.8);
+    font-size: calc(var(--wall-u) * 0.95);
+    padding: calc(var(--wall-u) * 0.22) 0;
+}
+
+.wall-row-l {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.wall-row-r {
+    color: var(--lumo-secondary-text-color);
+    flex: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-row.tone-ok .wall-row-l { color: var(--lumo-success-text-color); }
+.wall-row.tone-bad .wall-row-l,
+.wall-row.tone-bad .wall-row-r { color: var(--lumo-error-text-color); }
+.wall-row.tone-warn .wall-row-r { color: var(--lumo-warning-text-color, #e8a33d); }
+
+.wall-sep {
+    border-top: 1px solid var(--lumo-contrast-10pct);
+    margin: calc(var(--wall-u) * 0.45) 0;
+}
+
+.wall-att {
+    display: flex;
+    align-items: baseline;
+    gap: calc(var(--wall-u) * 0.5);
+    font-size: calc(var(--wall-u) * 0.95);
+    padding: calc(var(--wall-u) * 0.2) 0;
+}
+
+.wall-att-l {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wall-att-when {
+    color: var(--lumo-tertiary-text-color);
+    font-variant-numeric: tabular-nums;
+    flex: none;
+}
+
+.wall-clear {
+    color: var(--lumo-success-text-color);
+    font-size: calc(var(--wall-u) * 1.1);
+    padding: calc(var(--wall-u) * 0.4) 0;
+}
+
+.wall-quiet {
+    font-size: calc(var(--wall-u) * 0.9);
+    color: var(--lumo-tertiary-text-color);
+    padding: calc(var(--wall-u) * 0.25) 0;
+}
+
+/* On a phone or a laptop this stops being a wall display and becomes a page: the
+   viewport-derived unit would produce 4px text, and five camera tiles in a row
+   would be thumbnails of thumbnails. Pinned to a readable size and stacked. */
+@media screen and (max-width: 900px) {
+    .wall-view {
+        --wall-u: 9px;
+    }
+    .wall {
+        height: auto;
+    }
+    .wall-printers {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+    .wall-kpis {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .wall-bottom {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .wall-cam {
+        height: calc(var(--wall-u) * 8);
+        flex: none;
+    }
+}
+
+/* --- fullscreen: the wall display owns the whole screen -------------------
+   The class is put on vaadin-app-layout by OverviewView and removed again when it
+   detaches. Hiding the parts is not enough on its own: AppLayout reserves space for
+   the navbar and drawer through these custom properties, and leaving them set would
+   hide the chrome but keep the hole where it used to be. */
+vaadin-app-layout.wall-fullscreen {
+    --vaadin-app-layout-navbar-offset-size: 0px;
+    --vaadin-app-layout-navbar-offset-size-bottom: 0px;
+    --vaadin-app-layout-drawer-offset-size: 0px;
+}
+
+vaadin-app-layout.wall-fullscreen::part(navbar),
+vaadin-app-layout.wall-fullscreen::part(drawer) {
+    display: none;
+}
+
+
+/* The pointer hides itself after a few seconds of stillness. An idle cursor parked over
+   a printer tile is a distraction at best, and one more unmoving bright pixel at worst.
+   Moving the mouse brings it straight back, which is also how you reach the app mark. */
+.wall-view:not(.wall-awake) {
+    cursor: none;
+}
+
+/* No pointer to move means no way to wake it, so nothing may depend on being awake to be usable. The mark is
+   part of the layout and always visible, so only the cursor rule needs undoing here. */
+@media (hover: none), screen and (max-width: 900px) {
+    .wall-view:not(.wall-awake) {
+        cursor: auto;
+    }
 }

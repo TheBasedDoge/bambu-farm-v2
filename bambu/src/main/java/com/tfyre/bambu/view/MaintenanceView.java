@@ -158,6 +158,7 @@ public class MaintenanceView extends VerticalLayout implements NotificationHelpe
         });
 
         grid.setColumnReorderingAllowed(true);
+        GridLayoutMemory.remember(grid, "maintenance");
         grid.getColumns().forEach(c -> c.setResizable(true));
         grid.sort(GridSortOrder.asc(colName).build());
     }
@@ -193,6 +194,7 @@ public class MaintenanceView extends VerticalLayout implements NotificationHelpe
         }).setFlexGrow(2);
         taskGrid.setAllRowsVisible(true);
         taskGrid.setColumnReorderingAllowed(true);
+        GridLayoutMemory.remember(taskGrid, "maintenance-tasks");
         taskGrid.getColumns().forEach(c -> c.setResizable(true));
         reload.run();
 

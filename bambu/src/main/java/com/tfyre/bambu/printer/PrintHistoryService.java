@@ -41,6 +41,43 @@ public class PrintHistoryService {
 
     }
 
+    /** Prints that ended today, split by outcome, with the filament they consumed. */
+    public record TodayStats(int finished, int failed, double grams) {
+
+    }
+
+    /**
+     * Today's throughput.
+     * <p>
+     * Counted by <b>local calendar day</b>, not a rolling 24 hours: the question this answers is "how has today
+     * gone", and a rolling window answers a different one - it would still be reporting yesterday evening's
+     * prints at breakfast. See the zone logged at startup; a container with no {@code TZ} counts UTC days, which
+     * rolls this over mid-evening for most of the world.
+     * <p>
+     * Grams are counted only for finished prints, matching how the spool decrement works: the figure is the
+     * slicer's estimate for a whole plate, so charging it against a print that stopped part-way would overstate
+     * it.
+     */
+    public synchronized TodayStats getTodayStats() {
+        final java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+        final java.time.LocalDate day = java.time.LocalDate.now(zone);
+        int finished = 0;
+        int failed = 0;
+        double grams = 0;
+        for (final PrintJob job : jobs) {
+            if (job.ended() == null || !job.ended().atZoneSameInstant(zone).toLocalDate().equals(day)) {
+                continue;
+            }
+            if ("Finished".equals(job.result())) {
+                finished++;
+                grams += Math.max(0, job.grams());
+            } else {
+                failed++;
+            }
+        }
+        return new TodayStats(finished, failed, grams);
+    }
+
     /** A print currently under way. Persisted - see {@link #saveInFlight()}. */
     public record RunningJob(String file, OffsetDateTime started, double grams, String trigger, OrderRef orderRef) {
 
@@ -172,6 +209,16 @@ public class PrintHistoryService {
         }
         // Always - a farm with no history yet can still have been restarted mid-print
         loadInFlight();
+
+        // The zone every calendar-day decision in the app is made in - "prints today", History's day grouping,
+        // the daily-summary cron. A container with no TZ set runs in UTC, which silently rolls "today" over in
+        // the evening for anyone west of Greenwich: the counter reads 0 while the printers are still warm, and
+        // nothing anywhere says why. One line at startup turns that into a ten-second diagnosis.
+        final java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+        Log.infof("PrintHistoryService: calendar days are counted in %s (local time now %s)%s", zone,
+                java.time.LocalDateTime.now(zone).withNano(0),
+                "UTC".equals(zone.getId()) || "Z".equals(zone.getId())
+                        ? " - if that isn't your zone, set TZ on the container; 'today' will be wrong otherwise" : "");
     }
 
     private synchronized void save(final boolean force) {

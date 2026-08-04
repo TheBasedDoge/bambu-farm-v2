@@ -150,10 +150,15 @@ git log --format='%s' "$RESET_TO..HEAD" | ForEach-Object { "     [{0}] {1}" -f $
 if ($NoPush) { Write-Host "`n-NoPush given. Run: git push --force-with-lease fork main" -ForegroundColor Yellow; exit 0 }
 
 Step '5. Force-pushing to fork'
-git push --force-with-lease fork main
+# Explicit expected value, NOT bare --force-with-lease. The bare form compares against the remote-tracking ref
+# refs/remotes/fork/main, and this repo has only ever fetched from origin - so that ref does not exist and the
+# push is rejected with "stale info" before it even contacts the server. Naming the SHA we read in preflight
+# gives the same protection without depending on tracking refs.
+git fetch fork main 2>&1 | Out-Null   # also creates the tracking ref, so the bare form works in future
+git push --force-with-lease=main:$remote fork main
 if ($LASTEXITCODE -ne 0) {
-    Fail ("push rejected. Nothing local is lost - `git reset --hard pre-tidy` restores the old history. " +
-          "--force-with-lease refuses when the remote moved since this script read it.")
+    Fail ("push rejected. Nothing local is lost - ``git reset --hard pre-tidy`` restores the old history. " +
+          "If it says 'stale info' the fork moved since preflight; re-run. Any other error is likely auth.")
 }
 Ok 'pushed'
 git log --oneline -3

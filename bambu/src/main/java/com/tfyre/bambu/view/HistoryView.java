@@ -209,6 +209,7 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
         }).setHeader("Result");
         grid.getColumns().forEach(c -> c.setResizable(true));
         grid.setColumnReorderingAllowed(true);
+        GridLayoutMemory.remember(grid, "history");
         grid.sort(GridSortOrder.desc(colStarted).build());
     }
 

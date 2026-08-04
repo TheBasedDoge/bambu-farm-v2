@@ -837,6 +837,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             grid.setAllRowsVisible(true);
             grid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES);
             grid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(grid, "ai-status");
             grid.getColumns().forEach(c -> c.setResizable(true));
         }
 
@@ -881,6 +882,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             historyGrid.setAllRowsVisible(true);
             historyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             historyGrid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(historyGrid, "ai-history");
             historyGrid.getColumns().forEach(c -> c.setResizable(true));
             historyGrid.addItemClickListener(e -> showSnapshotDialog(e.getItem()));
         }

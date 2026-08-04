@@ -19,6 +19,11 @@ services:
     bambuweb:
         image: azul/zulu-openjdk:21-latest
         restart: always
+        environment:
+            # Without this the container runs in UTC, and anything the app reasons about by CALENDAR DAY is
+            # wrong for you: the "Today" counter rolls over mid-evening, History groups by the wrong day, and
+            # a daily-summary cron set for 07:00 fires at 07:00 UTC. Set it to your own zone.
+            TZ: America/New_York
         volumes:
             - ./bambu-web-X.X.X-runner.jar:/bambu-web-runner.jar
             - ./bambu-web-env.txt:/.env
@@ -37,16 +42,16 @@ services:
             - mediamtx
             - bambuweb
 
-    h2d:
+    printer1:
         extends:
             file: common-liveview.yml
             service: liveview
         depends_on:
             - mediamtx
         environment:
-            PRINTER_HOST: 192.168.0.182
-            PRINTER_ID: printer5
-            PRINTER_ACCESS_CODE: c909a947
+            PRINTER_HOST: FIXME_this_is_my_printer_ip_or_host
+            PRINTER_ID: FIXME_this_is_my_printer_id
+            PRINTER_ACCESS_CODE: FIXME_this_is_my_printer_access_code
 
 #    printer2:
 #        extends:

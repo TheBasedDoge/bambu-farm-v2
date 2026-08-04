@@ -449,6 +449,7 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
                 .setHeader("Actions").setFlexGrow(2);
         grid.getColumns().forEach(c -> c.setResizable(true));
         grid.setColumnReorderingAllowed(true);
+        GridLayoutMemory.remember(grid, "sdcard");
         grid.addItemDoubleClickListener(l -> doDoubleClick(l.getItem()));
         grid.setSelectionMode(Grid.SelectionMode.MULTI);
         grid.addSelectionListener(l -> deleteSelected.setEnabled(!l.getAllSelectedItems().isEmpty()));

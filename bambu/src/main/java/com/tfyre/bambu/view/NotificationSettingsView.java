@@ -58,6 +58,9 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
             new EventDef("order_printed", "Order Fully Printed",
                     "Every print job for a marketplace order has finished - ready to ship"),
+            new EventDef("simulate_mode", "Simulate Mode",
+                    "What a rehearsal would have done - a print it would have started, an order it left alone, "
+                    + "and the notice when simulate mode switches itself off"),
             new EventDef("order_needs_requeue", "Order Needs Re-Queue",
                     "A print for an order failed or was stopped and nothing will reprint it - the order is short a "
                     + "part until you queue it again"),

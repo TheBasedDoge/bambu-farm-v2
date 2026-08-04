@@ -70,6 +70,8 @@ public class AutoQueueService {
     OrderTrackingService tracking;
     @Inject
     NotificationService notificationService;
+    @Inject
+    SimulationService simulation;
     /** Lazy to avoid an eager circular reference (DispatchQueueService injects this service for eligibility). */
     @Inject
     jakarta.enterprise.inject.Instance<DispatchQueueService> dispatchInstance;
@@ -151,6 +153,18 @@ public class AutoQueueService {
     public synchronized boolean processOrder(final String market, final String orderId, final String orderLabel,
             final List<AutoQueueItem> items) {
         if (!isEnabled()) {
+            return false;
+        }
+        // The one thing a rehearsal must never do. Running a REAL order through simulate mode would mark it
+        // queued and register its jobs, and it would then never print for real - a silently lost order, which is
+        // strictly worse than not rehearsing at all. So while simulating, real orders are left completely
+        // untouched: not queued, not marked, not counted. Queue something by hand to exercise the pipeline.
+        if (simulation.isEnabled()) {
+            Log.infof("AutoQueueService: %s NOT auto-queued - simulate mode is on, so real orders are left alone",
+                    orderLabel);
+            notificationService.notifyEvent("simulate_mode", market,
+                    "[SIMULATED] %s was NOT queued - simulate mode is on. It will queue normally once simulate "
+                            .formatted(orderLabel) + "mode ends.");
             return false;
         }
         if (tracking.queuedAt(market, orderId).isPresent() || tracking.isDismissed(market, orderId)) {

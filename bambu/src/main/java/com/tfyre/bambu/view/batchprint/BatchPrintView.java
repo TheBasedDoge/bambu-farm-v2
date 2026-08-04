@@ -198,6 +198,7 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
 
         grid.getColumns().forEach(c -> c.setResizable(true));
         grid.setColumnReorderingAllowed(true);
+        com.tfyre.bambu.view.GridLayoutMemory.remember(grid, "batchprint");
         grid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT);
 
         grid.sort(GridSortOrder.asc(colName).build());

@@ -3,6 +3,7 @@ package com.tfyre.bambu.view;
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.printer.AutoQueueService;
+import com.tfyre.bambu.printer.SimulationService;
 import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
@@ -36,6 +37,7 @@ import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.orderedlayout.VerticalLayout;
 import com.vaadin.flow.component.tabs.Tab;
 import com.vaadin.flow.component.tabs.Tabs;
+import com.vaadin.flow.server.StreamResource;
 import com.vaadin.flow.router.PageTitle;
 import com.vaadin.flow.router.Route;
 import jakarta.annotation.security.RolesAllowed;
@@ -43,7 +45,6 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -89,6 +90,12 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     @Inject
     AutoQueueService autoQueueService;
     @Inject
+    SimulationService simulation;
+    @Inject
+    com.tfyre.bambu.printer.BedDiffService bedDiff;
+    @Inject
+    com.tfyre.bambu.printer.BedReferenceService bedReference;
+    @Inject
     com.tfyre.bambu.printer.DispatchQueueService dispatchQueue;
     @Inject
     OrderTrackingService tracking;
@@ -131,6 +138,9 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     private Optional<ScheduledFuture<?>> future = Optional.empty();
     /** The controls card currently in the DOM - the timer strip is parented into it after each rebuild. */
     private Div liveControls;
+    /** Slot inside the committed controls card that holds the live timer strip. */
+    private Div pendingTimerSlot;
+    private Div liveTimerSlot;
     /** Printer rows the user has expanded; kept across rebuilds and part of the change-detection key. */
     private final java.util.Set<String> expandedPrinters = new java.util.LinkedHashSet<>();
     /** Camera images built during the current pass; promoted to {@link #liveCams} only if that pass is committed. */
@@ -211,7 +221,6 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         final Div controls = buildControlsSection(key);
         sections.add(controls);
         sections.add(buildPrinterTable(key));
-        sections.add(buildDispatchPoolCard(key));
         // Orders + Recently finished share their own two-column strip. Left in the outer auto-fit grid they sat in
         // tracks 1-2 of however many 460px tracks the window allowed, with the rest empty - auto-fit can't collapse
         // tracks that the full-width sections above are spanning.
@@ -225,6 +234,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             overview.removeAll();
             sections.forEach(overview::add);
             liveControls = controls;
+            liveTimerSlot = pendingTimerSlot;
             // Only adopt the cameras we actually put on screen. A no-change refresh still BUILDS a whole throwaway
             // tree, and adopting those would leave us pushing frames into detached components while the visible
             // ones went stale - the same trap the timer strip above documents.
@@ -235,8 +245,8 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         // whole DOM once a second. Instead it's a held component parented into whichever controls card is
         // actually on screen (never into a throwaway one built for a no-change refresh, which would silently
         // steal it out of the visible DOM).
-        if (liveControls != null && pendingTimers.getParent().filter(p -> p == liveControls).isEmpty()) {
-            liveControls.add(pendingTimers);
+        if (liveTimerSlot != null && pendingTimers.getParent().filter(p -> p == liveTimerSlot).isEmpty()) {
+            liveTimerSlot.add(pendingTimers);
         }
         updatePendingTimers();
         updateCameras();
@@ -394,6 +404,25 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification("Auto-requeue " + (autoQueueService.isAutoRequeueEnabled() ? "enabled" : "disabled"));
             forceRefresh();
         });
+        // Rehearsal switch. Placed with the other master toggles because its effect is farm-wide, and shown with
+        // its remaining minutes so it can't sit on unnoticed - while it's on, real orders are deliberately NOT
+        // queued, which looks exactly like a farm that has quietly stopped working.
+        final boolean simulating = simulation.isEnabled();
+        key.append(simulating).append('|');
+        final Button simBtn = bigToggle(simulating
+                ? "SIMULATING %s".formatted(simulation.minutesRemaining().map("%dm left"::formatted).orElse(""))
+                : "Simulate", simulating,
+                simulating
+                        ? "Nothing is printing for real and new orders are being left alone. Click to turn OFF."
+                        : "Rehearse the pipeline: dispatch, filament match and the bed check all run for real, "
+                                + "but nothing is sent to a printer. Real orders are left alone while it's on.");
+        simBtn.addClickListener(e -> {
+            simulation.setEnabled(!simulation.isEnabled());
+            showNotification(simulation.isEnabled()
+                    ? "Simulate mode ON - nothing will print, and new orders will not be queued"
+                    : "Simulate mode off - printing for real again");
+            forceRefresh();
+        });
         // Action (not a toggle): you've just cleared the beds and want the waiting order jobs to go NOW rather
         // than waiting out the dispatcher's per-printer backoff.
         final int waiting = dispatchQueue.size();
@@ -410,18 +439,22 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification(dispatchQueue.dispatchNow());
             forceRefresh();
         });
-        controls.add(aqBtn, aiBtn, asBtn, rqBtn, dispatchBtn);
+        controls.add(aqBtn, aiBtn, asBtn, rqBtn, simBtn, dispatchBtn);
         strip.add(controls);
 
         // Headline numbers: the four things worth knowing before reading anything else on the page.
         final int parked = dispatchQueue.parkedCount();
         final long inProgressOrders = inProgressOrders().size();
+        // A printer whose bed gate is armed but whose reference can't be trusted is running unprotected - the
+        // exact state that started a print on an occupied bed twice. It belongs in the count you actually read.
+        final long unprotected = details.stream().filter(d -> bedUnprotected(d.name())).count();
         final long attention = parked
                 + details.stream().filter(d -> aiService.getLastResult(d.name())
                         .filter(r -> !r.good()).isPresent()).count()
+                + unprotected
                 + (dispatchQueue.getBlockedKind() == com.tfyre.bambu.printer.DispatchQueueService.BlockKind.ATTENTION
                         && dispatchQueue.getBlockedStatus().isPresent() ? 1 : 0);
-        key.append(parked).append(inProgressOrders).append(attention).append('|');
+        key.append(parked).append(inProgressOrders).append(attention).append(unprotected).append('|');
 
         final Div kpis = new Div();
         kpis.addClassName("automation-kpis");
@@ -436,8 +469,23 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         kpis.add(kpi("Waiting to dispatch", String.valueOf(dispatchQueue.size()),
                 parked > 0 ? "%d parked".formatted(parked) : "in the pool", parked > 0 ? "var(--lumo-error-text-color)" : null));
         kpis.add(kpi("Printing", String.valueOf(printing), "of %d printers".formatted(details.size()), null));
-        kpis.add(kpi("Needs attention", String.valueOf(attention), attention == 0 ? "all clear" : "see below",
+        kpis.add(kpi("Needs attention", String.valueOf(attention),
+                attention == 0 ? "all clear"
+                        : unprotected > 0 ? "%d bed check%s unreliable".formatted(unprotected, unprotected == 1 ? "" : "s")
+                        : "see below",
                 attention > 0 ? "var(--lumo-warning-text-color, #e8a33d)" : "var(--lumo-success-text-color)"));
+
+        // Today's throughput. Deliberately counts by LOCAL day rather than "last 24h" - "how has today gone" is
+        // the question being asked, and a rolling window answers a different one.
+        final PrintHistoryService.TodayStats today = today();
+        key.append(today.finished()).append(today.failed()).append((long) today.grams()).append('|');
+        final double kg = today.grams() / 1000d;
+        final String gramsSub = config.costPerKg() > 0 && today.grams() > 0
+                ? "%.0f g · ~%s%.2f".formatted(today.grams(), config.currencySymbol(), kg * config.costPerKg())
+                : "%.0f g filament".formatted(today.grams());
+        kpis.add(kpi("Today", String.valueOf(today.finished()),
+                today.failed() > 0 ? "%d failed · %s".formatted(today.failed(), gramsSub) : gramsSub,
+                today.failed() > 0 ? "var(--lumo-warning-text-color, #e8a33d)" : null));
         strip.add(kpis);
 
         // The dispatch pool fails closed: if the AI gate can't pass, order jobs sit there indefinitely. Say so
@@ -454,8 +502,50 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             strip.add(warnLine);
         }
 
+        // The live timer strip is parented into this slot after the DOM swap, so the dispatch pool below it
+        // always renders underneath the timers rather than wherever an append happened to land.
+        pendingTimerSlot = new Div();
+        pendingTimerSlot.addClassName("automation-timerslot");
+        strip.add(pendingTimerSlot);
+
+        // Dispatch pool, merged into this top block rather than sitting as its own section further down.
+        strip.add(buildDispatchPoolCard(key));
+
         key.append('§');
         return strip;
+    }
+
+    /**
+     * Today's throughput. Lives on {@link PrintHistoryService} rather than here because the Overview wall display
+     * asks the same question, and two views computing "today" separately is how they end up disagreeing.
+     */
+    private PrintHistoryService.TodayStats today() {
+        return historyService.getTodayStats();
+    }
+
+    /**
+     * Whether a printer's bed check can currently tell an empty bed from an occupied one.
+     * <p>
+     * Empty when there's nothing to say: no reference saved, the backstop switched off, or no reading yet. A
+     * printer that isn't opted into auto-start or dispatch is excluded too - its bed gate never runs, so its
+     * reference being stale isn't a problem to report.
+     * <p>
+     * Same {@link com.tfyre.bambu.printer.BedDiffService#trustOf} the AI Settings page uses, so the two pages
+     * cannot describe the same reading differently.
+     */
+    private Optional<com.tfyre.bambu.printer.BedDiffService.Trust> bedTrust(final String printerName) {
+        if (!bedDiff.isEnabled()
+                || !(autoStartService.isEnabled(printerName) || autoQueueService.isPrinterEnabled(printerName))) {
+            return Optional.empty();
+        }
+        return bedDiff.getLastMeasurement(printerName).map(bedDiff::trustOf);
+    }
+
+    /** True when this printer's bed gate is running but its reference can no longer be relied on. */
+    private boolean bedUnprotected(final String printerName) {
+        return bedTrust(printerName)
+                .filter(t -> t != com.tfyre.bambu.printer.BedDiffService.Trust.PROTECTING)
+                .isPresent();
     }
 
     private static Div kpi(final String label, final String value, final String sub, final String color) {
@@ -485,6 +575,26 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
      * two cards meant reading the same five machines twice; the AI reasoning that used to fill the page now lives
      * in the expansion, where it doesn't compete with the at-a-glance state.
      */
+    /**
+     * The printer table's columns, in order. Used for the header AND stamped onto each cell as {@code data-label}
+     * so the phone layout can print it in front of the value - on a narrow screen the header row is hidden, and
+     * without this a column of bare "—", "2 queued" and "✓" has nothing saying what any of it is.
+     * <p>
+     * One list rather than two so the header and the labels cannot drift apart. The blank last entry is the
+     * actions cell, which needs no label.
+     */
+    private static final List<String> PT_COLUMNS = List.of(
+            "View", "Printer", "Job", "Progress", "Filament", "Queue", "AI check", "Auto-start", "");
+
+    /**
+     * Adds one cell to a printer row, tagging it with the column's label for the phone layout. Cells go in the
+     * order of {@link #PT_COLUMNS} - the header, the desktop grid template and this all depend on that order.
+     */
+    private static void ptCell(final Div row, final int column, final com.vaadin.flow.component.Component cell) {
+        cell.getElement().setAttribute("data-label", PT_COLUMNS.get(column));
+        row.add(cell);
+    }
+
     private Div buildPrinterTable(final StringBuilder key) {
         final Div sec = section();
         sec.addClassName("automation-full");
@@ -495,8 +605,9 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
 
         final Div head = new Div();
         head.addClassName("pt-head");
-        head.add(new Span("View"), new Span("Printer"), new Span("Job"), new Span("Progress"),
-                new Span("Filament"), new Span("Queue"), new Span("AI check"), new Span("Auto-start"), new Span(""));
+        for (final String label : PT_COLUMNS) {
+            head.add(new Span(label));
+        }
         table.add(head);
 
         for (final BambuPrinters.PrinterDetail detail : sortedPrinters()) {
@@ -510,7 +621,6 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             }
         }
         sec.add(table);
-        sec.add(secondary("Click a printer for its queue, settings and last AI check."));
         key.append('§');
         return sec;
     }
@@ -542,7 +652,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             forceRefresh();
         });
 
-        row.add(cameraCell(detail));
+        ptCell(row, 0, cameraCell(detail));
 
         final boolean faulted = problems(printer).isPresent();
         final Span dot = new Span(open ? "▾ ● " : "▸ ● ");
@@ -554,7 +664,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         link.addClassName("pt-name");
         link.setTitle("Open " + name + "'s page");
         link.getElement().addEventListener("click", e -> { }).stopPropagation();
-        row.add(new Div(dot, link));
+        ptCell(row, 1, new Div(dot, link));
 
         final Span file = new Span(state.isPrinting()
                 ? jobName(printer).orElse("(unknown file)") : state.getDescription().toLowerCase());
@@ -565,11 +675,11 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         } else if (!state.isPrinting()) {
             file.getStyle().setColor("var(--lumo-secondary-text-color)");
         }
-        row.add(fileCell);
+        ptCell(row, 2, fileCell);
 
-        row.add(progressCell(printer, state));
-        row.add(filamentCell(printer));
-        row.add(new Span(queued == 0 ? "—" : "%d queued".formatted(queued)));
+        ptCell(row, 3, progressCell(printer, state));
+        ptCell(row, 4, filamentCell(printer));
+        ptCell(row, 5, new Span(queued == 0 ? "—" : "%d queued".formatted(queued)));
 
         // A verdict from before the printer's current situation is worse than no verdict - a green tick next to a
         // faulted printer reads as "all fine". Grey those out rather than showing them as current.
@@ -580,14 +690,28 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         aiCell.getStyle().setColor(stale || ai.isEmpty() ? "var(--lumo-contrast-50pct)"
                 : ai.get().good() ? "var(--lumo-success-text-color)" : "var(--lumo-error-text-color)");
         ai.ifPresent(r -> aiCell.setTitle("%s — %s".formatted(ago(r.checkedAt()), truncate(r.description(), 200))));
-        row.add(aiCell);
+
+        // A green tick beside a printer whose bed reference has aged out is the misleading combination: the AI
+        // said clear, and nothing deterministic was able to check it. Say so in the same cell.
+        final Div aiWrap = new Div(aiCell);
+        bedTrust(name).filter(t -> t != com.tfyre.bambu.printer.BedDiffService.Trust.PROTECTING)
+                .ifPresent(t -> {
+                    final Span warn = new Span(t == com.tfyre.bambu.printer.BedDiffService.Trust.OVER_LIMIT
+                            ? "bed over limit" : "bed check unreliable");
+                    warn.addClassName("pt-sub");
+                    warn.getStyle().setColor("var(--lumo-warning-text-color, #e8a33d)");
+                    bedDiff.getLastMeasurement(name).ifPresent(m ->
+                            warn.setTitle(bedDiff.meaningOf(m)));
+                    aiWrap.add(warn);
+                });
+        ptCell(row, 6, aiWrap);
 
         final String autoText = faulted ? "blocked: error" : auto;
         final Span autoCell = new Span(autoText);
         autoCell.getStyle().setColor(faulted || autoText.startsWith("blocked") || autoText.startsWith("paused")
                 ? "var(--lumo-error-text-color)"
                 : "off".equals(autoText) ? "var(--lumo-contrast-50pct)" : "var(--lumo-secondary-text-color)");
-        row.add(autoCell);
+        ptCell(row, 7, autoCell);
 
         // Start Next lives on the row so a ready printer with a queue is one click from running.
         // stopPropagation matters: without it the click also bubbles to the row and toggles the expansion.
@@ -599,7 +723,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             start.addClickListener(e -> doStartNext(detail));
             action.add(start);
         }
-        row.add(action);
+        ptCell(row, 8, action);
         return row;
     }
 
@@ -611,6 +735,25 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
      * (RTSPS only), so there is no still frame to show without spawning ffmpeg on every refresh; for those the tile
      * opens the live view instead, which is the thing you actually wanted to look at anyway.
      */
+    /**
+     * The newest camera frame already held in memory for a printer, or empty.
+     * <p>
+     * Cached only - the AI check's last analyzed frame, then the last frame the pixel diff measured. Never
+     * captures: {@code PrintAiService.getSnapshot} spawns ffmpeg on the models this is for, and the caller
+     * renders once per second.
+     */
+    private Optional<byte[]> lastCapturedFrame(final String printerName) {
+        return aiService.getLastCheck(printerName)
+                .map(PrintAiService.CheckRecord::snapshot)
+                .filter(b -> b != null && b.length > 0)
+                .or(() -> bedDiff.getLastFrame(printerName))
+                // Both of the above are in-memory and empty until a check runs, so a printer that has been idle
+                // since the last restart had nothing to show. The saved empty-bed reference is a real captured
+                // frame that lives on disk, so it survives restarts - stale, but it IS this camera, and the
+                // tooltip says which it is rather than passing it off as current.
+                .or(() -> bedReference.getReference(printerName));
+    }
+
     private Div cameraCell(final BambuPrinters.PrinterDetail detail) {
         final BambuPrinter printer = detail.printer();
         final Div cell = new Div();
@@ -628,10 +771,29 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             cell.add(img);
             // Registered for in-place frame updates; the thumbnail is deliberately not in the rebuild key.
             pendingCams.put(detail.name(), img);
+        } else if (lastCapturedFrame(detail.name()).isPresent()) {
+            // X1C/X1E/H2D never push the port-6000 JPEG stream, so getThumbnail() is empty for them and this
+            // used to be a dashed "live view" placeholder. The AI checks DO capture frames on those models (via
+            // ffmpeg/RTSPS), and the most recent one is already held in memory - so show that instead of nothing.
+            //
+            // Deliberately the CACHED frame, never aiService.getSnapshot(): that spawns ffmpeg when there is no
+            // cached JPEG, and this cell renders on a table that refreshes every second.
+            final byte[] frame = lastCapturedFrame(detail.name()).get();
+            final com.vaadin.flow.component.html.Image img = new com.vaadin.flow.component.html.Image(
+                    new StreamResource("last-%s.jpg".formatted(detail.name()),
+                            () -> new java.io.ByteArrayInputStream(frame)),
+                    detail.name() + " last captured frame");
+            img.setTitle(aiService.getLastCheck(detail.name()).map(PrintAiService.CheckRecord::snapshot)
+                    .filter(bytes -> bytes != null && bytes.length > 0).isPresent()
+                            ? "Last frame an AI check looked at - click for the live stream"
+                            : "Saved empty-bed reference (no check has run since the last restart) - click for "
+                                    + "the live stream");
+            img.addClickListener(e -> openCamera(detail));
+            cell.add(img);
         } else if (stream.isPresent()) {
             final Div tile = new Div(new Span("live view"));
             tile.addClassName("pt-cam-none");
-            tile.setTitle("No still frame on this model - click to open the live stream");
+            tile.setTitle("No still frame yet on this model - click to open the live stream");
             tile.addClickListener(e -> openCamera(detail));
             cell.add(tile);
         } else {
@@ -928,8 +1090,10 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     // -------------------------------------------------------------------------
 
     private Div buildDispatchPoolCard(final StringBuilder key) {
-        final Div sec = section();
-        sec.addClassName("automation-full");
+        // Nested inside the controls card, so NOT section()/automation-full - that would draw a card inside a
+        // card, and the grid-column rule means nothing outside the outer grid.
+        final Div sec = new Div();
+        sec.addClassName("automation-pool");
         final List<com.tfyre.bambu.printer.DispatchQueueService.PendingJob> pool = dispatchQueue.getPool();
         sec.add(new H4("Order dispatch pool — %d waiting".formatted(pool.size())));
         key.append(pool.size()).append('|');
@@ -1073,7 +1237,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
                         final String colour = o.needsAttention() ? "var(--lumo-error-text-color, #e05c5c)"
                                 : o.readyToShip() ? "var(--lumo-success-text-color)"
                                         : "var(--lumo-warning-text-color, #e8a33d)";
-                        sec.add(orderLine(icon, o.title(), o.subtitle(), status, colour));
+                        sec.add(orderLine(o.market(), o.orderId(), icon, o.title(), o.subtitle(), status, colour));
                     });
         }
 
@@ -1082,13 +1246,27 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     }
 
     /** One order row: item name on top, order number + buyer underneath, status on the right. */
-    private Div orderLine(final String icon, final String title, final String subtitle,
-            final String status, final String statusColor) {
+    /**
+     * @param market  "etsy"/"ebay", or null for a line that isn't a marketplace order
+     * @param orderId the order/receipt id, used to link straight to it on the marketplace so you can print the
+     *                label without hunting for it. Null leaves the line as plain text.
+     */
+    private Div orderLine(final String market, final String orderId, final String icon, final String title,
+            final String subtitle, final String status, final String statusColor) {
         final Div row = new Div();
         row.addClassName("order-line");
         final Div left = new Div();
         left.addClassName("order-line-main");
-        final Span t = new Span("%s %s".formatted(icon, title));
+        final String label = "%s %s".formatted(icon, title);
+        final Optional<String> url = orderUrl(market, orderId);
+        final com.vaadin.flow.component.Component t = url
+                .map(u -> {
+                    final Anchor a = new Anchor(u, label);
+                    a.setTarget("_blank");
+                    a.addClassName("order-line-link");
+                    return (com.vaadin.flow.component.Component) a;
+                })
+                .orElseGet(() -> new Span(label));
         final Span sub = new Span(subtitle);
         sub.addClassName("order-line-sub");
         left.add(t, sub);
@@ -1097,6 +1275,32 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
         st.getStyle().setColor(statusColor);
         row.add(left, st);
         return row;
+    }
+
+    /**
+     * The marketplace URL for one order, or empty when there's nothing sensible to link to.
+     * <p>
+     * The templates are config ({@code bambu.etsy.order-url} / {@code bambu.ebay.order-url}) because they're
+     * seller-UI page URLs rather than documented API endpoints - if a marketplace reorganises, this is a config
+     * edit instead of a rebuild.
+     */
+    private Optional<String> orderUrl(final String market, final String orderId) {
+        if (market == null || orderId == null || orderId.isBlank()) {
+            return Optional.empty();
+        }
+        final String template = switch (market) {
+            case "etsy" ->
+                config.etsy().orderUrl();
+            case "ebay" ->
+                config.ebay().orderUrl();
+            default ->
+                null;
+        };
+        if (template == null || template.isBlank() || !template.contains("{id}")) {
+            return Optional.empty();
+        }
+        return Optional.of(template.replace("{id}",
+                java.net.URLEncoder.encode(orderId, java.nio.charset.StandardCharsets.UTF_8)));
     }
 
     /** An in-flight order with enough context to be readable without looking anything up. */
@@ -1248,7 +1452,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             queued.stream().limit(5).forEach(e -> {
                 final String market = e.getKey().substring(0, e.getKey().indexOf('|'));
                 final String id = e.getKey().substring(e.getKey().indexOf('|') + 1);
-                sec.add(orderLine("✓", orderTitle(market, id), orderSubtitle(market, id),
+                sec.add(orderLine(market, id, "✓", orderTitle(market, id), orderSubtitle(market, id),
                         ago(e.getValue()), "var(--lumo-secondary-text-color)"));
                 key.append(e.getKey()).append(e.getValue().getEpochSecond()).append('|');
             });

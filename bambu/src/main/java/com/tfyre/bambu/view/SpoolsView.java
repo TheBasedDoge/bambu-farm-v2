@@ -97,6 +97,7 @@ public class SpoolsView extends VerticalLayout implements NotificationHelper {
             grid.setAllRowsVisible(true);
             grid.addThemeVariants(GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             grid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(grid, "spools");
             grid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(grid);

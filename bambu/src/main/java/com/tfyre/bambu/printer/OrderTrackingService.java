@@ -69,6 +69,50 @@ public class OrderTrackingService {
          * can outlive that - without this the UI falls back to showing a meaningless order number.
          */
         public String title;
+
+        // The counter rules live here rather than in the service methods so they can be tested without a CDI
+        // container: everything above this line is state, everything below is arithmetic, and only the
+        // arithmetic has ever been wrong. Jackson ignores these - none is named getX/isX, so none is a getter.
+
+        /** @see OrderTrackingService#addExpectedJobs(String, String, int, String) */
+        void addExpected(final int jobs) {
+            expected += jobs;
+            // Queueing work for this order is what un-abandons it: these jobs cover the parts given up on.
+            abandoned = Math.max(0, abandoned - jobs);
+            notified = false;
+        }
+
+        /** @see OrderTrackingService#removeExpectedJobs(String, String, int, boolean) */
+        void removeExpected(final int jobs, final boolean wasAbandoned) {
+            expected = Math.max(printed, expected - jobs);
+            if (wasAbandoned) {
+                abandoned += jobs;
+            }
+        }
+
+        /** @return true exactly once, on the finish that completes the order. @see OrderTrackingService#recordJobPrinted */
+        boolean recordPrinted() {
+            printed++;
+            // abandoned == 0: a part that failed and was never reprinted must not be papered over by the others
+            // finishing. Telling you an order is ready to ship when it's short a part is the one wrong answer here.
+            if (expected > 0 && printed >= expected && abandoned == 0 && !notified) {
+                notified = true;
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Whether every expected part has printed - what stops a completed order's entry being pruned.
+         * <p>
+         * Deliberately NOT named {@code isFinished}: Jackson treats an {@code isXxx()} boolean as a property and
+         * would start writing a phantom field into the order-tracking file. Package-private visibility already
+         * prevents that with the default detector, but this class IS the persisted format, so it should not
+         * depend on a visibility rule to stay correct.
+         */
+        boolean allPartsPrinted() {
+            return expected > 0 && printed >= expected;
+        }
     }
 
     /** Immutable snapshot of an order's print progress for the UI. */
@@ -194,10 +238,7 @@ public class OrderTrackingService {
             return;
         }
         final OrderProgress p = state(market).progress.computeIfAbsent(orderId, k -> new OrderProgress());
-        p.expected += jobs;
-        // Queueing work for this order is what un-abandons it: these jobs cover the parts that were given up on.
-        p.abandoned = Math.max(0, p.abandoned - jobs);
-        p.notified = false;
+        p.addExpected(jobs);
         if (title != null && !title.isBlank()) {
             p.title = title;
         }
@@ -232,10 +273,7 @@ public class OrderTrackingService {
         if (p == null) {
             return;
         }
-        p.expected = Math.max(p.printed, p.expected - jobs);
-        if (abandoned) {
-            p.abandoned += jobs;
-        }
+        p.removeExpected(jobs, abandoned);
         dirty = true;
         save();
     }
@@ -250,14 +288,8 @@ public class OrderTrackingService {
         if (p == null) {
             return false;
         }
-        p.printed++;
+        final boolean justCompleted = p.recordPrinted();
         dirty = true;
-        // p.abandoned == 0: a part that failed and was never reprinted must not be papered over by the others
-        // finishing. Telling you an order is ready to ship when it's short a part is the one wrong answer here.
-        final boolean justCompleted = p.expected > 0 && p.printed >= p.expected && p.abandoned == 0 && !p.notified;
-        if (justCompleted) {
-            p.notified = true;
-        }
         save();
         return justCompleted;
     }
@@ -273,8 +305,7 @@ public class OrderTrackingService {
     public synchronized void pruneClosed(final String market, final Set<String> openOrderIds) {
         final Map<String, OrderProgress> progress = state(market).progress;
         final int before = progress.size();
-        progress.entrySet().removeIf(e -> !openOrderIds.contains(e.getKey())
-                && !(e.getValue().expected > 0 && e.getValue().printed >= e.getValue().expected));
+        progress.entrySet().removeIf(e -> !openOrderIds.contains(e.getKey()) && !e.getValue().allPartsPrinted());
         if (progress.size() != before) {
             Log.infof("OrderTrackingService: %s: dropped %d progress entry(s) for orders no longer open",
                     market, before - progress.size());

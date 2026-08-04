@@ -32,6 +32,8 @@ public class StockService {
     BambuConfig config;
     @Inject
     NotificationService notificationService;
+    @Inject
+    SimulationService simulation;
     // Needed to resolve a listing's product code. Neither mapping service injects this one back, so no cycle.
     @Inject
     EtsyMappingService etsyMapping;
@@ -215,6 +217,11 @@ public class StockService {
      * printing than was queued for it.
      */
     public synchronized void commitCoverage(final String market, final PlannedCoverage planned, final String orderLabel) {
+        if (simulation.isEnabled()) {
+            Log.infof("StockService: [SIMULATED] %s: would have taken %d× %s from stock", orderLabel,
+                    planned.units(), planned.itemLabel());
+            return;
+        }
         final int consumed = consume(market, planned.storageKey(), planned.units());
         if (consumed <= 0) {
             return;

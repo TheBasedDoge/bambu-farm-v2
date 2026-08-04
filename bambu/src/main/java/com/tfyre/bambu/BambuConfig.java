@@ -173,6 +173,23 @@ public interface BambuConfig {
         Duration lightSettle();
 
         /**
+         * Second Ollama server, tried when the first can't be reached.
+         * <p>
+         * The bed gate fails closed, which is correct - but it means an Ollama that is down, rebooting or busy
+         * stops the farm dispatching entirely rather than degrading. A second endpoint (a spare box, or the same
+         * machine's other address) turns a total stop into a slower check.
+         * <p>
+         * Only used for <b>connection-level</b> failures - unreachable host, timeout. An HTTP error or an
+         * unreadable answer is NOT retried elsewhere: the model replied, and asking a different one until you get
+         * the answer you like is not a safety check.
+         * <p>
+         * Requires {@link #url()} to be set - this is a fallback, not an alternative. Run the same model here as
+         * on the primary: the prompts and the confidence floor were tuned against one model's behaviour, and a
+         * check that means something different depending on which box answered is not a check.
+         */
+        Optional<String> fallbackUrl();
+
+        /**
          * Whether a "bed is clear" verdict must survive a SECOND, independently captured snapshot before a print
          * is allowed to start.
          * <p>
@@ -242,6 +259,17 @@ public interface BambuConfig {
     public interface Ebay {
 
         /**
+         * Where the Automation overview links an order to, so you can go straight to it and print the label.
+         * {@code {id}} is replaced with the eBay order id. See {@link Etsy#orderUrl()} for why this is config.
+         * <p>
+         * eBay's documented entry point is the Seller Hub orders list at {@code https://www.ebay.com/sh/ord};
+         * the per-order form below is the one in common use but is not documented, so treat it as a default to
+         * correct rather than a guarantee.
+         */
+        @WithDefault("https://www.ebay.com/sh/ord/details?orderid={id}")
+        String orderUrl();
+
+        /**
          * eBay App ID (Client ID), from https://developer.ebay.com/my/keys
          */
         Optional<String> clientId();
@@ -288,6 +316,18 @@ public interface BambuConfig {
     }
 
     public interface Etsy {
+
+        /**
+         * Where the Automation overview links an order to, so you can go straight to it and print the label.
+         * {@code {id}} is replaced with the receipt id.
+         * <p>
+         * Configurable rather than hardcoded because this is a page URL, not an API: it isn't in Etsy's developer
+         * documentation, marketplaces reorganise their seller UI without notice, and a wrong link here should cost
+         * a config edit rather than a rebuild. If it stops landing on the order, set it to whatever your browser
+         * shows when you open one - or to the plain orders list if Etsy drops per-order URLs.
+         */
+        @WithDefault("https://www.etsy.com/your/orders/sold?order_id={id}")
+        String orderUrl();
 
         /**
          * Etsy App API Key (keystring), from https://www.etsy.com/developers/your-apps

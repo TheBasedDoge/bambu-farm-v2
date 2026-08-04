@@ -125,11 +125,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         setSpacing(true);
 
         add(new H3("Listing → GCODE Mappings"));
-        add(new Span("Assign print jobs to your shop listings here, before orders arrive - a mapped listing is "
-                + "what lets auto-queue handle an order with zero clicks. Mappings saved here are listing-wide "
-                + "(they apply to every variation); per-variation overrides can still be saved from the order pages. "
-                + "Hide listings that are never printed (digital items, add-ons) - hidden, unmapped listings are "
-                + "silently ignored by auto-queue instead of blocking orders with a 'not mapped' alert."));
+        add(new Span("Map listings to print jobs so auto-queue can handle their orders. Saved here applies to "
+                + "every variation; per-variation mappings come from the order pages. Hide listings you never "
+                + "print - they're skipped instead of raising a 'not mapped' alert."));
 
         final com.vaadin.flow.component.checkbox.Checkbox showHiddenToggle
                 = new com.vaadin.flow.component.checkbox.Checkbox("Show hidden listings");
@@ -220,6 +218,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             etsyGrid.setAllRowsVisible(true);
             etsyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             etsyGrid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(etsyGrid, "mappings-etsy");
             etsyGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(etsyGrid);
@@ -310,6 +309,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             ebayGrid.setAllRowsVisible(true);
             ebayGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             ebayGrid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(ebayGrid, "mappings-ebay");
             ebayGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(ebayGrid);
@@ -414,6 +414,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             savedGrid.setAllRowsVisible(true);
             savedGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             savedGrid.setColumnReorderingAllowed(true);
+            GridLayoutMemory.remember(savedGrid, "mappings-saved");
             savedGrid.getColumns().forEach(c -> c.setResizable(true));
         }
         sec.add(savedGrid);

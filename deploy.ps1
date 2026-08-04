@@ -28,6 +28,11 @@
 .PARAMETER NoRestart
     Copy the jar but leave the container alone.
 
+.PARAMETER SkipUnitTests
+    Skip the JUnit suite. It runs in about a second and covers the verdict parser and the order counters -
+    the two places where being wrong costs filament or ships a short package - so there is rarely a good
+    reason to pass this.
+
 .PARAMETER ProdPath
     Override the production folder.
 
@@ -45,6 +50,9 @@ param(
     [switch]$SkipBuild,
     [switch]$NoRestart,
     [switch]$NoPauseSync,
+    # Tests run by default now that there are some. A deploy that silently skips its own suite reads as
+    # passing, which is worse than having none.
+    [switch]$SkipUnitTests,
     [string]$ProdPath = 'C:\Users\Vishal\Downloads\bambu-farm-web\bambu-liveview'
 )
 
@@ -173,10 +181,11 @@ if ($SkipBuild) {
             Clear-Target
         }
         $mvnArgs = if ($forced) {
-            @('install', '-Pproduction', '-Dvaadin.force.production.build=true', '-DskipTests')
+            @('install', '-Pproduction', '-Dvaadin.force.production.build=true')
         } else {
-            @('package', '-DskipTests', '-Pproduction')
+            @('package', '-Pproduction')
         }
+        if ($SkipUnitTests) { $mvnArgs += '-DskipTests' }
         Write-Host "   $mvn $($mvnArgs -join ' ')"
         & $mvn @mvnArgs
         $mvnExit = $LASTEXITCODE
@@ -188,6 +197,10 @@ if ($SkipBuild) {
         if ($oneDriveExe -or $NoPauseSync) {
             Warn 'If this mentions "used by another process", something still holds a handle on target\ -'
             Warn 'antivirus and Windows Search index it too. Building outside OneDrive is the durable fix.'
+        }
+        if (-not $SkipUnitTests) {
+            Warn 'If this is a test failure, fix the test rather than passing -SkipUnitTests: the suite covers'
+            Warn 'the bed-clear verdict and the order counters, and a red one there means a real wrong answer.'
         }
         throw "Maven failed with exit code $mvnExit - nothing was copied."
     }

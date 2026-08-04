@@ -216,7 +216,9 @@ bambu.batch-print.library=bambu-library
 
 ### Automation page
 The **Automation** page (`/automation`, sidebar) is the control center for the whole order-to-print pipeline, with three tabs:
-- **Overview** - the whole pipeline on one screen. Big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start, Auto-Requeue) plus a **Dispatch Now** button, then four headline numbers (open orders, waiting to dispatch, printing, needs attention) and live ⏱ countdowns for whatever the pipeline is waiting on.
+- **Overview** - the whole pipeline on one screen. Big one-click toggles up top (Auto-Queue, AI Checks, Auto-Start, Auto-Requeue, Simulate) plus a **Dispatch Now** button, then five headline numbers (open orders, waiting to dispatch, printing, needs attention, today) and live ⏱ countdowns for whatever the pipeline is waiting on, with the **dispatch pool** directly beneath them.
+  - **Needs attention** counts parked jobs, failing AI checks, a held dispatch pool, and **printers whose bed check isn't actually protecting them** - a printer whose bed gate is armed but whose reference has aged out is running on the model's word alone, which is how a print starts on an occupied plate. Those printers also show "bed check unreliable" next to their AI verdict, because a green tick beside an unusable reference is the misleading combination. Printers not opted into auto-start or dispatch are ignored here: their bed gate never runs, so a stale reference costs them nothing.
+  - **Today** counts prints finished and failed on the local calendar day, with filament used (and estimated cost when `bambu.cost-per-kg` is set). Calendar day rather than a rolling 24 hours, so at breakfast it reads zero instead of still showing last night's prints.
   - **Printer table** (full width) - a **live camera thumbnail**, state, current job, progress with time remaining, **loaded filament** (one chip per occupied tray, the feeding tray highlighted), queue depth, the AI verdict as a single ✓/⚠, auto-start status, and a **Start next** button on any ready printer with a queue. A printer reporting a **fault** gets a red row and a full-width error line underneath with the code and the printer's own message - a paused printer with a jammed AMS previously looked identical to a paused one. An AI verdict from before the current situation (the printer has since faulted, or it's older than two check intervals) greys out to "stale" rather than showing a green tick next to a broken printer. **Click the thumbnail** to enlarge it (X1C/X1E/H2D don't push the still-frame stream, so on those it opens the live view instead); **click the printer name** to jump to that printer's own page. **Click a row** to expand it: that printer's queue entries (⏫ move-to-front, remove), its per-printer *auto-start* and *auto-queue* checkboxes, and the last AI check in full including the pixel diff. Printers used to be split across two cards, so you read the same machines twice and the AI's reasoning text crowded out everything scannable - this replaces both, and absorbs what used to be the separate Print Queue tab.
   - **Order dispatch pool** - waiting order jobs with "Send to…", retry and remove, the ⏳/⚠ hold banner explaining anything that's stalled, and **when the next printer frees up** (soonest remaining time across the busy printers) - which is the actual question when everything is mid-print.
   - **Orders** and **Recent** - side by side across the full width. **Orders** is purely what's still open; **Recent** carries finished prints and recently queued orders. Orders lead with **what was ordered** (item name, quantity where >1), with the order number and buyer as a sub-line, because an order number tells you nothing at a glance. Only orders the marketplace still lists as **open** appear. An order whose parts have all printed shows **green "ready to ship"** and sorts to the top - that's the one waiting on you rather than on a printer - while one still printing shows amber "X/Y printed", and one with a part that failed and was never reprinted shows red "⚠ N parts failed - re-queue". The count of ready-to-ship orders also appears under the Open orders figure.
@@ -361,11 +363,18 @@ Every bed check records its measured diff in the check history whether or not th
 
 **Use this instead of the AI two-image compare, not alongside it.** Both use the same reference image, but only the pixel diff uses it deterministically. Feeding both images to the model produces confident false positives ("there's an object that wasn't in the reference" for what is actually a glue mark or a lighting change), and because the AI gate fails closed, those block dispatch even when the pixel diff correctly measures the bed as clear.
 
+**Fallback server**: the bed gate fails closed, which is right - but it means an Ollama that is down, rebooting, or wedged stops the farm dispatching entirely rather than degrading. Set `bambu.ollama.fallback-url` to a second endpoint (a spare box, or the same machine's other address) and a connection failure on the primary is retried there, turning a total stop into a slower check. The log says which endpoint answered.
+
+Failover is deliberately narrow. **Only connection-level failures fail over** - unreachable host, timeout. An HTTP error status, or a reply the parser can't read, is *not* retried elsewhere: the model answered, and asking a second model until you get a usable answer isn't a safety check, it's shopping for one. For the same reason, run the **same model** on both: the prompts and the 90% confidence floor were tuned against one model's behaviour, and a check that means something different depending on which box replied isn't a check. Requires `bambu.ollama.url` to be set - this is a fallback, not an alternative.
+
 **Lighting**: before every AI check, the printer's chamber light is switched on and the check waits `bambu.ollama.light-settle` (default **10s**) for the camera's auto-exposure to settle, so checks always analyze a well-lit frame. Afterward the light is **restored to its prior state** - if it was off before the check, it's switched back off, so lights-off setups stay dark between checks. Don't shorten the settle without testing: P1-series chamber cameras adapt slowly, and a dim mid-adaptation frame both confuses the model and inflates the pixel diff.
 
 ```properties
 # Base URL of your Ollama server - AI checks are fully skipped when this is unset
 bambu.ollama.url=http://192.168.1.x:11434
+# Optional second server, tried only when the first can't be REACHED (down, rebooting, timed out).
+# Run the same model on it - see "Fallback server" below.
+bambu.ollama.fallback-url=http://192.168.1.y:11434
 # Vision-capable model, e.g. gemma3:12b, llava, moondream2
 bambu.ollama.model=gemma3:12b
 bambu.ollama.failure-check-interval=5m
@@ -426,7 +435,7 @@ bambu.notifications.mqtt.username=user
 bambu.notifications.mqtt.password=pass
 bambu.notifications.mqtt.topic=bambufarm
 ```
-Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `dispatch_blocked`, `poll_failed`, `order_printed`, `order_needs_requeue`, `order_from_stock`, `spool_low`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
+Events publish to `bambufarm/<printer>/<event>` where event is `finish`, `fail`, `stopped`, `error`, `maintenance`, `failure_detected`, `first_layer_issue`, `auto_start`, `auto_start_blocked`, `auto_requeue`, `new_order`, `auto_queue`, `auto_queue_skipped`, `dispatch_blocked`, `poll_failed`, `order_printed`, `order_needs_requeue`, `order_from_stock`, `simulate_mode`, `spool_low`, `digest`, or `tasmota_off` (for the order events the printer segment is the marketplace; for `digest` it is `farm`), with JSON payload:
 
 ```json
 {"timestamp":"2026-06-12T21:30:00-04:00","event":"fail","printer":"P1S-2","message":"Print failed: part.3mf (2h 14m)"}
@@ -508,6 +517,14 @@ Orders are polled on a schedule and filtered to unfulfilled/open only; poll erro
 - **All-or-nothing per order**: an unmapped line item, a missing library file, a part no printer has filament for, or **buyer personalization on any item** (custom text must never be auto-printed from the generic mapping) skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
 - Queued orders get the "✓ queued" badge and are never auto-queued twice. Adding to the pool fires an `auto_queue` notification; each dispatch fires an `auto_start` notification naming the printer it landed on.
 
+**Simulate mode** (the **Simulate** button on the Automation overview): rehearse the live pipeline without printing. Dispatch, printer eligibility, the filament match, the bed-clear gate with its AI and pixel checks and the notifications all run for real — only the irreversible parts are skipped: no print command, no SD-card upload, no on-hand stock spent, and no start-verification (nothing will start, so it would "fail" every time and dump jobs back into the pool).
+
+**Real marketplace orders are left completely alone while it's on** — not queued, not marked, not counted. Rehearsing a real order would mark it queued and it would then never print for real, which is worse than not rehearsing at all. Queue something by hand to exercise the pipeline. This pairs with the Mappings tab's flask **Test** button, which covers the other half — order parsing, mapping and filament eligibility — so between them the whole path is testable without committing a print.
+
+It **switches itself off after an hour**, because while it's on the farm looks healthy and quietly isn't accepting orders. The button shows the minutes remaining, and a `simulate_mode` notification reports what it would have done and when it expires.
+
+**Order rows link to the marketplace.** On the Automation overview, an order's title is a link straight to that order on Etsy or eBay (new tab) - the usual reason for opening that card is to go and print the label. The URLs are config, `bambu.etsy.order-url` and `bambu.ebay.order-url`, each with an `{id}` placeholder: these are seller-UI page addresses rather than documented API endpoints, so if a marketplace reorganises its seller pages you can correct the link without a rebuild. Set one to blank to turn the link off.
+
 **Order progress & ready-to-ship**: every job queued from an order (auto or manual) is linked back to it. The Automation overview shows in-flight orders as "Etsy #123 — 2/4 printed", and when the LAST part finishes an `order_printed` notification fires: "Etsy order #123 is fully printed - ready to ship". Shipping itself stays manual.
 
 **A print that fails releases its claim on the order.** When a queued print ends failed or stopped and isn't auto-requeued, the order stops expecting that job. Without this, re-queueing the part by hand registers a *second* expected job for the same physical part, so the order over-counts and can never reach "ready to ship" - a single-item order read `0/2` after one stopped print and one re-queue.
@@ -577,6 +594,83 @@ quarkus.http.ssl.certificate.key-store-password=changeit
 
 Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notifications on any device and PWA installation.
 
+## Overview (wall display)
+
+A separate page at `/overview`, first in the sidebar. Meant to be left up on a monitor and read from across the room - not a denser version of the Automation overview, which is where you go to *work*.
+
+The governing rule is that **the screen is boring when the farm is fine.** When nothing is wrong there's no banner at all, the printer tiles carry no outlines, and the attention panel is one line. When something is wrong, exactly one headline says what, at a size you can read standing up, and the rest becomes a quiet count beside it. Five warnings at equal weight is how you train yourself to read none of them.
+
+There are no interactions - nothing to click, nothing to expand, no saved layout. A display is state anyone can disturb by leaning on the desk, and a dashboard left in the wrong tab is one you stop trusting.
+
+**It takes the whole screen.** The navbar and sidebar are hidden while this page is open - a monitor across the room has no use for a hamburger and a username, and the space they occupy is the difference between a printer tile you can read standing up and one you squint at. Two ways back, because one is never enough on a screen with no visible controls: press **Esc**, or click the app mark in the top-left corner. The pointer hides itself after three seconds of stillness - an idle cursor parked over a printer tile is a distraction at best and, on an OLED, one more unmoving bright pixel - and moving the mouse brings it back. The chrome is restored automatically the moment you navigate away.
+
+Three things exist for the "left on for months" case:
+
+- **Burn-in protection.** The page walks around an eight-point box, one step a minute. A transform, so it rides the compositor and can't reflow anything; a few pixels is enough that no static edge ghosts an OLED or plasma, and small enough that nobody notices.
+- **Overnight dim** between 1am and 6am. Dimmed, not blanked - the farm still runs at 3am and a red banner should be visible from the doorway, it just shouldn't light the room.
+- **A chime**, off by default. Set `localStorage['bambufarm-wall-sound'] = 'on'` in the browser you leave running. It fires only on the *transition* into a failed state - an alarm that re-sounds every poll is one you mute permanently, which is worse than none - and never on the first paint, so opening the page during an existing failure is silent.
+
+Each camera tile shows the most current thing available, in this order:
+
+1. **The live stream**, for any printer with `stream.url` configured - the H2D, via `/_camerastream/printer5`. Embedded once and never touched again.
+2. **The port-6000 JPEG thumbnail**, which only the P-series push. Refreshed in place, so it's current by definition.
+3. **The last still anyone captured** - the frame from the most recent AI check, or failing that the saved empty-bed reference on disk, which survives restarts and can be *weeks* old. These carry an **age badge** in the corner, amber past ten minutes and red past a day. It isn't decoration: everything else on the screen is current by construction, so a picture that silently wasn't would be the one element quietly lying to you. The badge ticks client-side from a timestamp, so it needs no round trip and can't drag the change-detection key with it.
+
+The live stream is why the **printer row is updated in place and never rebuilt**. Moving an `<iframe>` in the DOM makes the browser reload it, so under a whole-page rebuild the H2D's WebRTC session would tear down and renegotiate every time any printer's percentage ticked - about once a minute, forever. The page is therefore five persistent slots, each with its own change key, and the printer tiles hold references to their own mutable pieces. That's more code than rebuilding them, and it's the price of a stream that stays up.
+
+The clock is ticked by the browser rather than the server, on purpose: if the server stops pushing, a frozen clock is the clearest possible signal that what you're looking at is no longer true. Everything scales off one viewport-derived unit, so the layout grows with the panel instead of stranding small text in the middle of a 4K screen; below 900px it stops pretending to be a wall display and stacks.
+
+`docs/overview-mockup.html` is the standalone mockup this was built from - open it to compare states side by side without waiting for the farm to break.
+
+## Sidebar
+
+**Reorder the menu** by dragging items in the drawer. The order is saved per device in `localStorage` (`bambufarm-nav-order`), keyed by the view's class name, so it survives a page-title reword and a view added in a later release simply appears at the bottom rather than scrambling what you set. "Reset menu order" at the bottom of the drawer puts it back. Drag-and-drop is mouse-only - touch fires no drag events - so on a phone the menu keeps whatever order you set on a desktop.
+
+**Collapse to a rail** with the menu button. The width and the labels animate rather than snapping; the labels fade slightly ahead of the narrowing so the icons aren't briefly sitting under text. A remembered collapse is applied without animation on load, so a page view doesn't start with the sidebar visibly sliding shut, and the whole effect is dropped under `prefers-reduced-motion`.
+
+## Timezone
+
+Set `TZ` on the `bambuweb` container to your own zone:
+
+```yaml
+    bambuweb:
+        environment:
+            TZ: America/New_York
+```
+
+A container with no `TZ` runs in **UTC**, and every calendar-day decision the app makes is then made in UTC: the overview's **Today** counter rolls over mid-evening and reads 0 while the printers are still warm, History groups jobs under the wrong day, and a daily summary scheduled for 07:00 fires at 07:00 UTC. Nothing in the UI hints at any of this - it just quietly counts a different day than you do. Java reads `TZ` directly, so no `tzdata` package is needed in the image. The zone in use is logged at startup, with a warning when it's UTC.
+
+## Deploying, tests, and keeping it up
+
+`deploy.ps1` (repo root) builds and copies the jar into the deployment folder in one step:
+
+```powershell
+.\deploy.ps1              # package -Pproduction, run the tests, copy the jar, restart the container
+.\deploy.ps1 -Force       # adds -Dvaadin.force.production.build=true, for theme/CSS changes
+.\deploy.ps1 -SkipUnitTests   # escape hatch; the tests take about a second, so you rarely want this
+```
+
+**Tests.** There is a small unit suite under `bambu/src/test/java`, run on every build. It is plain JUnit 5 against pure logic - no CDI, no Quarkus boot - so the whole thing finishes in about a second and there is no reason to skip it:
+
+- `OllamaVerdictTest` - how a model's reply becomes a verdict. Every case is a real failure: the leading-keyword parse that recorded a 95%-confidence spaghetti detection as OK, the bare `Confidence: 95` that counted as "bed clear", the `Objects: none,` whose comma made every clear bed read as occupied, and the cupholder that got dispatched onto two occupied beds because the model explained a circular object away as a plate feature.
+- `OrderProgressTest` - the `n/m printed` counters and the one-shot ready-to-ship signal, including abandoned parts, cancellations, and re-queues. Wrong in one direction and a package ships short; wrong in the other and a finished order never gets a label.
+
+Both cover code paths that decide whether to spend filament or ship a box, which is why they exist and why the suite is not skipped by default.
+
+**Heartbeat.** `heartbeat.ps1` watches the stack from outside and restarts what has stopped answering. Every alert the app sends is generated *by* the app, so a crashed or wedged container is silent - you find out because prints stopped, hours later.
+
+It runs two checks: container state (catches an exit or a container that never came back after a reboot) and an HTTP probe through nginx (catches the case container state cannot see - "running" while the JVM inside is wedged). The response tells it which service is broken: nothing at all means nginx, a 502/503/504 means nginx is fine and bambuweb isn't answering it.
+
+```powershell
+.\heartbeat.ps1 -WhatIf     # probe and log, never restart - run this first
+
+# every 5 minutes, from an elevated prompt:
+schtasks /create /tn "BambuFarm heartbeat" /sc minute /mo 5 /rl HIGHEST `
+    /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\heartbeat.ps1"
+```
+
+Restraints, because an over-eager watchdog is worse than none: it acts only after **3 consecutive** failed probes (one miss is usually a GC pause), it **won't restart mid-print** unless given `-IgnorePrinting`, and it stops after **6 restarts in a day** and leaves a log entry instead of churning the queue. A restart is not free - it drops in-memory state and can make a finishing job's outcome unknowable. State lives in `heartbeat-state.json` and the log in `heartbeat.log`, both next to your compose file. Task Scheduler must run it as a user in the `docker-users` group.
+
 ## Quick reference
 
 ### New config properties
@@ -596,6 +690,7 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 | `bambu.notifications.webhook-url` | - | Webhook target |
 | `bambu.notifications.webhook-format` | `json` | `json` / `discord` / `ntfy` |
 | `bambu.ollama.url` | - | Ollama server URL (unset = AI checks skipped) |
+| `bambu.ollama.fallback-url` | - | Second server, tried only when the first is unreachable |
 | `bambu.ollama.model` | `gemma3:12b` | Vision model for AI checks |
 | `bambu.ollama.failure-check-interval` | `5m` | How often actively-printing printers are checked |
 | `bambu.ollama.first-layer-delay` | `8m` | Timeout waiting for the printer to report a layer number |
@@ -621,7 +716,9 @@ Then browse to `https://yourserver:8443`. HTTPS also unlocks browser notificatio
 `bambu-maintenance.json`, `bambu-history.json`, `bambu-history-inflight.json`, `bambu-queue.json`, `bambu-etsy-tokens.json`, `bambu-etsy-mappings.json`, `bambu-ebay-tokens.json`, `bambu-ebay-mappings.json`, `bambu-order-tracking.json`, `bambu-remember-me.json`, `bambu-notification-suppressed.json`, `bambu-ams-dry.json`, `bambu-ams-dry-sessions.json`, `bambu-auto-start.json`, `bambu-auto-queue.json`, `bambu-ai-prompts.json`, `bambu-tasmota-autooff.json`, `bambu-stock.json`, `bambu-bed-reference.json`, the `bambu-bed-refs/` folder, `bambu-spools.json`, `bambu-dispatch.json`, `bambu-bed-diff.json`, the library folder, and `.env` - or use the Backup button (covers maintenance/history/queue/library, not `.env` or the marketplace token/mapping files).
 
 ### Browser localStorage keys (per device)
-Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token. "Reset Layout" on the dashboard/cameras clears the relevant ones.
+Card order/sizes/sort/view-mode, camera sizes, SD card columns, notification opt-in, sidebar rail state, remember-me token, and **column order + widths for every table** (`bambufarm-grid-*`). "Reset Layout" on the dashboard/cameras clears the relevant ones, including all remembered column layouts.
+
+**Table columns remember where you put them.** Every grid in the app allows dragging columns to reorder and dragging their edges to resize; both now survive a reload, stored per device. Previously the drag worked and was then silently forgotten on the next page load - Vaadin's reordering is client-side only and nothing was persisting it. A saved layout is discarded automatically if that table gains or loses a column in a later release, so an upgrade resets it rather than restoring a scrambled one.
 
 ---
 
