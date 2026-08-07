@@ -123,6 +123,17 @@ public class PrintAiService {
 
     /** Last known GCodeState per printer, used to detect IDLE → RUNNING transitions. */
     private final Map<String, BambuConst.GCodeState> lastStates = new ConcurrentHashMap<>();
+    /**
+     * Printers whose LAST scheduled check already confirmed a failure.
+     * <p>
+     * A backstop that does not depend on the prompt being worded perfectly. On this farm the H2D produced eight
+     * "tangle of loose filament extending from the nozzle" verdicts in 95 minutes on a print that was fine - the
+     * camera looks across the toolhead, so ooze at the nozzle and the machine's own coiled hoses are permanently
+     * in shot. Two frames twelve seconds apart both see that; two checks five minutes apart do not, because ooze
+     * moves and a real nest only grows. The genuine failure that started all of this sat there for two hours, so
+     * waiting one more cycle before touching the printer costs nothing that matters.
+     */
+    private final java.util.Set<String> failureStreak = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * Printers for which a first-layer check has already been scheduled this print cycle.
@@ -423,17 +434,113 @@ public class PrintAiService {
         checksInProgress.add(name);
         try {
             // positive = failure detected = bad
-            runCheck(name, "failure", "scheduled", (bytes, context) -> ollama.checkFailure(bytes, context), false, true)
+            final boolean suspected = runCheck(name, "failure", "scheduled",
+                    (bytes, context) -> ollama.checkFailure(bytes, context), false, true)
                     .filter(OllamaService.AiResult::positive)
-                    .ifPresent(result -> {
-                        Log.warnf("PrintAiService: %s: failure detected — %s", name, result.description());
-                        notificationService.notifyEvent("failure_detected", name,
-                                "Possible print failure detected: " + truncate(result.description(), 200),
-                                getLastCheck(name).map(CheckRecord::snapshot).orElse(null));
-                    });
+                    .isPresent();
+            if (!suspected) {
+                // A clean check breaks the streak. Two consecutive confirmed failures have to be consecutive.
+                failureStreak.remove(name);
+                return;
+            }
+            confirmAndActOnFailure(printer);
         } finally {
             checksInProgress.remove(name);
         }
+    }
+
+    /**
+     * Second look at a suspected failure, then act on it.
+     * <p>
+     * <b>Why a second check.</b> Same reasoning as the two-pass bed gate: the decision that costs real money gets
+     * confirmed on an independently captured frame. It is cheap because it only ever runs on the rare bad path,
+     * and it discriminates well - a genuine tangle is still there twelve seconds later, a nozzle caught mid-travel
+     * across the part is not.
+     * <p>
+     * <b>Why pause and not stop.</b> Pausing is reversible: the heater stays on, the part stays stuck to the
+     * plate, and a false positive costs one Resume click. Stopping saves more filament and frees the printer, but
+     * a false positive destroys a good print with no way back - and a check that is sometimes wrong should fail
+     * in the direction you can undo.
+     * <p>
+     * The notification is sent <b>whether or not</b> the pause is enabled or succeeds. Telling you is the part
+     * that must never be conditional on anything else working.
+     */
+    private void confirmAndActOnFailure(final BambuPrinter printer) {
+        final String name = printer.getName();
+        final String first = getLastResult(name).map(AiCheckResult::description).orElse("");
+        try {
+            Thread.sleep(Math.max(0, config.ollama().failureConfirmDelay().toMillis()));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        // A print that has already stopped needs no pausing, and judging its final frame as a live failure would
+        // alert on every job that ends while a check is in flight - which is exactly what happened the night this
+        // was written: the check landed nine seconds after the job had already been recorded as Failed.
+        if (!printer.getGCodeState().isPrinting()) {
+            Log.infof("PrintAiService: %s: suspected failure, but the print is no longer running - not acting", name);
+            return;
+        }
+        final Optional<OllamaService.AiResult> second = runCheck(name, "failure", "confirm",
+                (bytes, context) -> ollama.checkFailure(bytes, context), false, true);
+        if (second.filter(OllamaService.AiResult::positive).isEmpty()) {
+            Log.infof("PrintAiService: %s: suspected failure not confirmed on a second frame - leaving it running "
+                    + "(first pass said: %s)", name, truncate(first, 200));
+            return;
+        }
+        final String description = second.get().description();
+        final boolean repeat = !failureStreak.add(name);
+        Log.warnf("PrintAiService: %s: failure CONFIRMED on two frames%s — %s", name,
+                repeat ? " for the SECOND check running" : " (first time - watching, not acting yet)", description);
+
+        String action = "";
+        if (!config.ollama().pauseOnFailure()) {
+            action = "";
+        } else if (!repeat) {
+            // Deliberately does not act yet - see failureStreak. You are told immediately; the printer is only
+            // touched once the next scheduled check agrees.
+            action = "\nNot pausing yet - waiting for the next check to agree. Go and look.";
+        } else {
+            action = pausePrint(printer);
+        }
+        notificationService.notifyEvent("failure_detected", name,
+                "Print failure confirmed on two checks: " + truncate(description, 200) + action,
+                getLastCheck(name).map(CheckRecord::snapshot).orElse(null));
+    }
+
+    /**
+     * Pauses the printer and <b>confirms it actually paused</b>, returning what to tell the user.
+     * <p>
+     * The check that matters: {@code commandControl} publishes an MQTT message and returns. It throws nothing if
+     * the printer ignores it, and a printer in <b>cloud mode rather than LAN mode</b> ignores everything - this
+     * app has read-only access to it. The first version of this assumed no-exception meant paused and sent
+     * "The print has been PAUSED" for a printer that carried on printing. An alert that tells you a problem is
+     * handled when it isn't is worse than no alert at all, so now it looks.
+     */
+    private String pausePrint(final BambuPrinter printer) {
+        final String name = printer.getName();
+        try {
+            printer.commandControl(BambuConst.CommandControl.PAUSE);
+        } catch (RuntimeException ex) {
+            Log.errorf(ex, "PrintAiService: %s: pause command failed: %s", name, ex.getMessage());
+            return "\nCould not pause the printer: " + ex.getMessage() + " - stop it yourself.";
+        }
+        for (int i = 0; i < 10; i++) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            if (!printer.getGCodeState().isPrinting()) {
+                Log.warnf("PrintAiService: %s: print PAUSED by the failure check", name);
+                return "\nThe print has been PAUSED. Clear the failure and resume, or stop the job.";
+            }
+        }
+        Log.errorf("PrintAiService: %s: sent PAUSE but the printer is still printing - it is probably in cloud "
+                + "mode, where this app has read-only access. STOP IT YOURSELF.", name);
+        return "\n⚠ PAUSE was sent but the printer did NOT stop - it is probably in cloud mode rather than LAN "
+                + "mode, which makes this app read-only. Stop it yourself.";
     }
 
     // -------------------------------------------------------------------------

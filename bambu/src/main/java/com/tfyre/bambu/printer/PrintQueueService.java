@@ -315,6 +315,24 @@ public class PrintQueueService {
                     throw new IOException("upload failed");
                 }
             }
+            // Confirm the bytes actually landed. A completed FTP conversation is not proof of an intact file -
+            // a truncated transfer finishes cleanly and storeFile still returns true - and the printer's only
+            // reply to a short .3mf is error 5004003, "problem parsing gcode.3mf", raised long after the
+            // command was accepted. That failure mode cost an order a whole evening: the job left the pool,
+            // never started, went back, uploaded the same broken file and failed again, eight times over.
+            // Checking one number here turns it into an immediate, accurate error.
+            final Optional<FTPFile> written = Stream.of(client.listFiles())
+                    .filter(f -> f.isFile() && filename.equals(f.getName()))
+                    .findAny();
+            if (written.isEmpty()) {
+                throw new IOException("upload reported success but %s is not on the SD card".formatted(filename));
+            }
+            if (written.get().getSize() != file.length()) {
+                throw new IOException("upload was truncated - %s is %d bytes on the SD card, expected %d. The "
+                        .formatted(filename, written.get().getSize(), file.length())
+                        + "printer cannot parse a partial file; delete it from the card and retry.");
+            }
+            Log.infof("%s: uploaded %s (%d bytes, verified)", detail.name(), filename, file.length());
             return filename;
         } finally {
             try {

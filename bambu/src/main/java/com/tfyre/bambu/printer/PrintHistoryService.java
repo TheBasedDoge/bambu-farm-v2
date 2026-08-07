@@ -299,6 +299,28 @@ public class PrintHistoryService {
         save(false);
     }
 
+    /**
+     * A human-readable name for a job, for alerts only.
+     * <p>
+     * {@link PrintJob#file()} is the SD filename, and it is empty for a print started outside this app on a
+     * printer that doesn't report {@code gcode_file} - every H2D job here has a blank one. That produced the
+     * alert "H2D Print failed: (1h 56m)", which names neither the part nor the plate at the moment you most
+     * need both.
+     * <p>
+     * Falls back to the printer's reported subtask name, which the H2D does send. Deliberately NOT folded into
+     * {@code getLastPrintFile()} or into the stored {@code file}: that value is an SD path used by
+     * {@code commandPrintAgain} to re-print, and matched exactly by the auto-requeue logic. A friendly label in
+     * either place would break both.
+     */
+    private String jobLabel(final PrintJob job) {
+        if (job.file() != null && !job.file().isBlank()) {
+            return job.file();
+        }
+        return printers.getPrinterDetail(job.printer())
+                .flatMap(d -> d.printer().getSubtaskName())
+                .orElse("(unnamed job)");
+    }
+
     private void addJob(final PrintJob job) {
         jobs.add(job);
         while (jobs.size() > MAX_JOBS) {
@@ -318,7 +340,7 @@ public class PrintHistoryService {
         final long m = job.durationSeconds() % 3600 / 60;
         // Attach the current camera frame so Discord/ntfy alerts show the finished (or failed) bed
         notificationService.notifyEvent(event, job.printer(),
-                "Print %s: %s (%dh %dm)".formatted(job.result().toLowerCase(), job.file(), h, m),
+                "Print %s: %s (%dh %dm)".formatted(job.result().toLowerCase(), jobLabel(job), h, m),
                 aiService.getSnapshot(job.printer()).orElse(null));
 
         // Ready-to-ship: count this finish towards its order; fires exactly once per completed order

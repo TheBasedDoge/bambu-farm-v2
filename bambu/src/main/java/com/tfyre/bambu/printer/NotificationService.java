@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -87,6 +88,7 @@ public class NotificationService {
 
     @PostConstruct
     void loadSuppressed() {
+        reportLinkButtons();
         final Path path = getSuppressedPath();
         if (!Files.exists(path)) {
             return;
@@ -97,6 +99,27 @@ public class NotificationService {
         } catch (IOException ex) {
             Log.errorf(ex, "NotificationService: cannot load %s: %s", path, ex.getMessage());
         }
+    }
+
+    /**
+     * Says at startup whether alerts will carry link buttons.
+     * <p>
+     * Because the absence was silent, and silent absences cost a round trip: alerts went out with no buttons,
+     * the Test button produced a plain message, and the only way to find out why was to read the source. One
+     * line at startup answers it. Same lesson as the timezone - a feature that is off because it was never
+     * configured should say so, not just not happen.
+     */
+    private void reportLinkButtons() {
+        if (config.notifications().webhookUrl().isEmpty()) {
+            return;
+        }
+        config.notifications().baseUrl()
+                .map(String::strip)
+                .filter(b -> !b.isEmpty())
+                .ifPresentOrElse(
+                        b -> Log.infof("NotificationService: alerts will link back to %s", b),
+                        () -> Log.infof("NotificationService: alerts will have NO link buttons - set "
+                                + "bambu.notifications.base-url to this app's external URL to add them"));
     }
 
     private void saveSuppressed() {
@@ -120,15 +143,81 @@ public class NotificationService {
      * webhook delivery (Discord: multipart file upload; ntfy: attachment; generic webhook and MQTT: image is
      * skipped, JSON payload unchanged). Used by the AI checks so a failure alert shows the actual camera frame.
      */
+    /**
+     * One button on an alert. Always a <b>link</b>, never an action.
+     * <p>
+     * A Discord incoming webhook is one-way. It will happily render an action button, but Discord only delivers
+     * the interaction for application-owned webhooks - so a "Pause" button on these messages would look real,
+     * do nothing, and teach you not to trust the alert. A link button (style 5) fires no interaction at all: it
+     * just opens a URL, which works from a plain webhook and gets you to the page that CAN act in one tap.
+     */
+    public record Link(String label, String url) {
+
+    }
+
+    /**
+     * The links worth offering for an event, deepest-first.
+     * <p>
+     * Derived centrally from the event name rather than passed in by 25 call sites: the alert should get more
+     * useful without every caller having to remember to make it so, and a caller that forgets is a caller whose
+     * alert is a dead end. Empty when no base URL is configured - a button pointing at {@code localhost} is
+     * worse than no button, because it fails on the one device you are holding.
+     */
+    private List<Link> linksFor(final String event, final String printer) {
+        final Optional<String> base = config.notifications().baseUrl()
+                .map(String::strip)
+                .filter(b -> !b.isEmpty())
+                .map(b -> b.endsWith("/") ? b.substring(0, b.length() - 1) : b);
+        if (base.isEmpty()) {
+            return List.of();
+        }
+        final String root = base.get();
+        final List<Link> links = new ArrayList<>();
+        // The printer's own page first, where Pause and Stop live - the reason most of these alerts exist.
+        final boolean aboutAPrinter = printers.getPrinterDetail(printer).isPresent();
+        if (aboutAPrinter) {
+            links.add(new Link("Open " + printer, "%s/printer/%s".formatted(root, encode(printer))));
+        }
+        switch (event) {
+            case "failure_detected", "first_layer_issue" ->
+                links.add(new Link("AI checks", root + "/ai-settings"));
+            case "new_order", "auto_queue", "auto_queue_skipped", "order_printed", "order_needs_requeue",
+                    "order_from_stock" ->
+                links.add(new Link("%s orders".formatted(printer),
+                        "%s/%s-orders".formatted(root, "eBay".equalsIgnoreCase(printer) ? "ebay" : "etsy")));
+            case "dispatch_blocked", "auto_requeue", "simulate_mode", "poll_failed" ->
+                links.add(new Link("Automation", root + "/automation"));
+            case "spool_low" ->
+                links.add(new Link("Spools", root + "/spools"));
+            case "maintenance" ->
+                links.add(new Link("Maintenance", root + "/maintenance"));
+            case "tasmota_off" ->
+                links.add(new Link("Plugs", root + "/tasmota-settings"));
+            default -> {
+            }
+        }
+        // The wall display last, as the general "what is the farm doing" answer. Capped at three: Discord allows
+        // five per row, but a wall of buttons is a thing you scroll past rather than press.
+        if (links.size() < 3) {
+            links.add(new Link("Overview", root + "/overview"));
+        }
+        return List.copyOf(links);
+    }
+
+    private static String encode(final String s) {
+        return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
     public void notifyEvent(final String event, final String printer, final String message, final byte[] imageJpeg) {
         if (suppressedEvents.contains(event)) {
             Log.debugf("NotificationService: suppressed event '%s' for %s", event, printer);
             return;
         }
         final FarmEvent farmEvent = new FarmEvent(OffsetDateTime.now().toString(), event, printer, message);
+        final List<Link> links = linksFor(event, printer);
         executor.submit(() -> {
             publishMqtt(farmEvent);
-            publishWebhook(farmEvent, imageJpeg);
+            publishWebhook(farmEvent, imageJpeg, links);
         });
     }
 
@@ -156,7 +245,7 @@ public class NotificationService {
         }
     }
 
-    private void publishWebhook(final FarmEvent event, final byte[] imageJpeg) {
+    private void publishWebhook(final FarmEvent event, final byte[] imageJpeg, final List<Link> links) {
         final Optional<String> url = config.notifications().webhookUrl();
         if (url.isEmpty()) {
             return;
@@ -164,18 +253,18 @@ public class NotificationService {
         try {
             final String format = config.notifications().webhookFormat();
             if (imageJpeg != null && "discord".equals(format)) {
-                sendDiscordWithImage(url.get(), event, imageJpeg);
+                sendDiscordWithImage(withComponents(url.get(), links), event, imageJpeg, links);
                 return;
             }
             if (imageJpeg != null && "ntfy".equals(format)) {
-                sendNtfyWithImage(url.get(), event, imageJpeg);
+                sendNtfyWithImage(url.get(), event, imageJpeg, links);
                 return;
             }
             final String body;
             final String contentType;
             switch (format) {
                 case "discord" -> {
-                    body = mapper.writeValueAsString(Map.of("content", "**%s** %s".formatted(event.printer(), event.message())));
+                    body = mapper.writeValueAsString(discordPayload(event, links));
                     contentType = "application/json";
                 }
                 case "ntfy" -> {
@@ -187,7 +276,8 @@ public class NotificationService {
                     contentType = "application/json";
                 }
             }
-            final HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url.get()))
+            final String target = "discord".equals(format) ? withComponents(url.get(), links) : url.get();
+            final HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(target))
                     .timeout(Duration.ofSeconds(10))
                     .header("Content-Type", contentType)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
@@ -200,10 +290,51 @@ public class NotificationService {
         }
     }
 
+    /**
+     * Adds {@code with_components=true} to a Discord webhook URL when the message carries buttons.
+     * <p>
+     * <b>Without this Discord accepts the message, returns 2xx, and silently drops the components.</b> No error,
+     * no warning, nothing in any log - the message simply arrives with no buttons, which is indistinguishable
+     * from not having sent any. It cost a deploy and two rounds of "it just does this" to find, because every
+     * check I had said the send succeeded.
+     * <p>
+     * Appended with the right separator: a webhook URL may already carry a query string ({@code ?thread_id=…}),
+     * and blindly adding "?" would produce a URL Discord rejects.
+     */
+    private static String withComponents(final String url, final List<Link> links) {
+        if (links.isEmpty() || url.contains("with_components=")) {
+            return url;
+        }
+        return url + (url.contains("?") ? "&" : "?") + "with_components=true";
+    }
+
+    /**
+     * The Discord message body: content, plus an action row of <b>link</b> buttons when a base URL is set.
+     * <p>
+     * Type 1 is an action row, type 2 a button, style 5 a link button. Style 5 is the only style a plain
+     * incoming webhook can usefully send: every other style produces an interaction that Discord will only
+     * deliver to an application-owned webhook, so the button would appear to work and then do nothing.
+     */
+    private Map<String, Object> discordPayload(final FarmEvent event, final List<Link> links) {
+        final String content = "**%s** %s".formatted(event.printer(), event.message());
+        if (links.isEmpty()) {
+            return Map.<String, Object>of("content", content);
+        }
+        final List<Map<String, Object>> buttons = links.stream()
+                .map(l -> Map.<String, Object>of("type", 2, "style", 5, "label", l.label(), "url", l.url()))
+                .toList();
+        // Explicit type arguments throughout: Map.of with heterogeneous values infers the least upper bound of
+        // those value types, which is not Map<String, Object>, and generics are invariant. Spelling it out costs
+        // nothing and removes a class of error I cannot see without a compiler.
+        return Map.<String, Object>of("content", content,
+                "components", List.<Map<String, Object>>of(Map.<String, Object>of("type", 1, "components", buttons)));
+    }
+
     /** Discord: multipart/form-data with a payload_json part and the snapshot as files[0], per their webhook API. */
-    private void sendDiscordWithImage(final String url, final FarmEvent event, final byte[] imageJpeg) throws Exception {
+    private void sendDiscordWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
+            final List<Link> links) throws Exception {
         final String boundary = "bambufarm" + System.nanoTime();
-        final String payloadJson = mapper.writeValueAsString(Map.of("content", "**%s** %s".formatted(event.printer(), event.message())));
+        final String payloadJson = mapper.writeValueAsString(discordPayload(event, links));
         final String head = "--%s\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n%s\r\n--%s\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"snapshot.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
                 .formatted(boundary, payloadJson, boundary);
         final String tail = "\r\n--%s--\r\n".formatted(boundary);
@@ -222,17 +353,36 @@ public class NotificationService {
      * ntfy: binary body = attachment, message/title via headers. Header values must be ISO-8859-1-safe, so the
      * text is reduced to ASCII (the full message still goes out via MQTT/logs regardless).
      */
-    private void sendNtfyWithImage(final String url, final FarmEvent event, final byte[] imageJpeg) throws Exception {
+    private void sendNtfyWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
+            final List<Link> links) throws Exception {
         final String title = asciiOnly("%s: %s".formatted(event.printer(), event.message()));
-        final HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url))
+        final HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(15))
                 .header("Filename", "snapshot.jpg")
                 .header("X-Title", title.substring(0, Math.min(title.length(), 250)))
-                .POST(HttpRequest.BodyPublishers.ofByteArray(imageJpeg))
-                .build(), HttpResponse.BodyHandlers.ofString());
+                .POST(HttpRequest.BodyPublishers.ofByteArray(imageJpeg));
+        ntfyActions(links).ifPresent(a -> request.header("Actions", a));
+        final HttpResponse<String> response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() >= 300) {
             Log.errorf("NotificationService: ntfy webhook (with image) HTTP %d: %s", response.statusCode(), response.body());
         }
+    }
+
+    /**
+     * ntfy's equivalent: a comma-separated {@code Actions} header of {@code view, <label>, <url>} entries.
+     * <p>
+     * Commas and semicolons separate fields in that header, so a label containing either would silently split
+     * into nonsense - printer names are user-supplied, so they are stripped rather than trusted. ASCII-only for
+     * the same reason the title is: HTTP header values are ISO-8859-1.
+     */
+    private static Optional<String> ntfyActions(final List<Link> links) {
+        if (links.isEmpty()) {
+            return Optional.empty();
+        }
+        final String header = links.stream()
+                .map(l -> "view, %s, %s".formatted(asciiOnly(l.label()).replaceAll("[,;]", " ").strip(), l.url()))
+                .collect(java.util.stream.Collectors.joining("; "));
+        return header.isBlank() ? Optional.empty() : Optional.of(header);
     }
 
     private static String asciiOnly(final String s) {

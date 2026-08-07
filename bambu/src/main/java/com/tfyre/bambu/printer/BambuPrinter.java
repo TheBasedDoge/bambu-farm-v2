@@ -89,6 +89,13 @@ public interface BambuPrinter {
      */
     Map<Integer, String> getAmsTrayTypes();
 
+    /**
+     * Tray colours as the printer reports them, keyed the same way as {@link #getAmsTrayTypes()}: 8-digit
+     * {@code RRGGBBAA} hex. A tray may appear in the type map and not here - the printer reports a colour only
+     * once it has read the spool's tag.
+     */
+    Map<Integer, String> getAmsTrayColors();
+
     /** Most recently reported chamber-light mode (ON/OFF), or empty if not seen yet. */
     Optional<BambuConst.LightMode> getLightMode();
 

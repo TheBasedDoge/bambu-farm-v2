@@ -688,6 +688,25 @@ public class BedDiffService {
         return m;
     }
 
+    /**
+     * Discards a printer's cached reading, because it was measured against a reference that no longer exists.
+     * <p>
+     * <b>Every measurement is relative to one specific reference image.</b> Replace the reference and the number
+     * stops meaning anything - it isn't merely old, it is an answer to a question nobody is asking any more.
+     * Called by {@link BedReferenceService} whenever a reference is saved or cleared; {@link #setCrop} does the
+     * same thing for the same reason, since re-cropping also changes what "the difference" is measuring.
+     * <p>
+     * The symptom when this is missed: you photograph a clean bed, and the printer keeps reporting "bed
+     * unverified" from a reading taken hours earlier against the picture you just replaced. It cleared only when
+     * the next check happened to run.
+     */
+    public void forgetMeasurement(final String printerName) {
+        if (lastMeasurement.remove(printerName) != null) {
+            Log.infof("BedDiffService: %s: discarded the previous reading - its reference has changed", printerName);
+        }
+        lastDiff.remove(printerName);
+    }
+
     /** Last full reading for a printer, for the calibration readout. */
     public Optional<Measurement> getLastMeasurement(final String printerName) {
         return Optional.ofNullable(lastMeasurement.get(printerName));

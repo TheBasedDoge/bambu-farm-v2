@@ -34,6 +34,13 @@ public class BedReferenceService {
     ObjectMapper mapper;
     @Inject
     BambuConfig config;
+    /**
+     * Only to invalidate cached readings when the reference changes - see {@link #saveReference}. Injecting the
+     * diff service here rather than having callers remember to do it: there are already three call sites, and
+     * "remember to also call X" is a rule that survives exactly until the fourth one.
+     */
+    @Inject
+    BedDiffService bedDiff;
 
     private final Map<String, Boolean> settings = new ConcurrentHashMap<>();
 
@@ -134,6 +141,10 @@ public class BedReferenceService {
             Files.createDirectories(refDir());
             Files.write(refFile(printerName), jpeg);
             Log.infof("BedReferenceService: saved empty-bed reference for %s (%d bytes)", printerName, jpeg.length);
+            // Mandatory, not tidy-up. Every cached reading was measured against the picture just replaced, so it
+            // now answers a question nobody is asking - and until the next check ran, the UI kept reporting "bed
+            // unverified" from it, immediately after the user had photographed a clean bed to fix exactly that.
+            bedDiff.forgetMeasurement(printerName);
         } catch (IOException ex) {
             Log.errorf(ex, "BedReferenceService: cannot save reference for %s: %s", printerName, ex.getMessage());
             throw new IllegalStateException("Could not save reference image: " + ex.getMessage(), ex);
@@ -144,6 +155,7 @@ public class BedReferenceService {
         try {
             Files.deleteIfExists(refFile(printerName));
             Log.infof("BedReferenceService: cleared empty-bed reference for %s", printerName);
+            bedDiff.forgetMeasurement(printerName);
         } catch (IOException ex) {
             Log.errorf(ex, "BedReferenceService: cannot clear reference for %s: %s", printerName, ex.getMessage());
         }

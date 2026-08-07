@@ -102,6 +102,21 @@ public interface BambuConfig {
         @WithDefault("json")
         String webhookFormat();
 
+        /**
+         * Externally reachable base URL of this app, e.g. {@code https://bambu.example.com:8081} - used to put
+         * <b>link buttons</b> on alerts so a notification is one tap from the page that can act on it.
+         * <p>
+         * A Discord incoming webhook is strictly one-way: it can carry buttons, but Discord only delivers the
+         * resulting interaction for application-owned webhooks, so a "Pause" button here would produce a click
+         * nobody receives. <b>Link buttons are the exception</b> - style 5 emits no interaction at all, it just
+         * opens a URL - which is why every button this sends is a link into the app rather than an action.
+         * <p>
+         * Unset means no buttons. Deliberately not derived from the request: notifications are sent from
+         * background schedulers where there is no request to derive anything from, and a link to
+         * {@code localhost} on your phone is worse than no link.
+         */
+        Optional<String> baseUrl();
+
         NotifyMqtt mqtt();
 
         public interface NotifyMqtt {
@@ -188,6 +203,33 @@ public interface BambuConfig {
          * check that means something different depending on which box answered is not a check.
          */
         Optional<String> fallbackUrl();
+
+        /**
+         * Whether a confirmed print failure PAUSES the print, rather than only sending a notification.
+         * <p>
+         * Until this existed the failure check was advisory only: it logged and notified, and nothing in the app
+         * ever called {@code commandControl}. A spaghetti failure at 23:33 therefore kept extruding into a nest
+         * for as long as it took someone to read a phone.
+         * <p>
+         * <b>Pause, not stop.</b> Pausing is reversible - the heater stays on, the part stays stuck to the plate,
+         * and a false positive costs one Resume click. Stopping would save more filament and free the printer,
+         * but a false positive would destroy a good print with no way back, and a check that is occasionally
+         * wrong must fail in the direction you can undo.
+         * <p>
+         * Never fires on a single verdict - see {@code failure-confirm-delay}.
+         */
+        @WithDefault("true")
+        boolean pauseOnFailure();
+
+        /**
+         * How long to wait before re-checking a suspected failure, on a fresh snapshot, before acting on it.
+         * <p>
+         * The same reasoning as the two-pass bed check: the one decision that costs real money gets a second
+         * look. Cheap, because it only ever runs on the rare bad path - and a genuine tangle is still there
+         * seconds later, while a nozzle caught mid-travel over the part is not.
+         */
+        @WithDefault("12s")
+        Duration failureConfirmDelay();
 
         /**
          * Whether a "bed is clear" verdict must survive a SECOND, independently captured snapshot before a print

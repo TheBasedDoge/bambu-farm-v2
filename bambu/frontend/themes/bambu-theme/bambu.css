@@ -2405,3 +2405,21 @@ vaadin-app-layout.wall-fullscreen::part(drawer) {
         cursor: auto;
     }
 }
+
+/* Colour swatch in the mappings part editor. "Black" and "Grey" are two words that look alike in a dropdown
+   and very much do not look alike on a customer's part - the dot is what makes the choice checkable. */
+.filament-swatch-row {
+    display: flex;
+    align-items: center;
+    gap: var(--lumo-space-s);
+}
+
+.filament-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex: none;
+    /* An outline, because pure white and clear are invisible against a light dropdown otherwise. */
+    border: 1px solid var(--lumo-contrast-30pct);
+}
+

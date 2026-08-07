@@ -274,6 +274,41 @@ public class OllamaService {
     private static final java.util.regex.Pattern SEGMENT_SPLIT = java.util.regex.Pattern.compile("[\\n.;!?]");
 
     /**
+     * Failure words. A reply that reports {@code Problems: none} while its own reason describes one of these is
+     * contradicting itself, exactly as a "bed is clear" verdict that describes a ring does.
+     * <p>
+     * <b>Why this exists.</b> A real H2D spaghetti failure was recorded as OK: <i>"Problems: none … Reason: The
+     * image shows what appears to be a tangled mess of filament, but it doesn't exhibit spaghetti or detached
+     * conditions, and seems like it might still be building up layer by layer."</i> The model was following the
+     * prompt literally - the old prompt defined spaghetti as strands "not attached to the object", and this
+     * tangle grew out of the top of the part. The prompt is fixed, but the class of error is not: a model that
+     * describes a failure and then files it under "none" should not be believed over its own eyes.
+     * <p>
+     * Deliberately excludes bare "string"/"strings": thin wisps between parts are normal and named as normal in
+     * the prompt. Only a dense mass counts.
+     */
+    private static final java.util.regex.Pattern FAILURE_PHRASE = java.util.regex.Pattern.compile(
+            "(?i)\\b(spaghetti"
+            + "|tangled?(?:\\s+(?:mess|mass|ball|nest))?"
+            + "|birds?\\s*nest"
+            + "|nest\\s+of\\s+filament"
+            + "|(?:mess|mass|ball|clump|blob|glob|wad)\\s+of\\s+(?:filament|plastic|material)"
+            + "|blobs?|globs?|clumps?"
+            + "|came\\s+off\\s+the\\s+(?:plate|bed)"
+            + "|dragged\\s+(?:around|across))\\b");
+
+    /**
+     * Finds a failure the model described but did not report, if there is one.
+     * <p>
+     * Same machinery as {@link #findContradiction} - per-field segments, negation looked for only BEHIND the
+     * match - so "no spaghetti or tangles" and "doesn't exhibit spaghetti" both pass, while "a tangled mess of
+     * filament, but it doesn't exhibit spaghetti" is caught on the first phrase and not excused by the second.
+     */
+    static Optional<String> findUnreportedFailure(final String text) {
+        return scanForPhrase(text, FAILURE_PHRASE);
+    }
+
+    /**
      * Finds a phrase in the model's own text that contradicts a "bed is clear" verdict, if there is one.
      * <p>
      * <b>Why this exists:</b> a cupholder was dispatched onto two occupied beds after the model answered
@@ -290,11 +325,23 @@ public class OllamaService {
      * @return the offending phrase, for the log and the check history, or empty when the reply is consistent
      */
     static Optional<String> findContradiction(final String text) {
+        return scanForPhrase(text, OBJECT_PHRASE, ROUND_SHAPE);
+    }
+
+    /**
+     * Shared scan: the first phrase any pattern matches that is not negated earlier in its own field.
+     * <p>
+     * Extracted so the bed gate and the failure check cannot drift apart. The two rules that matter are both
+     * here: negation is looked for only <b>behind</b> the match (a trailing "…is not a printed object" must not
+     * excuse it) and only <b>within its own segment</b> (an earlier "Objects: none" must not negate a finding in
+     * the Reason below it).
+     */
+    private static Optional<String> scanForPhrase(final String text, final java.util.regex.Pattern... patterns) {
         if (text == null || text.isBlank()) {
             return Optional.empty();
         }
         for (final String segment : SEGMENT_SPLIT.split(FIELD_LABEL.matcher(text).replaceAll("\n"))) {
-            for (final java.util.regex.Pattern pattern : List.of(OBJECT_PHRASE, ROUND_SHAPE)) {
+            for (final java.util.regex.Pattern pattern : patterns) {
                 final java.util.regex.Matcher m = pattern.matcher(segment);
                 while (m.find()) {
                     if (!NEGATION.matcher(segment.substring(0, m.start())).find()) {
@@ -377,6 +424,19 @@ public class OllamaService {
             return Optional.empty();
         }
         if (!positive) {
+            // The failure check is the one place where a NEGATIVE verdict deserves a second look. Everywhere
+            // else "no" is the safe answer and we take it; here "no" means "keep printing", and a model that
+            // has just described a nest of filament and then filed it under Problems: none is not saying no,
+            // it is saying it did not recognise what it saw.
+            if (findingsMeanPositive) {
+                final Optional<String> described = findUnreportedFailure(text);
+                if (described.isPresent()) {
+                    Log.warnf("OllamaService: failure verdict overridden - reported no problems but describes "
+                            + "\"%s\": %s", described.get(), text);
+                    return Optional.of(new Verdict(true,
+                            Optional.of("reported none but describes \"%s\"".formatted(described.get()))));
+                }
+            }
             // The model said no by itself - nothing for us to override, and no note to add.
             return Optional.of(new Verdict(false, Optional.empty()));
         }

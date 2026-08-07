@@ -76,6 +76,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private int printerError;
     private List<String> activeHmsErrors = List.of();
     private volatile java.util.Map<Integer, String> amsTrayTypes = java.util.Map.of();
+    /** Tray colours as the printer reports them - 8-digit RRGGBBAA hex. Kept in step with {@link #amsTrayTypes}. */
+    private volatile java.util.Map<Integer, String> amsTrayColors = java.util.Map.of();
     private volatile Optional<BambuConst.LightMode> lightMode = Optional.empty();
     private volatile int activeTrayId = -1;
     private volatile int layerNum = -1;
@@ -189,10 +191,20 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                 final java.util.Map<Integer, String> merged = new java.util.HashMap<>(amsTrayTypes);
                 merged.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayType().toUpperCase());
                 amsTrayTypes = java.util.Map.copyOf(merged);
+                if (print.getVtTray().hasTrayColor() && !print.getVtTray().getTrayColor().isBlank()) {
+                    final java.util.Map<Integer, String> mergedColors = new java.util.HashMap<>(amsTrayColors);
+                    mergedColors.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayColor().toUpperCase());
+                    amsTrayColors = java.util.Map.copyOf(mergedColors);
+                }
             }
             return;
         }
         final java.util.Map<Integer, String> types = new java.util.HashMap<>();
+        // Colours are collected in the SAME pass as the types, deliberately. Two passes over Bambu's partial
+        // delta pushes would eventually disagree about which tray holds what, and a dispatcher that thinks
+        // slot 4 is black because the type map and the colour map came from different messages is worse than
+        // one that doesn't filter by colour at all.
+        final java.util.Map<Integer, String> colors = new java.util.HashMap<>();
         print.getAms().getAmsList().forEach(single -> {
             final int amsId = parseIntSafe(single.getId(), -1);
             if (amsId < 0) {
@@ -204,15 +216,25 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                     return;
                 }
                 types.put(amsId * 4 + trayId, tray.getTrayType().toUpperCase());
+                if (tray.hasTrayColor() && !tray.getTrayColor().isBlank()) {
+                    colors.put(amsId * 4 + trayId, tray.getTrayColor().toUpperCase());
+                }
             });
         });
         if (print.hasVtTray() && print.getVtTray().hasTrayType() && !print.getVtTray().getTrayType().isBlank()) {
             types.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayType().toUpperCase());
+            if (print.getVtTray().hasTrayColor() && !print.getVtTray().getTrayColor().isBlank()) {
+                colors.put(BambuConst.AMS_TRAY_VIRTUAL, print.getVtTray().getTrayColor().toUpperCase());
+            }
         } else if (amsTrayTypes.containsKey(BambuConst.AMS_TRAY_VIRTUAL)) {
             // vt_tray often rides in separate pushes - keep the last known external-spool type
             types.put(BambuConst.AMS_TRAY_VIRTUAL, amsTrayTypes.get(BambuConst.AMS_TRAY_VIRTUAL));
+            if (amsTrayColors.containsKey(BambuConst.AMS_TRAY_VIRTUAL)) {
+                colors.put(BambuConst.AMS_TRAY_VIRTUAL, amsTrayColors.get(BambuConst.AMS_TRAY_VIRTUAL));
+            }
         }
         amsTrayTypes = java.util.Map.copyOf(types);
+        amsTrayColors = java.util.Map.copyOf(colors);
     }
 
     private static int parseIntSafe(final String value, final int fallback) {
@@ -329,6 +351,11 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public java.util.Map<Integer, String> getAmsTrayTypes() {
         return amsTrayTypes;
+    }
+
+    @Override
+    public java.util.Map<Integer, String> getAmsTrayColors() {
+        return amsTrayColors;
     }
 
     @Override

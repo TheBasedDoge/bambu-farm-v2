@@ -330,16 +330,27 @@ public class AutoQueueService {
         }
         final String want = part.filamentType().strip().toUpperCase();
         final Map<Integer, String> trays = printer.getAmsTrayTypes();
+        // Colour is an ADDITIONAL constraint on the material match, never a substitute for it: on its own it
+        // would let black PLA satisfy a part that needs ASA. Empty means "any colour", which is what every
+        // mapping written before this existed means.
+        final Map<Integer, String> colors = printer.getAmsTrayColors();
+        final Optional<FilamentColor> wantColor = part.color();
+        final java.util.function.IntPredicate colorOk =
+                slot -> wantColor.map(c -> c.matches(colors.get(slot))).orElse(true);
+
         if (part.amsSlot() != null) {
-            // Strict: the mapped tray must currently hold the wanted material
-            return want.equals(trays.get(part.amsSlot()))
+            // Strict: the mapped tray must currently hold the wanted material, in the wanted colour
+            return want.equals(trays.get(part.amsSlot())) && colorOk.test(part.amsSlot())
                     ? Optional.of(new Candidate(detail, ready, part.amsSlot()))
                     : Optional.empty();
         }
-        // Any tray with the wanted material qualifies - lowest real AMS tray first, external spool last
+        // Any tray with the wanted material AND colour qualifies - lowest real AMS tray first, external spool
+        // last. Note the ordering is arbitrary among equals: before colour filtering existed, "lowest tray
+        // holding ASA" is how an order went out in grey.
         return trays.entrySet().stream()
                 .filter(e -> want.equals(e.getValue()))
                 .map(Map.Entry::getKey)
+                .filter(colorOk::test)
                 .sorted(Comparator.comparingInt(slot -> slot == BambuConst.AMS_TRAY_VIRTUAL ? Integer.MAX_VALUE : slot))
                 .findFirst()
                 .map(slot -> new Candidate(detail, ready, slot));

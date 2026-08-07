@@ -182,6 +182,7 @@ public class MappingPartsPanel extends Div {
         final IntegerField copiesField = new IntegerField("Copies/unit");
         final ComboBox<Integer> amsSlotSelect = new ComboBox<>("AMS slot");
         final ComboBox<String> filamentSelect = new ComboBox<>("Filament");
+        final ComboBox<com.tfyre.bambu.printer.FilamentColor> colorSelect = new ComboBox<>("Colour");
         final Button removeBtn = new Button(new Icon(VaadinIcon.TRASH));
 
         PartRow(final MappingPart initial) {
@@ -238,6 +239,26 @@ public class MappingPartsPanel extends Div {
             filamentSelect.setPlaceholder("Any");
             filamentSelect.setTooltipText("Only send this part to a printer with this material loaded. Blank means no requirement.");
 
+            colorSelect.setItems(com.tfyre.bambu.printer.FilamentColor.values());
+            colorSelect.setItemLabelGenerator(com.tfyre.bambu.printer.FilamentColor::label);
+            colorSelect.setWidth("120px");
+            colorSelect.setClearButtonVisible(true);
+            colorSelect.setPlaceholder("Any");
+            colorSelect.setTooltipText("Only use a tray whose colour is closest to this. Blank means any colour - "
+                    + "which is how an order once printed in grey ASA because that tray happened to be first. "
+                    + "A tray whose colour the printer hasn't reported never matches.");
+            // The swatch is the point: "Black" and "Grey" are two words that look alike in a dropdown and very
+            // much do not look alike on a customer's part.
+            colorSelect.setRenderer(new com.vaadin.flow.data.renderer.ComponentRenderer<com.vaadin.flow.component.html.Div, com.tfyre.bambu.printer.FilamentColor>(c -> {
+                final com.vaadin.flow.component.html.Span dot = new com.vaadin.flow.component.html.Span();
+                dot.addClassName("filament-swatch");
+                dot.getStyle().setBackgroundColor(c.hex());
+                final com.vaadin.flow.component.html.Span label = new com.vaadin.flow.component.html.Span(c.label());
+                final com.vaadin.flow.component.html.Div row = new com.vaadin.flow.component.html.Div(dot, label);
+                row.addClassName("filament-swatch-row");
+                return row;
+            }));
+
             removeBtn.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
             removeBtn.setTooltipText("Remove this part");
             removeBtn.addClickListener(e -> removeRow(this));
@@ -255,11 +276,12 @@ public class MappingPartsPanel extends Div {
                 copiesField.setValue(initial.copiesPerUnit());
                 amsSlotSelect.setValue(initial.amsSlot());
                 filamentSelect.setValue(initial.filamentType());
+                colorSelect.setValue(initial.color().orElse(null));
             }
             applyVisibility();
 
             container.add(sourceSelect, gcodeSelect, plateSelect, sdPathField, sdPlateField, copiesField,
-                    amsSlotSelect, filamentSelect, removeBtn);
+                    amsSlotSelect, filamentSelect, colorSelect, removeBtn);
         }
 
         private void applyVisibility() {
@@ -275,17 +297,20 @@ public class MappingPartsPanel extends Div {
             final int copies = copiesField.getValue() == null ? 1 : copiesField.getValue();
             final Integer amsSlot = amsSlotSelect.getValue();
             final String filamentType = filamentSelect.getValue();
+            final String filamentColor = colorSelect.getValue() == null ? null : colorSelect.getValue().label();
             if (source == GcodeSource.LIBRARY) {
                 if (gcodeSelect.getValue() == null || plateSelect.getValue() == null) {
                     return null;
                 }
-                return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies, amsSlot, filamentType);
+                return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies,
+                        amsSlot, filamentType, filamentColor);
             }
             if (sdPathField.getValue() == null || sdPathField.getValue().isBlank()) {
                 return null;
             }
             final int plate = sdPlateField.getValue() == null ? 1 : sdPlateField.getValue();
-            return new MappingPart(GcodeSource.SD_CARD, sdPathField.getValue().trim(), plate, copies, amsSlot, filamentType);
+            return new MappingPart(GcodeSource.SD_CARD, sdPathField.getValue().trim(), plate, copies, amsSlot,
+                    filamentType, filamentColor);
         }
     }
 

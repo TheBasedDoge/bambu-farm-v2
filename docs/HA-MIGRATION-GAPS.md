@@ -128,6 +128,8 @@ drift can creep but a part can never be adopted.
 maintainable rather than a thing you re-capture every few weeks.
 
 ### 1.3 Two-pass verification on approve
+
+> **✅ DONE.** `bambu.ollama.two-pass-bed-check` (togglable on the AI Settings page). Runs only when pass 1 wants to approve and the pixel backstop hasn't already blocked, exactly as specified — the common "bed dirty" path costs nothing extra.
 A `Clear: YES` must survive a **second independent snapshot** taken 3s later; final confidence is
 `min(pass1, pass2)`. Crucially, pass 2 **only runs when pass 1 wants to approve and pixels don't
 already block** — so it costs nothing on the common "bed dirty" path and only spends a second
@@ -211,6 +213,8 @@ enqueue step packs greedily before creating jobs. Fits the existing `MappingPart
 disturbing dispatch.
 
 ### 2.2 End-to-end test mode
+
+> **✅ DONE.** `SimulationService` — a global toggle on the Automation overview that makes the print commands no-op while everything upstream (parsing, mapping, printer selection, the AI gate, notifications) runs for real. Auto-expires, so a farm cannot be left silently not printing.
 `input_boolean.etsy_test_mode` + `script.etsy_test_order` fires a **synthetic order** through the
 entire pipeline — parsing, mapping, printer selection, bed check, notifications — while skipping the
 actual print command.
@@ -267,7 +271,10 @@ precisely during this migration.
 > production. Deviate from them only with measurements, not reasoning.**
 
 Also done: poll-failure alerts (0.2.1), start verification (1.6 / 0.2.2), AI verdict in `auto_start`
-(0.2.3).
+(0.2.3), two-pass verification on approve (1.3), and the end-to-end simulate mode (2.2).
+
+**Still open: 2.1, batch / multi-quantity plate packing** — the last item in this document and the largest
+remaining throughput gap. Nothing else here is outstanding.
 
 Also done: poll-failure alerts (0.2.1), start verification (1.6 / 0.2.2), AI verdict in `auto_start`
 (0.2.3), and **1.4 in full** (2026-07-31 — the confidence half shipped earlier with the parser rewrite;

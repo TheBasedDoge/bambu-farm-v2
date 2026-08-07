@@ -303,9 +303,12 @@ public class DispatchQueueService {
         final boolean anyFilament = optedIn.stream()
                 .anyMatch(pd -> waiting.stream().anyMatch(j -> autoQueueService.resolveSlot(pd, j.part()).isPresent()));
         if (!anyFilament) {
+            // Name the COLOUR as well as the material. "no printer has ASA loaded" while three trays hold ASA
+            // is a message that sends you looking in the wrong place; "black ASA" is the whole answer.
             final String needed = waiting.stream()
-                    .map(j -> j.part().filamentType())
-                    .filter(f -> f != null)
+                    .map(j -> j.part())
+                    .filter(part -> part.filamentType() != null)
+                    .map(part -> part.color().map(c -> c.label() + " ").orElse("") + part.filamentType())
                     .distinct()
                     .collect(java.util.stream.Collectors.joining(", "));
             reportBlocked("no-filament", "%d order job(s) waiting, but no printer has the required filament loaded%s - load it (or clear the requirement on the mapping) and they'll dispatch."
@@ -482,8 +485,22 @@ public class DispatchQueueService {
     private record Match(PendingJob job, Integer slot) {
     }
 
-    /** A job whose print command was accepted, awaiting confirmation that the printer actually started. */
-    private record PendingStart(String printer, MappingPart part, OrderRef orderRef, Instant deadline) {
+    /**
+     * A job whose print command was accepted, awaiting confirmation that the printer actually started.
+     * <p>
+     * Holds the whole {@link PendingJob}, not a copy of its part and order. The job's <b>id</b> is what
+     * {@code jobFailures} and {@code jobParked} are keyed by, and losing it is what let a broken job retry
+     * forever - see {@link #verifyStarts}.
+     */
+    private record PendingStart(String printer, PendingJob job, Instant deadline) {
+
+        MappingPart part() {
+            return job.part();
+        }
+
+        OrderRef orderRef() {
+            return job.orderRef();
+        }
     }
 
     /**
@@ -514,7 +531,14 @@ public class DispatchQueueService {
                 continue; // started normally
             }
             dirtyUntil.put(ps.printer(), now.plus(START_FAIL_BACKOFF));
-            enqueue(ps.part(), ps.orderRef());
+            // recordJobFailure, NOT enqueue. enqueue() mints a fresh UUID, so every retry looked like a brand
+            // new job to the failure counter and MAX_JOB_FAILURES was never reached: one wrong file retried
+            // every 24 minutes for hours, burning an AI check and a chamber-light cycle each time, and the
+            // "parked" state that exists precisely for this never engaged. Returning the SAME job makes the
+            // count accumulate and the job park on the third attempt like any other permanent failure.
+            recordJobFailure(ps.job(), ps.printer(),
+                    "the printer accepted the command but never started - the file may be missing from its SD "
+                    + "card, or the copy on the card is corrupt and cannot be parsed");
             reportBlocked("start-failed|" + ps.printer(),
                     "%s accepted the print command but never started %s%s - the file may be missing from that printer's SD card. Put back in the dispatch pool; %s is held for %d minutes so it goes to another printer."
                             .formatted(ps.printer(), ps.part().path(),
@@ -546,6 +570,20 @@ public class DispatchQueueService {
 
     /** @return true if a job was claimed and a bed check started for this printer. */
     private boolean tryDispatch(final BambuPrinters.PrinterDetail pd) {
+        // One un-verified dispatch per printer at a time.
+        //
+        // A printer that accepted a command but hasn't started yet still reports READY, so without this the
+        // dispatcher hands it another job on the very next pass. That happened for real: P1P was given three
+        // jobs from one order inside two minutes, none of which it could start. Worse, pendingStarts is keyed by
+        // PRINTER, so each new dispatch overwrote the previous printer's pending verification - the first two
+        // jobs left both the pool and the queue and were never checked on again, which is precisely the silent
+        // under-print the verification was written to prevent.
+        //
+        // Waiting is free here: if the printer really did start, the entry clears on the next verify pass and
+        // the job goes out moments later. If it didn't, we find out before spending anything else on it.
+        if (pendingStarts.containsKey(pd.name())) {
+            return false;
+        }
         // Claim the job up front: two printers checked concurrently must never end up printing the same copy.
         final Optional<Match> matchOpt = claimJobFor(pd);
         if (matchOpt.isEmpty()) {
@@ -615,7 +653,7 @@ public class DispatchQueueService {
                         // every simulated dispatch would "fail" verification, dumping the job back into the pool
                         // and holding the printer for 20 minutes.
                         if (!simulation.isEnabled()) {
-                            pendingStarts.put(pd.name(), new PendingStart(pd.name(), job.part(), job.orderRef(),
+                            pendingStarts.put(pd.name(), new PendingStart(pd.name(), job,
                                     Instant.now().plus(START_VERIFY_AFTER)));
                         }
                         notificationService.notifyEvent("auto_start", pd.name(),

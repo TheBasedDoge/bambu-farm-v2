@@ -289,6 +289,21 @@ The **AI Settings** tab on the Automation page (also `/ai-settings` directly). U
 
 **How a verdict is read:** the prompts ask the model to lead with YES/NO/GOOD, but local models frequently ignore that and answer straight into the structured fields. So the parser treats the fields as primary - `Problems:` / `Objects:` (a listed finding, versus "none"), then an explicit `Clear: yes|no`, then the leading keyword, then `Confidence:` - and an answer it cannot read at all is treated as **no answer**, which fails closed at the gates. A positive verdict on the **bed-clear gate** also needs `Confidence: 90` or better, or it's downgraded - a hedged "clear" isn't good enough to start a print on. The two *monitoring* checks are exempt: for failure detection, suppressing an alarm over low confidence is the wrong way to be wrong; for the first-layer check, turning an 85%-confident "looks fine" into an alert would warn on nearly every print, which is how you train yourself to ignore the one that matters.
 
+**Acting on a failure.** A confirmed failure now **pauses the print** (`bambu.ollama.pause-on-failure`, default on). Until this existed the check was advisory only — it logged and notified, and nothing in the app ever called `commandControl`, so a spaghetti failure kept extruding into a nest for as long as it took someone to read a phone.
+
+Pause rather than stop, deliberately: pausing is reversible — the heater stays on, the part stays stuck to the plate, and a false positive costs one Resume click. Stopping would save more filament and free the printer, but a false positive would destroy a good print with no way back, and a check that is sometimes wrong should fail in the direction you can undo.
+
+**Two gates, not one.** A suspected failure has to survive both:
+
+1. **A re-check on a fresh frame** after `bambu.ollama.failure-confirm-delay` (default 12s).
+2. **The next scheduled check agreeing** — you're notified on the first confirmation, but the printer isn't touched until a second one five minutes later says the same thing. Any clean check in between resets it.
+
+The second gate exists because the first isn't enough, and the H2D proved it: eight "tangle of loose filament extending from the nozzle" verdicts in 95 minutes on a print that was perfectly fine. That camera looks across the toolhead, so nozzle ooze and the machine's own coiled hoses are permanently in shot — and two frames twelve seconds apart both see them. Two checks five minutes apart don't, because ooze moves and a real nest only grows. It costs one extra cycle on a genuine failure, which is nothing against a nest that sat there for two hours.
+
+**A pause is verified, not assumed.** `commandControl` publishes an MQTT message and returns; it throws nothing if the printer ignores it, and a printer in **cloud mode rather than LAN mode** ignores everything, because this app has read-only access to it. The first version assumed no-exception meant paused and reported "The print has been PAUSED" for a printer that carried on printing. It now waits up to ten seconds for the printer to actually leave the printing state, and if it doesn't, the alert says so and tells you to stop it yourself.
+
+It never acts on a single verdict. A suspected failure is re-checked on a fresh snapshot after `bambu.ollama.failure-confirm-delay` (default 12s) and only acted on if both agree — the same reasoning as the two-pass bed gate, and cheap because it only runs on the rare bad path. A genuine tangle is still there twelve seconds later; a nozzle caught mid-travel across the part is not. If the print has already stopped by then, nothing is done. The notification is sent whether or not the pause is enabled or succeeds: being told is the part that must never depend on anything else working.
+
 **Post-print cooldown.** A printer that has just stopped printing is held for **30 minutes** (editable on the AI Settings page, 0 = off) before it can take a pooled order job. In the moments after a print ends the bed is *certainly* occupied — the part that just finished is sitting on it — so there's nothing for a bed check to usefully decide, and asking a vision model to judge that frame is asking it to be right exactly when being wrong is most expensive. On 2026-08-01 a printer finished at 02:08:45 and a bed check ran 61 seconds later; the pixel diff caught that one, but a confident "clear" on a mid-range reading would have printed onto the part. Auto-start has always had this (its `bambu.auto-start-settle`, default 3m); the dispatch pool didn't, so that route in was the unprotected one. It shows on the overview as the usual bed-backoff countdown. Note this removes the *guaranteed*-occupied window — it isn't a substitute for the bed check, which is still what has to catch a part that's still there afterwards.
 
 **Two-pass verification (bed-clear gate only).** A "clear" verdict must survive a **second, independently captured snapshot** before a print may start - a fresh light-settle, a fresh frame, a fresh inference. One vision-model verdict isn't stable on a marginal bed: on this farm the same plate, at the same pixel reading, was judged not-clear at 01:12 and clear at 01:16, and the "clear" one started a print onto an occupied plate. Two passes turn one coin flip into two that have to agree, and a second look that returns no answer counts as disagreement (the gate authorises a print, so silence fails closed).
@@ -331,6 +346,33 @@ Each printer card has a **Measure now** button that runs just the pixel comparis
 Each card also shows **"What differs"** - the compared region with the blocks driving the reading washed red. If the red lands on bare plate rather than on an object, the metric is reacting to something that isn't a part (lighting, plate position, or image noise) and the limits won't fix it.
 
 **Capture the reference in the same state the check runs in**: after a print has finished and the bed has been cleared, rather than with the bed parked somewhere it never sits during a real check.
+
+**Retaking a reference discards that printer's last reading.** Every measurement is relative to one specific reference image, so replacing the reference doesn't make the old number stale, it makes it meaningless - it's the answer to a question nobody is asking any more. The printer reads as "no reading yet" until the next check runs, rather than continuing to report a warning derived from the picture you just replaced.
+
+### Upload integrity and the retry limit
+
+Two failures that arrived together on one order, both worth knowing about.
+
+**Uploads are verified.** A completed FTP conversation is not proof of an intact file — a truncated transfer finishes cleanly and the client still reports success. The printer's only reply to a short `.3mf` is error `5004003`, *"There was a problem parsing gcode.3mf"*, raised long after the print command was accepted, so nothing upstream sees a failure. After every upload the file's size on the SD card is now compared to the local file, and a mismatch fails immediately with the two numbers in the message.
+
+**Only one un-verified dispatch per printer.** A printer that has accepted a print command but hasn't started yet still reports READY, so the dispatcher would hand it another job on the very next pass — one printer took three jobs from a single order inside two minutes, none of which it could start. And because the pending-verification map is keyed by *printer*, each new dispatch overwrote the previous one's entry: the first two jobs left both the pool and the queue and were never checked on again. That is the exact silent under-print the verification exists to catch, caused by the verification's own bookkeeping. A printer with an outstanding verification is now skipped until it resolves.
+
+**A job that never starts now parks.** Dispatch already had a three-strikes rule — `MAX_JOB_FAILURES` — and a "parked" state for a job that can't succeed. It never engaged for start failures, because the recovery path re-pooled the job through `enqueue()`, which mints a **new job id**. The failure counter is keyed by that id, so every retry looked like a brand new job with zero failures. One bad file retried every 24 minutes for hours, burning an AI check and a chamber-light cycle each time. The job is now returned with its identity intact and parks on the third attempt, with the reason on the Print Queue page.
+
+### Filament colour filter
+
+A mapped part can require a **colour** as well as a material. Without it the dispatcher takes the lowest-numbered tray holding the right material, which is how an ASA order once went out in grey because slot 4 happened to come first.
+
+You pick a name ("Black", "Grey", …) on the Mappings page, not a hex. The printer reports each tray's colour from the spool's RFID tag, and two spools both sold as black are routinely not the same number — matching on the literal value would mean a mapping that quietly stops working the day you open a new roll, with nothing to show for it but a job that never dispatches. Each tray's reported colour is classified onto the named set instead.
+
+Classification reads **hue first** and falls back to brightness only for greys, whites and blacks. The obvious implementation — nearest palette colour by RGB distance — is wrong in a way that matters: blue is only 11% of perceived brightness, so Bambu's Basic Blue genuinely sits closer to black than to any blue reference, and a blue tray would have satisfied a "black" filter. A test caught that before it compiled.
+
+Two deliberate behaviours:
+
+- **A tray whose colour the printer hasn't reported never matches.** An untagged spool satisfying every filter is the exact situation the filter exists to prevent, so it fails closed — the job waits.
+- **A colour name this build doesn't recognise reads as "any"**, not "never". A typo shouldn't silently stop a farm.
+
+Colour only narrows a material match; on its own it would let black PLA satisfy a part that needs ASA. When nothing can take a job, the hold message names both ("no printer has black ASA loaded") — "no ASA" while three trays hold ASA sends you looking in the wrong place.
 
 Turn it on under **Empty-bed reference** on the AI Settings page (needs a reference image saved for that printer). Four controls:
 - **Enable the pixel-diff backstop** - off by default; it needs a reference and a calibrated limit.
@@ -628,6 +670,16 @@ The clock is ticked by the browser rather than the server, on purpose: if the se
 
 **Collapse to a rail** with the menu button. The width and the labels animate rather than snapping; the labels fade slightly ahead of the narrowing so the icons aren't briefly sitting under text. A remembered collapse is applied without animation on load, so a page view doesn't start with the sidebar visibly sliding shut, and the whole effect is dropped under `prefers-reduced-motion`.
 
+### Alert buttons
+
+Set `bambu.notifications.base-url` to this app's externally reachable URL and every alert gains **link buttons** — "Open H2D", "AI checks", "Etsy orders" — so a Discord notification is one tap from the page that can act on it, rather than five.
+
+They are links, and only links, for a reason. A Discord incoming webhook is **one-way**: it can render an action button, but Discord only delivers the resulting interaction to *application-owned* webhooks. A "Pause" button here would look real, do nothing, and teach you not to trust the alert. A link button (style 5) fires no interaction at all — it just opens a URL — which is the one button type a plain webhook can send honestly. Real remote actions would need a bot or a public interactions endpoint.
+
+The webhook URL gets `?with_components=true` appended when a message carries buttons. **Without it Discord accepts the message, returns 2xx, and silently drops the components** — no error, no warning, nothing in any log, just a message with no buttons. That is indistinguishable from not having sent any, and it is the single easiest thing to get wrong here.
+
+ntfy gets the same links via its `Actions` header. Unset the base URL and there are simply no buttons: one pointing at `localhost` fails on the one device you're holding, which is worse than none.
+
 ## Timezone
 
 Set `TZ` on the `bambuweb` container to your own zone:
@@ -689,6 +741,7 @@ Restraints, because an over-eager watchdog is worse than none: it acts only afte
 | `bambu.notifications.mqtt.topic` | `bambufarm` | Topic prefix |
 | `bambu.notifications.webhook-url` | - | Webhook target |
 | `bambu.notifications.webhook-format` | `json` | `json` / `discord` / `ntfy` |
+| `bambu.notifications.base-url` | - | External URL of this app; adds link buttons to alerts |
 | `bambu.ollama.url` | - | Ollama server URL (unset = AI checks skipped) |
 | `bambu.ollama.fallback-url` | - | Second server, tried only when the first is unreachable |
 | `bambu.ollama.model` | `gemma3:12b` | Vision model for AI checks |
@@ -810,9 +863,13 @@ bambu.notifications.mqtt.topic=bambufarm
 # Webhook alternative: format = json / discord / ntfy
 bambu.notifications.webhook-url=https://discord.com/api/webhooks/...
 bambu.notifications.webhook-format=discord
+# Externally reachable URL of this app - adds link buttons to alerts. Unset = no buttons.
+bambu.notifications.base-url=https://bambu.example.com:8081
 
 # AI print/bed monitoring via Ollama - unset url = fully disabled
 bambu.ollama.url=http://192.168.1.x:11434
+# Optional second server, tried only on a connection failure - run the same model on it
+bambu.ollama.fallback-url=http://192.168.1.y:11434
 bambu.ollama.model=gemma3:12b
 bambu.ollama.failure-check-interval=5m
 bambu.ollama.first-layer-delay=8m
