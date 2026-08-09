@@ -451,9 +451,76 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                 + "each card: it should be mostly plate.");
         cropBlurb.addClassName("bed-protect-sub");
         cropBox.add(cropBlurb);
+        // Which printers the numbers below apply to. Defaults to the MODEL of the first printer rather than
+        // the global crop: where the camera sits is a property of the machine, so a per-model crop is the one
+        // that should normally be edited. One global crop tuned on a P1 was being applied to the H2D, whose
+        // camera looks across the toolhead - it was never going to fit both.
+        final ComboBox<String> cropScope = new ComboBox<>("Applies to");
+        final List<String> scopes = new ArrayList<>();
+        scopes.add("");
+        printers.getPrintersDetail().stream()
+                .map(d -> d.printer().getModel())
+                .filter(m -> m != com.tfyre.bambu.printer.BambuConst.PrinterModel.UNKNOWN)
+                .map(m -> "model." + m.getModel())
+                .distinct()
+                .forEach(scopes::add);
+        printers.getPrintersDetail().stream().map(d -> "printer." + d.name()).forEach(scopes::add);
+        cropScope.setItems(scopes);
+        cropScope.setItemLabelGenerator(v -> v.isEmpty() ? "All printers (default)"
+                : v.startsWith("model.") ? "Every " + v.substring(6).toUpperCase()
+                : "Only " + v.substring(8));
+        cropScope.setAllowCustomValue(false);
+        cropScope.setWidth("210px");
+        cropScope.setTooltipText("Set the crop for a whole printer model, or override one machine whose camera "
+                + "has been knocked. Blank is the fallback used when neither is set.");
+
+        // Says whether the numbers below are this scope's own or inherited, and offers a way back. Editing an
+        // inherited value silently creates an override; a settings page that can't tell you which you're looking
+        // at is one you have to guess at.
+        final Span inherited = new Span();
+        inherited.addClassName("bed-protect-sub");
+        final Button resetScope = new Button("Reset to inherited", new Icon(VaadinIcon.ARROW_BACKWARD));
+        resetScope.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
+
+        final List<CropSlider> sliders = new ArrayList<>();
+        final CropSlider left = cropSlider(cropScope, "left", "Left edge");
+        final CropSlider top = cropSlider(cropScope, "top", "Top edge");
+        final CropSlider right = cropSlider(cropScope, "right", "Right edge");
+        final CropSlider bottom = cropSlider(cropScope, "bottom", "Bottom edge");
+        sliders.add(left);
+        sliders.add(top);
+        sliders.add(right);
+        sliders.add(bottom);
+
+        final Runnable reloadScope = () -> {
+            final String scope = cropScope.getValue() == null ? "" : cropScope.getValue();
+            final String printer = scopeToPrinter(scope);
+            sliders.forEach(sl -> sl.set(bedDiff.getCrop(printer, sl.edge())));
+            final boolean own = bedDiff.hasCropOverride(scope);
+            inherited.setText(scope.isEmpty() ? "This is the fallback every printer uses when nothing more "
+                    + "specific is set."
+                    : own ? "Set for this scope."
+                    : "Inherited - editing any slider will create an override just for this scope.");
+            inherited.getStyle().setColor(own ? "var(--lumo-secondary-text-color)"
+                    : "var(--lumo-warning-text-color, #e8a33d)");
+            resetScope.setVisible(!scope.isEmpty() && own);
+        };
+        cropScope.addValueChangeListener(e -> reloadScope.run());
+        resetScope.addClickListener(e -> {
+            bedDiff.clearCrop(cropScope.getValue() == null ? "" : cropScope.getValue());
+            reloadScope.run();
+            bedCardRefreshers.forEach(Runnable::run);
+        });
+        sliders.forEach(sl -> sl.onChange(reloadScope));
+        cropScope.setValue(scopes.size() > 1 ? scopes.get(1) : "");
+        reloadScope.run();
+
         final HorizontalLayout crop = new HorizontalLayout(
-                cropField("left", "Left"), cropField("top", "Top"),
-                cropField("right", "Right"), cropField("bottom", "Bottom"), blockLimit);
+                left.layout(), top.layout(), right.layout(), bottom.layout(), blockLimit);
+        final HorizontalLayout scopeRow = new HorizontalLayout(cropScope, inherited, resetScope);
+        scopeRow.setDefaultVerticalComponentAlignment(FlexComponent.Alignment.BASELINE);
+        scopeRow.getStyle().set("flex-wrap", "wrap");
+        cropBox.add(scopeRow);
         crop.setDefaultVerticalComponentAlignment(FlexComponent.Alignment.BASELINE);
         crop.getStyle().set("flex-wrap", "wrap");
         cropBox.add(crop);
@@ -474,24 +541,78 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         return box;
     }
 
-    /** One edge of the compared region, as a 0-1 fraction of the frame. */
-    private NumberField cropField(final String edge, final String label) {
-        final NumberField f = new NumberField(label);
-        f.setValue(bedDiff.getCrop(edge));
-        f.setStep(0.01);
-        f.setMin(0);
-        f.setMax(1);
-        f.setWidth("110px");
-        f.addValueChangeListener(e -> {
+    /**
+     * A printer whose crop resolves to {@code scope}, so the fields can show what that scope currently yields.
+     * <p>
+     * A model scope has no single printer, so any printer of that model answers - they all resolve identically
+     * by construction. Empty for the global scope, which {@code getCrop(null, edge)} handles.
+     */
+    private String scopeToPrinter(final String scope) {
+        if (scope == null || scope.isEmpty()) {
+            return null;
+        }
+        if (scope.startsWith("printer.")) {
+            return scope.substring(8);
+        }
+        final String model = scope.substring(6);
+        return printers.getPrintersDetail().stream()
+                .filter(d -> model.equals(d.printer().getModel().getModel()))
+                .map(BambuPrinters.PrinterDetail::name)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** One crop edge: a slider you can drag, with the number beside it so it stays readable. */
+    private record CropSlider(String edge, Div layout, com.vaadin.flow.component.html.RangeInput slider, Span readout) {
+
+        void set(final double v) {
+            slider.setValue(v);
+            readout.setText("%.2f".formatted(v));
+        }
+
+        void onChange(final Runnable r) {
+            slider.addValueChangeListener(e -> r.run());
+        }
+    }
+
+    /**
+     * One edge of the compared region, written at the selected scope.
+     * <p>
+     * A slider rather than a number box: this is a spatial setting judged by looking at the preview beside it,
+     * and dragging while watching is the whole workflow. The number is still shown, because "0.68" is what you
+     * write down and what the docs quote.
+     */
+    private CropSlider cropSlider(final ComboBox<String> scope, final String edge, final String label) {
+        final com.vaadin.flow.component.html.RangeInput slider = new com.vaadin.flow.component.html.RangeInput();
+        slider.setMin(0);
+        slider.setMax(1);
+        slider.setStep(0.01);
+        slider.setValue(bedDiff.getCrop(edge));
+        slider.setWidth("150px");
+        // On release, not on every pixel: each change re-renders five cards and re-encodes their preview
+        // images, and nobody reads a preview mid-drag anyway.
+        slider.setValueChangeMode(com.vaadin.flow.data.value.ValueChangeMode.ON_CHANGE);
+
+        final Span readout = new Span("%.2f".formatted(bedDiff.getCrop(edge)));
+        readout.getStyle().set("font-variant-numeric", "tabular-nums").set("min-width", "36px");
+
+        final Span caption = new Span(label);
+        caption.addClassName("bed-protect-sub");
+        final Div row = new Div(slider, readout);
+        row.getStyle().set("display", "flex").set("align-items", "center").set("gap", "8px");
+        final Div box = new Div(caption, row);
+
+        slider.addValueChangeListener(e -> {
             if (e.getValue() == null) {
                 return;
             }
-            bedDiff.setCrop(edge, e.getValue());
-            // Re-render every card so the preview shows the new region straight away - without this the
+            readout.setText("%.2f".formatted(e.getValue()));
+            bedDiff.setCrop(scope.getValue() == null ? "" : scope.getValue(), edge, e.getValue());
+            // Re-render every card so the previews show the new region straight away - without this the
             // control silently appears to do nothing until the tab is reopened.
             bedCardRefreshers.forEach(Runnable::run);
         });
-        return f;
+        return new CropSlider(edge, box, slider, readout);
     }
 
     private static Div newFlexRow() {
@@ -615,15 +736,22 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             // Show exactly what the comparison sees, so a bad crop is obvious rather than invisible.
             // Prefer the last measured frame - that's the one whose number you're trying to explain.
             cropHolder.removeAll();
-            bedDiff.getLastFrame(printerName)
-                    .or(() -> bedReference.getReference(printerName))
-                    .flatMap(bedDiff::renderCrop)
-                    .ifPresent(bytes -> cropHolder.add(labelledThumb("Compared region",
+            final Optional<byte[]> frame = bedDiff.getLastFrame(printerName)
+                    .or(() -> bedReference.getReference(printerName));
+            frame.flatMap(f -> bedDiff.renderCrop(printerName, f))
+                    .ifPresent(bytes -> cropHolder.add(labelledThumb("Pixel diff + bed check see",
                             "bed-crop-%s.jpg".formatted(printerName), bytes, "var(--lumo-primary-color)")));
+            // The failure check gets a DIFFERENT region - the same crop plus headroom above the plate, because
+            // spaghetti grows upward out of the print. Shown separately because tuning the crop until the diff
+            // looks right tells you nothing about what the failure check is looking at, and an invisible
+            // mismatch between the two is what let a camera full of hoses produce eight false positives.
+            frame.map(f -> bedDiff.cropForAi(printerName, f, PrintAiService.FAILURE_HEADROOM))
+                    .ifPresent(bytes -> cropHolder.add(labelledThumb("Failure check sees (+ headroom)",
+                            "bed-fail-%s.jpg".formatted(printerName), bytes, "var(--lumo-warning-color)")));
             // What the number is actually reacting to. Red = the blocks driving the reading; if those land on
             // bare plate rather than on an object, the metric is measuring something that isn't a part.
             bedDiff.getLastFrame(printerName).ifPresent(cur -> bedReference.getReference(printerName)
-                    .flatMap(ref -> bedDiff.renderDiff(cur, ref))
+                    .flatMap(ref -> bedDiff.renderDiff(printerName, cur, ref))
                     .ifPresent(bytes -> cropHolder.add(labelledThumb("What differs",
                             "bed-diff-%s.jpg".formatted(printerName), bytes, "var(--lumo-error-color)"))));
         };

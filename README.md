@@ -374,6 +374,28 @@ Two deliberate behaviours:
 
 Colour only narrows a material match; on its own it would let black PLA satisfy a part that needs ASA. When nothing can take a job, the hold message names both ("no printer has black ASA loaded") — "no ASA" while three trays hold ASA sends you looking in the wrong place.
 
+### Per-model crops
+
+The compared region is set **per printer model**, with a per-printer override. Where the camera sits is a property of the machine: every P1S frames the plate identically, and an H2D frames it nothing like a P1S — its camera looks *across* the toolhead, so more than half the frame is gantry, cable loom and coiled hose. One global crop tuned on a P1 was being applied to all five, which is why the H2D's readings never behaved.
+
+Each printer card now shows **two** previews, because the two checks look at different regions and an invisible mismatch between them is what let a camera full of hoses produce eight false positives:
+
+- **"Pixel diff + bed check see"** — the crop itself.
+- **"Failure check sees (+ headroom)"** — the same crop with 20% of frame height added above it.
+
+Tune with the sliders and watch both. The crop is a spatial setting judged by looking, so dragging while watching is the workflow; the number is still shown beside each slider because that's what you write down. Sliders apply on release rather than on every pixel — each change re-renders five cards and re-encodes their previews.
+
+The scope row tells you whether you're editing this scope's own values or **inherited** ones, and offers "Reset to inherited" when an override exists. Editing an inherited value silently creates an override, so it says so before you do.
+
+Pick the scope on the AI Settings page next to the crop fields: **Every H2D**, or **Only H2D** for one machine whose camera has been knocked. Resolution is printer → model → global, so a sixth printer of a known type works the moment it's added. Each printer card's preview now shows *that printer's* region, so a wrong crop is visible rather than inferred.
+
+**The crop is also applied to the images sent to the vision model**, which it wasn't before — the model used to see the whole frame, hoses and all. That's what produced eight "tangle of loose filament extending from the nozzle" verdicts on the H2D in 95 minutes on a print that was fine.
+
+The two checks get different regions, deliberately:
+
+- **Bed-clear** gets the plate and nothing else. The question is "is anything on the plate"; everything above it is noise.
+- **Failure detection** keeps 20% of the frame height *above* the crop. A spaghetti nest grows upward out of the print — the one that started all this grew out of the top of the part — so a tight plate crop would hide exactly what that check is looking for. It still excludes the toolhead, which is where the false positives came from.
+
 Turn it on under **Empty-bed reference** on the AI Settings page (needs a reference image saved for that printer). Four controls:
 - **Enable the pixel-diff backstop** - off by default; it needs a reference and a calibrated limit.
 - **Compared region** - four fractions marking the part of the camera frame that is build plate. **This matters more than the limit.** Each printer card shows a preview of exactly what is being compared; if it includes chamber walls or a blown-out highlight, the plate gets averaged away and an occupied bed can measure *no higher* than an empty one. On a test frame, a region including the chamber wall gave **negative** separation (a part scored lower than an empty bed under a harsh light gradient); tuned to the plate alone the same comparison separated cleanly. Get the preview to be mostly plate before trusting anything else here.
@@ -722,6 +744,29 @@ schtasks /create /tn "BambuFarm heartbeat" /sc minute /mo 5 /rl HIGHEST `
 ```
 
 Restraints, because an over-eager watchdog is worse than none: it acts only after **3 consecutive** failed probes (one miss is usually a GC pause), it **won't restart mid-print** unless given `-IgnorePrinting`, and it stops after **6 restarts in a day** and leaves a log entry instead of churning the queue. A restart is not free - it drops in-memory state and can make a finishing job's outcome unknowable. State lives in `heartbeat-state.json` and the log in `heartbeat.log`, both next to your compose file. Task Scheduler must run it as a user in the `docker-users` group.
+
+### Where the deployment folder is
+
+Neither script hardcodes it any more. `bambufarm-common.ps1` resolves it in this order - first hit wins - and then **validates** that `compose.yml` is actually there:
+
+1. `-ProdPath 'D:\bambu-liveview'`
+2. `$env:BAMBUFARM_PROD`
+3. `prod-path.txt` next to the scripts (one line, just the path)
+4. the historical default
+
+If the folder has no `compose.yml` the script stops and prints all four options. That check is the whole point. A stale path fails in one of two ways, and the second is much worse than the first: either nothing exists there and you get an unhelpful missing-file error, or **an old copy still exists and you deploy a new jar into a folder nothing is running from** - the build succeeds, the container restarts, and your change simply isn't in the app. Failing loudly turns an afternoon into ten seconds.
+
+### Moving to another machine
+
+Copying the folder is most of it, but not all of it. In order:
+
+1. **Copy the deployment folder** (`compose.yml`, `Dockerfile`, `mediamtx.yml`, `reverse-proxy.conf`, the certs, `bambu-web.jar`, and **`data/`**). `data/` is the part people forget - it holds `.env` and every JSON file that is the app's memory: order tracking, queue, bed references, stock, OAuth tokens, history.
+2. **Point the scripts at the new location** - easiest is `'D:\bambu-liveview' | Set-Content prod-path.txt` in the repo root.
+3. **Edit `data/.env` for anything whose IP changed.** Printer IPs and `bambu.ollama.url` are the usual two. If the new box takes the old box's IP, the printer entries need nothing - but check `bambu.ollama.url` separately, because the Ollama host is a *different* machine and may not have moved with it.
+4. **Install Ollama on whatever host serves it, and re-pull the model.** Ollama is not in the compose stack - it's a plain host install the app talks to over HTTP. Copying this folder brings neither the server nor the ~8GB of `gemma3:12b` weights. Until `ollama pull gemma3:12b` finishes on the new host, every AI check **fails closed**: no bed-clear approval, so auto-dispatch stops. That is the safe direction, but it is not an obvious one to diagnose - the symptom is "nothing is printing", not an error.
+5. **Set `bambu.ollama.fallback-url` to the old host before you start the migration.** Then the cutover costs nothing: checks keep running against the old server while the new one downloads its weights, and you swap `url` and drop `fallback-url` afterwards. Without it there is a hard window where AI checks are simply unavailable.
+6. **Re-create the heartbeat scheduled task** - `schtasks` entries are per-machine and do not travel.
+7. **Verify before trusting it**: `.\heartbeat.ps1 -WhatIf` (probes and logs, never restarts), then confirm the startup log names the right timezone and the right Ollama endpoint.
 
 ## Quick reference
 

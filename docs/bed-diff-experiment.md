@@ -82,3 +82,30 @@ and "cannot tell" must not read as "clear" — but with readings routinely landi
 it would block nearly every auto-start. Turning it on before the underlying drift is fixed trades a
 silently unsafe farm for a loudly unusable one. Flip it on once an empty bed reliably measures near
 zero regardless of what printed last.
+
+## 2026-08-07 — measured on the new per-model crops
+
+Crops set per model (h2d 0.08/0.66/0.89/1.00, p1p 0.01/0.52/0.89/0.92, p1s 0.10/0.66/0.84/1.00), then measured.
+
+| Printer | Reference age | Bed state | Mean | Verdict |
+|---|---|---|---|---|
+| P1S-3 | 1.5 days | empty | 2.22 | protecting |
+| P1S | 2.9 days | empty | 2.77 | protecting |
+| P1S-2 | 3.0 days | **PRINTING** | **5.24** | can't tell — **did not block** |
+| P1P | 3.5 days | empty | 5.99 | can't tell |
+
+**The finding: reference drift is the same magnitude as an actual part.** Empty beds on 3-day-old references
+read 2.2–5.99. An occupied bed read 5.24. Those ranges overlap, so no threshold separates them — which is why
+P1S-2 was not blocked while printing.
+
+This is the same failure the header comments already record (a cupholder at 6.91 under a limit of 8), and the
+cause is identical: **the margin only exists when references are fresh.** A fresh reference reads ~0.2, so a
+part at +2.5–3 stands clear of it by an order of magnitude.
+
+**Do not lower the threshold to fix this.** At 3.0 it would fire on every drifted empty bed and block the farm.
+The order is: fresh references first, re-measure, and only then set a limit between the new empty and occupied
+readings.
+
+**The self-refresh ratchet.** Auto-adoption requires a reading at or below half the threshold (3.0). P1S and
+P1S-3 are under it and will re-baseline themselves; P1S-2 and P1P are above it and can never recover without a
+manual capture. Crossing 3.0 is a one-way door, and nothing currently warns that it has happened.

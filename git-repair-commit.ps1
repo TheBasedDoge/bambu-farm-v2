@@ -57,26 +57,41 @@ Step '3. Staging'
 git add -u
 if ($LASTEXITCODE -ne 0) { Fail "git add -u exited $LASTEXITCODE" }
 
-$newFiles = @(
-    'bambu/src/main/java/com/tfyre/bambu/printer/BedDiffService.java'
-    'bambu/src/main/java/com/tfyre/bambu/printer/DispatchQueueService.java'
-    'bambu/src/main/java/com/tfyre/bambu/printer/PollFailureReporter.java'
-    'docs/HA-MIGRATION-GAPS.md'
-    'docs/verdict-parser-cases.py'
-    'docs/overview-redesign-mockup.html'
-    'docs/overview-tweaks-mockup.html'
-    'docs/overview-health-mockup.html'
-    'deploy.ps1'
-) | Where-Object { Test-Path $_ }
+# New files are DISCOVERED, never listed. This used to be a hardcoded array, and it silently rotted: two
+# commits titled "Overview wall display" and "colour filter" shipped without OverviewView.java or
+# FilamentColor.java, because `git add -u` only stages files git already knows about and neither was on the
+# list. Everything still built locally - the files were on disk - so nothing looked wrong. What was actually
+# committed was a tree referencing four classes that did not exist in it.
+$skip = @(
+    'docs/AGENT-HANDOFF.md'   # working notes, not product docs - excluded on purpose
+    'commit-msg.txt'          # scratch pad for -Message; never part of the change it describes
+)
+$untracked = @(git ls-files --others --exclude-standard)
+if ($LASTEXITCODE -ne 0) { Fail "git ls-files exited $LASTEXITCODE" }
+
+$newFiles = @($untracked | Where-Object { $_ -notin $skip })
 if ($newFiles) {
+    Write-Host "   adding $($newFiles.Count) new file(s):" -ForegroundColor DarkGray
+    $newFiles | ForEach-Object { Write-Host "     + $_" -ForegroundColor DarkGray }
     git add -- $newFiles
     if ($LASTEXITCODE -ne 0) { Fail "git add of new files exited $LASTEXITCODE" }
 }
-# docs/AGENT-HANDOFF.md stays untracked by preference (working notes, not product docs).
+$untracked | Where-Object { $_ -in $skip } | ForEach-Object {
+    Write-Host "   skipping (deliberate): $_" -ForegroundColor DarkGray
+}
 
 $staged = @(git diff --cached --name-only)
 if (-not $staged) { Fail 'nothing is staged - there is nothing to commit.' }
 Ok "$($staged.Count) file(s) staged"
+
+# The invariant that would have caught the above. In a Java project an untracked, non-ignored source file is
+# always a mistake - it compiles for you and for nobody else. Cheap to check, and it fails before the commit
+# rather than being discovered by a clean clone weeks later.
+$orphans = @(git ls-files --others --exclude-standard -- '*.java')
+if ($orphans) {
+    Fail ("these .java files would be left out of the commit:`n  " + ($orphans -join "`n  ") +
+          "`nAdd them, or add them to .gitignore if they are genuinely scratch.")
+}
 
 Step '4. Whitespace sanity check'
 # These two totals should be close. A large gap means CRLF churn crept back in - stop and

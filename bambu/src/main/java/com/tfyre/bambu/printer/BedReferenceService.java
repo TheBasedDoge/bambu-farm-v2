@@ -41,6 +41,9 @@ public class BedReferenceService {
      */
     @Inject
     BedDiffService bedDiff;
+    /** Only to refuse a reference captured while the printer is mid-print - see {@link #saveReference}. */
+    @Inject
+    BambuPrinters printers;
 
     private final Map<String, Boolean> settings = new ConcurrentHashMap<>();
 
@@ -136,7 +139,26 @@ public class BedReferenceService {
     }
 
     /** Persists a JPEG as the empty-bed reference for a printer. Throws (with a user-friendly message) on I/O error. */
+    /**
+     * Captures a frame as this printer's empty-bed reference.
+     * <p>
+     * <b>Refuses while the printer is printing.</b> The reference IS the definition of "empty" for this machine,
+     * so capturing one with a part on the plate teaches the backstop that the part is what an empty bed looks
+     * like - it then reads near zero on an occupied bed forever after, and the one check that does not involve
+     * the vision model is silently inverted. It has happened here twice, and both times the button was pressed
+     * in good faith: a tooltip saying "make sure the bed is EMPTY" is not a guard, and the printer already knows
+     * the answer. Also refuses in the post-print window, when the part that just finished is still sitting there.
+     *
+     * @throws IllegalStateException if the printer is printing, or if the image cannot be written
+     */
     public void saveReference(final String printerName, final byte[] jpeg) {
+        final Optional<BambuConst.GCodeState> state = printers.getPrinterDetail(printerName)
+                .map(d -> d.printer().getGCodeState());
+        if (state.filter(BambuConst.GCodeState::isPrinting).isPresent()) {
+            throw new IllegalStateException(("%s is printing - a reference captured now would record the part as "
+                    + "part of the empty bed. Wait until it finishes and the plate is cleared.")
+                    .formatted(printerName));
+        }
         try {
             Files.createDirectories(refDir());
             Files.write(refFile(printerName), jpeg);

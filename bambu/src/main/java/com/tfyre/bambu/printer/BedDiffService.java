@@ -118,6 +118,9 @@ public class BedDiffService {
     ObjectMapper mapper;
     @Inject
     BambuConfig config;
+    /** Only to resolve a printer's MODEL, so a crop can be shared by every printer of that type. */
+    @Inject
+    BambuPrinters printers;
 
     /** Free-form settings map so new keys don't break old JSON (mirrors BedReferenceService's shape). */
     private final Map<String, Object> settings = new ConcurrentHashMap<>();
@@ -355,6 +358,72 @@ public class BedDiffService {
     // Crop is runtime-editable: it depends entirely on how each camera sees the plate, and getting it wrong is
     // the difference between a metric that separates a part from an empty bed and one that doesn't. Config
     // supplies the starting values; anything saved here wins.
+    /**
+     * The crop for one printer, resolved <b>printer &rarr; model &rarr; global</b>.
+     * <p>
+     * <b>Per model, not per printer, by default.</b> Where the camera sits is a property of the machine: every
+     * P1S frames the plate identically, and an H2D frames it nothing like a P1S - its camera looks across the
+     * toolhead, so more than half its frame is gantry, cable loom and coiled hose. One global crop tuned on a P1
+     * was being applied to all five, which is why the H2D's readings never behaved.
+     * <p>
+     * The per-printer override exists because cameras get knocked and mounts sag. It is the exception; the model
+     * default is what should normally be set, so a sixth printer of a known type works the moment it is added.
+     *
+     * @param printerName display name; blank or unknown falls straight through to the global crop
+     */
+    public double getCrop(final String printerName, final String edge) {
+        if (printerName != null && !printerName.isBlank()) {
+            final Object perPrinter = settings.get("crop.printer.%s.%s".formatted(printerName, edge));
+            if (perPrinter instanceof Number n) {
+                return n.doubleValue();
+            }
+            final Object perModel = modelKey(printerName)
+                    .map(m -> settings.get("crop.model.%s.%s".formatted(m, edge)))
+                    .orElse(null);
+            if (perModel instanceof Number n) {
+                return n.doubleValue();
+            }
+        }
+        return getCrop(edge);
+    }
+
+    /** Lower-case model id ("h2d", "p1s") for a printer, for the per-model crop key. */
+    private Optional<String> modelKey(final String printerName) {
+        return printers.getPrinterDetail(printerName)
+                .map(d -> d.printer().getModel())
+                .filter(m -> m != BambuConst.PrinterModel.UNKNOWN)
+                .map(m -> m.getModel());
+    }
+
+    /**
+     * Whether {@code scope} has its own crop, as opposed to inheriting one.
+     * <p>
+     * The UI needs this to say which it is showing. Editing an inherited value silently creates an override,
+     * and a settings page that cannot tell you whether you are looking at a shared default or a local override
+     * is a page you have to guess at.
+     */
+    public boolean hasCropOverride(final String scope) {
+        if (scope == null || scope.isBlank()) {
+            return true; // the global crop is the root - it is never inherited from anywhere
+        }
+        return java.util.stream.Stream.of("left", "top", "right", "bottom")
+                .anyMatch(e -> settings.containsKey("crop.%s.%s".formatted(scope, e)));
+    }
+
+    /** Drops a scope's override so it inherits again. No-op for the global crop, which has nothing to inherit. */
+    public void clearCrop(final String scope) {
+        if (scope == null || scope.isBlank()) {
+            return;
+        }
+        java.util.stream.Stream.of("left", "top", "right", "bottom")
+                .forEach(e -> settings.remove("crop.%s.%s".formatted(scope, e)));
+        save();
+        lastMeasurement.clear();
+        lastDiff.clear();
+        Log.infof("BedDiffService: crop override cleared for %s - it inherits again", scope);
+    }
+
+    /** The global fallback crop - what every printer used before crops could be scoped. */
     public double getCrop(final String edge) {
         final Object v = settings.get("crop." + edge);
         if (v instanceof Number n) {
@@ -366,6 +435,22 @@ public class BedDiffService {
             case "right" -> config.bedDiff().cropRight();
             default -> config.bedDiff().cropBottom();
         };
+    }
+
+    /**
+     * Sets a crop at a scope. {@code scope} is empty for the global crop, {@code "model.h2d"} for every printer
+     * of a type, or {@code "printer.H2D"} for one machine.
+     * <p>
+     * Clears the cached readings for everything the change can affect - a measurement is relative to one crop as
+     * much as to one reference, so leaving stale numbers behind would report a bed state measured against a
+     * region that is no longer the one being compared.
+     */
+    public void setCrop(final String scope, final String edge, final double value) {
+        final String key = scope == null || scope.isBlank() ? "crop." + edge : "crop.%s.%s".formatted(scope, edge);
+        settings.put(key, Math.max(0, Math.min(1, value)));
+        save();
+        lastMeasurement.clear();
+        lastDiff.clear();
     }
 
     public void setCrop(final String edge, final double value) {
@@ -381,16 +466,64 @@ public class BedDiffService {
      * blown-out highlights dilutes the part you're trying to detect until an occupied bed scores no higher than
      * an empty one.
      */
+    /**
+     * Crops a frame to a printer's region before it goes to the vision model, optionally keeping extra height
+     * above the plate.
+     * <p>
+     * <b>The two checks need different regions, and that is the whole point of the parameter.</b>
+     * <ul>
+     * <li><b>Bed-clear</b> wants the plate and nothing else ({@code headroom = 0}). The question is "is anything
+     * on the plate", so gantry, cable loom and hoses are pure noise.</li>
+     * <li><b>Failure detection</b> must keep the airspace above the plate. The spaghetti that started all of
+     * this grew <i>out of the top of the part</i> - a tight plate crop would have removed the very thing the
+     * check exists to find. It still excludes the toolhead area, which is where every one of the H2D's eight
+     * false positives came from ("a tangle of loose filament extending from the nozzle").</li>
+     * </ul>
+     * Returns the original bytes unchanged if anything goes wrong: a crop is an improvement to the input, never
+     * a reason for a safety check not to run.
+     *
+     * @param headroom extra height above the crop as a fraction of the FRAME, not of the crop - the crop's own
+     *                 height varies per printer, so a fraction of it would mean something different on each
+     */
+    public byte[] cropForAi(final String printerName, final byte[] jpeg, final double headroom) {
+        if (jpeg == null || jpeg.length == 0) {
+            return jpeg;
+        }
+        try {
+            final BufferedImage src = ImageIO.read(new ByteArrayInputStream(jpeg));
+            if (src == null) {
+                return jpeg;
+            }
+            final int x0 = clamp((int) Math.round(getCrop(printerName, "left") * src.getWidth()), 0, src.getWidth() - 1);
+            final int x1 = clamp((int) Math.round(getCrop(printerName, "right") * src.getWidth()), x0 + 1, src.getWidth());
+            final double top = Math.max(0, getCrop(printerName, "top") - Math.max(0, headroom));
+            final int y0 = clamp((int) Math.round(top * src.getHeight()), 0, src.getHeight() - 1);
+            final int y1 = clamp((int) Math.round(getCrop(printerName, "bottom") * src.getHeight()), y0 + 1, src.getHeight());
+            final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            ImageIO.write(src.getSubimage(x0, y0, x1 - x0, y1 - y0), "jpg", out);
+            return out.size() > 0 ? out.toByteArray() : jpeg;
+        } catch (IOException | RuntimeException ex) {
+            Log.warnf("BedDiffService: %s: could not crop the check image (%s) - sending the full frame",
+                    printerName, ex.getMessage());
+            return jpeg;
+        }
+    }
+
+    /** Preview of the GLOBAL crop. {@link #renderCrop(String, byte[])} shows what one printer actually sees. */
     public Optional<byte[]> renderCrop(final byte[] jpeg) {
+        return renderCrop(null, jpeg);
+    }
+
+    public Optional<byte[]> renderCrop(final String printerName, final byte[] jpeg) {
         try {
             final BufferedImage src = ImageIO.read(new ByteArrayInputStream(jpeg));
             if (src == null) {
                 return Optional.empty();
             }
-            final int x0 = clamp((int) Math.round(getCrop("left") * src.getWidth()), 0, src.getWidth() - 1);
-            final int x1 = clamp((int) Math.round(getCrop("right") * src.getWidth()), x0 + 1, src.getWidth());
-            final int y0 = clamp((int) Math.round(getCrop("top") * src.getHeight()), 0, src.getHeight() - 1);
-            final int y1 = clamp((int) Math.round(getCrop("bottom") * src.getHeight()), y0 + 1, src.getHeight());
+            final int x0 = clamp((int) Math.round(getCrop(printerName, "left") * src.getWidth()), 0, src.getWidth() - 1);
+            final int x1 = clamp((int) Math.round(getCrop(printerName, "right") * src.getWidth()), x0 + 1, src.getWidth());
+            final int y0 = clamp((int) Math.round(getCrop(printerName, "top") * src.getHeight()), 0, src.getHeight() - 1);
+            final int y1 = clamp((int) Math.round(getCrop(printerName, "bottom") * src.getHeight()), y0 + 1, src.getHeight());
             final BufferedImage out = src.getSubimage(x0, y0, x1 - x0, y1 - y0);
             final java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             ImageIO.write(out, "jpg", bos);
@@ -406,10 +539,15 @@ public class BedDiffService {
      * outlined. Numbers alone can't tell you WHY a reading is high - whether it's an object on the plate or the
      * plate itself having moved - and looking at two near-identical photos can't either. This can.
      */
+    /** Diff image against the GLOBAL crop. */
     public Optional<byte[]> renderDiff(final byte[] current, final byte[] reference) {
+        return renderDiff(null, current, reference);
+    }
+
+    public Optional<byte[]> renderDiff(final String printerName, final byte[] current, final byte[] reference) {
         try {
-            final Prepared a = prepare(current);
-            final Prepared b = prepare(reference);
+            final Prepared a = prepare(printerName, current);
+            final Prepared b = prepare(printerName, reference);
             if (a.pixels().length == 0 || a.pixels().length != b.pixels().length) {
                 return Optional.empty();
             }
@@ -421,10 +559,10 @@ public class BedDiffService {
             if (src == null) {
                 return Optional.empty();
             }
-            final int x0 = clamp((int) Math.round(getCrop("left") * src.getWidth()), 0, src.getWidth() - 1);
-            final int x1 = clamp((int) Math.round(getCrop("right") * src.getWidth()), x0 + 1, src.getWidth());
-            final int y0 = clamp((int) Math.round(getCrop("top") * src.getHeight()), 0, src.getHeight() - 1);
-            final int y1 = clamp((int) Math.round(getCrop("bottom") * src.getHeight()), y0 + 1, src.getHeight());
+            final int x0 = clamp((int) Math.round(getCrop(printerName, "left") * src.getWidth()), 0, src.getWidth() - 1);
+            final int x1 = clamp((int) Math.round(getCrop(printerName, "right") * src.getWidth()), x0 + 1, src.getWidth());
+            final int y0 = clamp((int) Math.round(getCrop(printerName, "top") * src.getHeight()), 0, src.getHeight() - 1);
+            final int y1 = clamp((int) Math.round(getCrop(printerName, "bottom") * src.getHeight()), y0 + 1, src.getHeight());
             final BufferedImage out = new BufferedImage(x1 - x0, y1 - y0, BufferedImage.TYPE_INT_RGB);
             // createGraphics + dispose, not getGraphics: the handle holds native resources and this runs on every
             // card render on the AI page.
@@ -515,7 +653,15 @@ public class BedDiffService {
         }
     }
 
+    /**
+     * Measures against the GLOBAL crop. Kept for callers with no printer in hand; anything that knows which
+     * machine it is looking at should use {@link #measureFor}, or it will compare the wrong region.
+     */
     public Optional<Measurement> measure(final byte[] current, final byte[] reference) {
+        return measure(null, current, reference);
+    }
+
+    public Optional<Measurement> measure(final String printerName, final byte[] current, final byte[] reference) {
         try {
             // Source dimensions matter and are invisible otherwise: both frames are squashed to a fixed 96x54
             // grid, so if the reference and the live frame come out of different pipelines at different aspect
@@ -525,8 +671,8 @@ public class BedDiffService {
                 Log.warnf("BedDiffService: reference and live frame differ in size (%s) - the compared region "
                         + "covers different areas of the scene, so readings are not meaningful", dims);
             }
-            final Prepared a = prepare(current);
-            final Prepared b = prepare(reference);
+            final Prepared a = prepare(printerName, current);
+            final Prepared b = prepare(printerName, reference);
             if (a.pixels().length == 0 || a.pixels().length != b.pixels().length) {
                 Log.warnf("BedDiffService: frame size mismatch (%d vs %d) - skipping pixel check",
                         a.pixels().length, b.pixels().length);
@@ -677,7 +823,7 @@ public class BedDiffService {
 
     /** Measures and remembers the result for {@code printerName}'s calibration readout. */
     public Optional<Measurement> measureFor(final String printerName, final byte[] current, final byte[] reference) {
-        final Optional<Measurement> m = measure(current, reference);
+        final Optional<Measurement> m = measure(printerName, current, reference);
         m.ifPresent(v -> {
             lastDiff.put(printerName, v.score());
             lastMeasurement.put(printerName, v);
@@ -783,17 +929,17 @@ public class BedDiffService {
     private record Align(Warp warp, double mean) {
     }
 
-    private Prepared prepare(final byte[] jpeg) throws IOException {
+    private Prepared prepare(final String printerName, final byte[] jpeg) throws IOException {
         final BufferedImage src = ImageIO.read(new ByteArrayInputStream(jpeg));
         if (src == null) {
             throw new IOException("not a readable image");
         }
         final double[] small = greyBox(src, W, H);
 
-        final int x0 = clamp((int) Math.round(getCrop("left") * W), 0, W - 1);
-        final int x1 = clamp((int) Math.round(getCrop("right") * W), x0 + 1, W);
-        final int y0 = clamp((int) Math.round(getCrop("top") * H), 0, H - 1);
-        final int y1 = clamp((int) Math.round(getCrop("bottom") * H), y0 + 1, H);
+        final int x0 = clamp((int) Math.round(getCrop(printerName, "left") * W), 0, W - 1);
+        final int x1 = clamp((int) Math.round(getCrop(printerName, "right") * W), x0 + 1, W);
+        final int y0 = clamp((int) Math.round(getCrop(printerName, "top") * H), 0, H - 1);
+        final int y1 = clamp((int) Math.round(getCrop(printerName, "bottom") * H), y0 + 1, H);
         final int cw = x1 - x0;
         final int ch = y1 - y0;
 

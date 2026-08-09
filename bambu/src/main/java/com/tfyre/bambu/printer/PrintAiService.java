@@ -122,6 +122,25 @@ public class PrintAiService {
     }
 
     /** Last known GCodeState per printer, used to detect IDLE → RUNNING transitions. */
+    /**
+     * Extra frame height kept above the plate for the failure check, as a fraction of the whole frame.
+     * <p>
+     * A fifth of the frame: enough to hold the airspace a spaghetti nest occupies, not so much that the toolhead
+     * and its hoses come back into shot - which is what the crop is there to exclude.
+     */
+    public static final double FAILURE_HEADROOM = 0.20;
+
+    /**
+     * How much of the frame above the plate a check needs to keep.
+     * <p>
+     * Only failure detection does. A nest of filament grows upward out of the print, so cropping to the plate
+     * would hide exactly what that check is looking for - while the bed-clear check is asking a question about
+     * the plate itself and is only hindered by anything above it.
+     */
+    private static double headroomFor(final String checkType) {
+        return "failure".equals(checkType) ? FAILURE_HEADROOM : 0;
+    }
+
     private final Map<String, BambuConst.GCodeState> lastStates = new ConcurrentHashMap<>();
     /**
      * Printers whose LAST scheduled check already confirmed a failure.
@@ -274,9 +293,14 @@ public class PrintAiService {
         // empty-bed reference, compare current-vs-reference (two images) instead of judging one image alone.
         final Optional<byte[]> reference = isBedCheck && bedReference.isEnabled()
                 ? bedReference.getReference(printerName) : Optional.empty();
+        // Crop to what this printer's camera can usefully say something about, before the model sees it. The
+        // H2D's frame is more than half gantry, cable loom and coiled hose, and it produced eight "tangle of
+        // loose filament extending from the nozzle" verdicts in 95 minutes on a print that was fine. The
+        // failure check keeps headroom above the plate; the bed check does not - see cropForAi.
+        final byte[] framed = bedDiff.cropForAi(printerName, snapshot.get(), headroomFor(checkType));
         final Optional<OllamaService.AiResult> result = reference.isPresent()
-                ? ollama.checkBedClearWithReference(reference.get(), snapshot.get(), context)
-                : check.apply(snapshot.get(), context);
+                ? ollama.checkBedClearWithReference(bedDiff.cropForAi(printerName, reference.get(), 0), framed, context)
+                : check.apply(framed, context);
         if (result.isEmpty()) {
             // The model failed, but a pixel block is still a definite answer - and a definite NO is worth keeping.
             if (pixelBlocked) {
@@ -323,9 +347,12 @@ public class PrintAiService {
             final Optional<BambuConst.LightMode> priorLight2 = illuminateForCheck(printerName);
             final Optional<byte[]> snapshot2 = getSnapshot(printerName);
             restoreLight(printerName, priorLight2);
-            final Optional<OllamaService.AiResult> second = snapshot2.map(s2 -> reference.isPresent()
-                    ? ollama.checkBedClearWithReference(reference.get(), s2, context)
-                    : check.apply(s2, context)).orElse(Optional.empty());
+            final Optional<OllamaService.AiResult> second = snapshot2
+                    .map(s2 -> bedDiff.cropForAi(printerName, s2, headroomFor(checkType)))
+                    .map(s2 -> reference.isPresent()
+                            ? ollama.checkBedClearWithReference(
+                                    bedDiff.cropForAi(printerName, reference.get(), 0), s2, context)
+                            : check.apply(s2, context)).orElse(Optional.empty());
             // No second frame or no answer is NOT agreement. This gate authorises a print; silence fails closed.
             secondPassDisagreed = second.map(s -> positiveMeansGood != s.positive()).orElse(true);
             if (secondPassDisagreed) {

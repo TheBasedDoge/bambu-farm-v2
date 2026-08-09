@@ -53,8 +53,12 @@ param(
     # Tests run by default now that there are some. A deploy that silently skips its own suite reads as
     # passing, which is worse than having none.
     [switch]$SkipUnitTests,
-    [string]$ProdPath = 'C:\Users\Vishal\Downloads\bambu-farm-web\bambu-liveview'
+    # Empty by default - resolved by Resolve-ProdPath, which validates rather than assumes. See
+    # bambufarm-common.ps1 for why a hardcoded path is a trap the day this moves machines.
+    [string]$ProdPath
 )
+
+. "$PSScriptRoot\bambufarm-common.ps1"
 
 $ErrorActionPreference = 'Stop'
 # PowerShell 7.3+ turns any non-zero native exit code into a terminating error when the
@@ -63,6 +67,8 @@ $ErrorActionPreference = 'Stop'
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
+
+$ProdPath = Resolve-ProdPath -Explicit $ProdPath
 Set-Location $PSScriptRoot
 
 $jarSource = Join-Path $PSScriptRoot 'bambu\target\bambu-web.jar'

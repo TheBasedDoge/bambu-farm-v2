@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en" data-state="critical">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - wall display mockup</title>
+<!--
+  Standalone mockup of the proposed Overview page. Static fake data, no server.
+
+  Open it fullscreen (F11) on the actual monitor before I build the real thing - the whole point of this
+  page is that it's readable from across the room, and that is not a judgement you can make in a browser
+  window on a laptop. Everything here scales off viewport width, so it will size itself to your screen.
+
+  Demo-only controls (bottom right, fade out after a few seconds - move the mouse to bring them back):
+    * State      - switch between all clear / warning / critical, to see how loud the screen gets
+    * Sound      - chime when something enters a failed state
+    * Burn-in    - the slow pixel shift, sped up ~100x so you can actually see it working
+    * Night      - the overnight dim
+
+  The real page will carry none of those controls. It is a display; anything clickable is state that can be
+  left in the wrong position by someone leaning on the desk.
+-->
+<style>
+  :root {
+    --bg:        #0b0e13;
+    --surface:   #141920;
+    --surface-2: #1b212a;
+    --line:      #262d38;
+    --text:      #e6eaf0;
+    --muted:     #8e99a8;
+    --dim:       #626d7c;
+    --ok:        #21c25b;
+    --ok-bg:     #102a19;
+    --warn:      #e8a33d;
+    --warn-bg:   #2e2312;
+    --bad:       #ef4b4b;
+    --bad-bg:    #33161a;
+
+    /* One knob for the whole page. Everything below is a multiple of it, so making the dashboard readable
+       from further away is a single number, not forty. */
+    --u: 1vw;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Burn-in protection. The entire page is nudged around a few pixels on a slow cycle so no static edge -
+     tile borders, the clock, a progress bar that sits at 0% for hours - ever lives on one pixel long enough
+     to ghost. Transform rather than margins: it moves on the compositor and costs nothing, and it can't
+     reflow the layout underneath it. */
+  #shift {
+    height: 100%;
+    padding: calc(var(--u) * 1.1);
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--u) * 0.75);
+    transition: transform 4s linear, opacity 2s linear;
+  }
+
+  /* Overnight dim. Not display:none - the farm still runs at 3am and you should be able to see a red banner
+     from the doorway. Just quiet enough not to light the room. */
+  body.night #shift { opacity: 0.32; }
+
+  /* --- top bar --- */
+  .bar { display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: calc(var(--u) * 0.6); }
+  .mark { width: calc(var(--u) * 2.2); height: calc(var(--u) * 2.2); border-radius: calc(var(--u) * 0.5); }
+  .brand h1 { font-size: calc(var(--u) * 1.5); font-weight: 500; letter-spacing: 0.01em; }
+  .bar-meta { display: flex; align-items: center; gap: calc(var(--u) * 1.4); font-size: calc(var(--u) * 0.95); color: var(--dim); }
+  .clock { font-size: calc(var(--u) * 1.5); font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* --- alert banner --- */
+  .alert {
+    display: none;
+    align-items: center;
+    gap: calc(var(--u) * 1.2);
+    border-radius: calc(var(--u) * 0.8);
+    padding: calc(var(--u) * 1) calc(var(--u) * 1.3);
+  }
+  html[data-state="critical"] .alert.crit,
+  html[data-state="warning"]  .alert.warn { display: flex; }
+
+  .alert.crit { background: var(--bad-bg);  color: var(--bad); }
+  .alert.warn { background: var(--warn-bg); color: var(--warn); }
+  .alert .glyph { font-size: calc(var(--u) * 3); line-height: 1; }
+  .alert .head  { font-size: calc(var(--u) * 2); font-weight: 500; line-height: 1.15; }
+  .alert .sub   { font-size: calc(var(--u) * 1); opacity: 0.8; margin-top: calc(var(--u) * 0.2); }
+  .alert .aside { text-align: right; font-size: calc(var(--u) * 1); opacity: 0.9; line-height: 1.5; }
+
+  /* Only the critical banner pulses, and slowly. A warning that blinks is a warning you cover with a
+     sticky note. */
+  html[data-state="critical"] .alert.crit { animation: breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+
+  /* --- kpi row --- */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: calc(var(--u) * 0.75); }
+  .kpi { background: var(--surface); border-radius: calc(var(--u) * 0.8); padding: calc(var(--u) * 0.8) calc(var(--u) * 1); }
+  .kpi .label { font-size: calc(var(--u) * 0.95); color: var(--muted); }
+  .kpi .value { font-size: calc(var(--u) * 3.2); font-weight: 500; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  .kpi .value small { font-size: calc(var(--u) * 1.3); color: var(--dim); font-weight: 400; }
+  .kpi .sub { font-size: calc(var(--u) * 0.95); color: var(--muted); }
+  .kpi .sub.ok { color: var(--ok); } .kpi .sub.warn { color: var(--warn); } .kpi .sub.bad { color: var(--bad); }
+  .value.ok { color: var(--ok); } .value.warn { color: var(--warn); } .value.bad { color: var(--bad); }
+
+  /* --- printer tiles --- */
+  .printers { display: grid; grid-template-columns: repeat(5, 1fr); gap: calc(var(--u) * 0.75); flex: 1; min-height: 0; }
+  .p {
+    background: var(--surface);
+    border-radius: calc(var(--u) * 0.8);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+    transition: outline-color 400ms ease, background 400ms ease;
+  }
+  .p.bad  { background: var(--bad-bg);  outline-color: var(--bad); }
+  .p.warn { background: var(--warn-bg); outline-color: var(--warn); }
+
+  /* Camera thumbnail. In the real page this is a snapshot refreshed every ~25s, not a live stream: five
+     WebRTC feeds running forever would sit on the CPU permanently, and the H2D needs an ffmpeg process per
+     frame. A still is enough to answer "is there a part on that plate". */
+  .cam { flex: 1; min-height: 0; background: #0d1116; position: relative; }
+  .cam .plate {
+    position: absolute; left: 12%; right: 12%; bottom: 14%; height: 34%;
+    background: #2b3542; border-radius: 6% / 22%;
+  }
+  .cam .part { position: absolute; left: 40%; bottom: 30%; width: 20%; height: 22%; background: #4a5768; border-radius: 20%; }
+  .cam .age { position: absolute; right: calc(var(--u) * 0.35); top: calc(var(--u) * 0.3); font-size: calc(var(--u) * 0.7); color: var(--dim); }
+
+  .p-body { padding: calc(var(--u) * 0.55) calc(var(--u) * 0.8) calc(var(--u) * 0.7); }
+  .p-name { display: flex; align-items: center; gap: calc(var(--u) * 0.4); font-size: calc(var(--u) * 1.35); font-weight: 500; }
+  .dot { width: calc(var(--u) * 0.6); height: calc(var(--u) * 0.6); border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); } .dot.off { background: var(--dim); }
+  .p-job { font-size: calc(var(--u) * 0.95); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: calc(var(--u) * 0.15); }
+  .p-job.bad { color: var(--bad); } .p-job.warn { color: var(--warn); }
+  .track { height: calc(var(--u) * 0.45); background: #2a323d; border-radius: 99px; margin: calc(var(--u) * 0.45) 0 calc(var(--u) * 0.3); overflow: hidden; }
+  .fill { height: 100%; background: var(--ok); border-radius: 99px; transition: width 600ms ease; }
+  .fill.bad { background: var(--bad); }
+  .p-foot { display: flex; justify-content: space-between; font-size: calc(var(--u) * 0.9); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .p-foot.bad { color: var(--bad); } .p-foot.warn { color: var(--warn); }
+
+  /* --- bottom row --- */
+  .bottom { display: grid; grid-template-columns: 1.55fr 1fr; gap: calc(var(--u) * 0.75); }
+  .panel { background: var(--surface); border-radius: calc(var(--u) * 0.8); padding: calc(var(--u) * 0.7) calc(var(--u) * 1); }
+  .panel h2 { font-size: calc(var(--u) * 0.95); font-weight: 400; color: var(--muted); margin-bottom: calc(var(--u) * 0.55); }
+
+  .stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: calc(var(--u) * 0.5); margin-bottom: calc(var(--u) * 0.6); }
+  .stage { background: var(--surface-2); border-radius: calc(var(--u) * 0.5); padding: calc(var(--u) * 0.4) 0; text-align: center; }
+  .stage.ship { background: var(--ok-bg); }
+  .stage b { display: block; font-size: calc(var(--u) * 2); font-weight: 500; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .stage.ship b, .stage.ship span { color: var(--ok); }
+  .stage span { font-size: calc(var(--u) * 0.85); color: var(--muted); }
+
+  .row { display: flex; justify-content: space-between; gap: calc(var(--u) * 0.8); font-size: calc(var(--u) * 0.95); padding: calc(var(--u) * 0.22) 0; }
+  .row .l { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .r { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+  .row.ok .l { color: var(--ok); } .row.bad .l, .row.bad .r { color: var(--bad); }
+  .sep { border-top: 1px solid var(--line); margin: calc(var(--u) * 0.45) 0; }
+
+  .att { display: flex; align-items: baseline; gap: calc(var(--u) * 0.5); font-size: calc(var(--u) * 0.95); padding: calc(var(--u) * 0.2) 0; }
+  .att .l { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .att .when { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .clear { color: var(--ok); font-size: calc(var(--u) * 1.1); padding: calc(var(--u) * 0.4) 0; }
+
+  /* Hidden in the calm state - when nothing is wrong the panel says so in one line instead of listing
+     four things at equal weight, which is how you train yourself to stop reading it. */
+  html[data-state="clear"] .when-trouble { display: none; }
+  html:not([data-state="clear"]) .when-clear { display: none; }
+
+  /* --- demo controls, not part of the real page --- */
+  #demo {
+    position: fixed; right: 12px; bottom: 12px; display: flex; gap: 6px; align-items: center;
+    background: rgba(20, 25, 32, 0.94); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 8px; font-size: 12px; color: var(--muted); opacity: 0; transition: opacity 400ms ease;
+  }
+  #demo.show { opacity: 1; }
+  #demo button {
+    font: inherit; color: var(--text); background: #222933; border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 9px; cursor: pointer;
+  }
+  #demo button[aria-pressed="true"] { background: #2f4a35; border-color: var(--ok); color: var(--ok); }
+  #demo span { padding-right: 2px; }
+</style>
+</head>
+<body>
+
+<div id="shift">
+
+  <div class="bar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#0c0f14"/>
+        <path d="M18 10 h28 l-5 12 h-18 z" fill="#9aa4b2"/>
+        <path d="M26 24 h12 l-6 10 z" fill="#c8d0da"/>
+        <rect x="30.5" y="34" width="3" height="8" rx="1.5" fill="#00AE42"/>
+        <rect x="12" y="46" width="40" height="4" rx="2" fill="#00AE42"/>
+        <rect x="18" y="53" width="28" height="4" rx="2" fill="#007a2e"/>
+      </svg>
+      <h1>Overview</h1>
+    </div>
+    <div class="bar-meta">
+      <span id="online">5 printers online</span>
+      <span id="fresh">updated 3s ago</span>
+      <span class="clock" id="clock">9:47 pm</span>
+    </div>
+  </div>
+
+  <div class="alert crit">
+    <div class="glyph">&#9888;</div>
+    <div style="flex:1">
+      <div class="head">P1S-2 &mdash; spaghetti detected, print stopped</div>
+      <div class="sub">4 min ago &middot; 95% confidence &middot; Rear Shell.stl for Etsy #4130857746</div>
+    </div>
+    <div class="aside">also waiting<br><b>2 beds unprotected &middot; 1 job parked</b></div>
+  </div>
+
+  <div class="alert warn">
+    <div class="glyph">&#9888;</div>
+    <div style="flex:1">
+      <div class="head">2 beds running unprotected</div>
+      <div class="sub">P1S-3 and P1P have no usable bed reference &mdash; auto-start is gated on the AI check alone</div>
+    </div>
+    <div class="aside">also waiting<br><b>1 job parked</b></div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Printing</div>
+      <div class="value" id="k-printing">3<small> / 5</small></div>
+      <div class="sub">next free in 41m</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Open orders</div>
+      <div class="value ok">7</div>
+      <div class="sub ok">2 ready to ship</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Waiting to dispatch</div>
+      <div class="value bad" id="k-pool">4</div>
+      <div class="sub bad" id="k-pool-sub">1 parked</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Today</div>
+      <div class="value">7</div>
+      <div class="sub warn">1 failed &middot; 604 g</div>
+    </div>
+  </div>
+
+  <div class="printers">
+
+    <div class="p">
+      <div class="cam"><div class="plate"></div><div class="part"></div><div class="age">24s</div></div>
+      <div class="p-body">
+        <div class="p-name"><i class="dot"></i>H2D</div>
+        <div class="p-job">Rear Shell.stl + 1</div>
+        <div class="track"><div class="fill" style="width:34%"></div></div>
+        <div class="p-foot"><span>34%</span><span>3h 22m</span></div>
+      </div>
+    </div>
+
+    <div class="p">
+      <div class="cam"><div class="plate"></div><div class="part"></div><div class="age">19s</div></div>
+      <div class="p-body">
+        <div class="p-name"><i class="dot"></i>P1S</div>
+        <div class="p-job">Cupholder x4.gcode</div>
+        <div class="track"><div class="fill" style="width:78%"></div></div>
+        <div class="p-foot"><span>78%</span><span>26m</span></div>
+      </div>
+    </div>
+
+    <div class="p" id="p3">
+      <div class="cam"><div class="plate"></div><div class="part"></div><div class="age">4m</div></div>
+      <div class="p-body">
+        <div class="p-name"><i class="dot" id="p3-dot"></i>P1S-2</div>
+        <div class="p-job" id="p3-job">Rear Shell.stl</div>
+        <div class="track"><div class="fill" id="p3-fill" style="width:61%"></div></div>
+        <div class="p-foot" id="p3-foot"><span>61%</span><span id="p3-eta">1h 48m</span></div>
+      </div>
+    </div>
+
+    <div class="p" id="p4">
+      <div class="cam"><div class="plate"></div><div class="age">31s</div></div>
+      <div class="p-body">
+        <div class="p-name"><i class="dot" id="p4-dot"></i>P1S-3</div>
+        <div class="p-job" id="p4-job">Idle</div>
+        <div class="track"></div>
+        <div class="p-foot"><span>ready</span><span>queue empty</span></div>
+      </div>
+    </div>
+
+    <div class="p">
+      <div class="cam"><div class="plate"></div><div class="part"></div><div class="age">22s</div></div>
+      <div class="p-body">
+        <div class="p-name"><i class="dot"></i>P1P</div>
+        <div class="p-job">Speaker Adapter.3mf</div>
+        <div class="track"><div class="fill" style="width:12%"></div></div>
+        <div class="p-foot"><span>12%</span><span>5h 04m</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="bottom">
+
+    <div class="panel">
+      <h2>Order pipeline</h2>
+      <div class="stages">
+        <div class="stage"><b>3</b><span>not queued</span></div>
+        <div class="stage"><b>4</b><span>in the pool</span></div>
+        <div class="stage"><b>2</b><span>printing</span></div>
+        <div class="stage ship"><b>2</b><span>ready to ship</span></div>
+      </div>
+      <div class="sep"></div>
+      <div class="row ok"><span class="l">Etsy #4130857746 &middot; S. Warren &middot; Cupholder insert</span><span class="r">2/2 printed</span></div>
+      <div class="row ok"><span class="l">eBay 26-13845 &middot; M. Delgado &middot; Door speaker adapter</span><span class="r">1/1 printed</span></div>
+      <div class="row bad"><span class="l">eBay 26-13901 &middot; parked in the pool</span><span class="r">no PETG match</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Attention</h2>
+      <div class="when-clear clear">All clear &mdash; nothing needs you</div>
+      <div class="when-trouble">
+        <div class="att"><i class="dot bad"></i><span class="l">P1S-2 failed check</span><span class="when">4m</span></div>
+        <div class="att"><i class="dot warn"></i><span class="l">P1S-3 bed unverified</span><span class="when">2h</span></div>
+        <div class="att"><i class="dot warn"></i><span class="l">P1P bed unverified</span><span class="when">2h</span></div>
+        <div class="att"><i class="dot warn"></i><span class="l">P1S lube rails overdue</span><span class="when">+12h</span></div>
+      </div>
+      <div class="sep"></div>
+      <div class="row"><span class="l">Filament runway</span><span class="r" style="color:var(--warn)">PETG black &mdash; 1 print</span></div>
+    </div>
+
+  </div>
+</div>
+
+<div id="demo">
+  <span>state</span>
+  <button data-state="clear">clear</button>
+  <button data-state="warning">warning</button>
+  <button data-state="critical">critical</button>
+  <button id="b-sound" aria-pressed="false">sound</button>
+  <button id="b-burn" aria-pressed="true">burn-in</button>
+  <button id="b-night" aria-pressed="false">night</button>
+</div>
+
+<script>
+(function () {
+  const html = document.documentElement;
+  const shift = document.getElementById('shift');
+
+  /* ---- clock ------------------------------------------------------------ */
+  const clock = document.getElementById('clock');
+  const tick = () => {
+    const d = new Date();
+    let h = d.getHours();
+    const half = h < 12 ? 'am' : 'pm';
+    h = h % 12 || 12;
+    clock.textContent = h + ':' + String(d.getMinutes()).padStart(2, '0') + ' ' + half;
+  };
+  tick();
+  setInterval(tick, 10000);
+
+  /* ---- burn-in protection ----------------------------------------------- */
+  /* Walks the page around a small box on a slow cycle. Real cadence is one step a minute with a 4s ease,
+     which is imperceptible; the demo button speeds it up so you can confirm it's alive. The amplitude is
+     what matters - a few pixels is enough to stop a static edge from ghosting, and small enough that the
+     layout never looks like it moved. */
+  const OFFSETS = [[0, 0], [4, 2], [7, -1], [3, 5], [-3, 3], [-6, -2], [-2, -5], [2, -3]];
+  let burnOn = true, burnStep = 0, burnTimer = null, burnEvery = 60000;
+  function burnTick() {
+    const [x, y] = burnOn ? OFFSETS[burnStep++ % OFFSETS.length] : [0, 0];
+    shift.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+  }
+  function burnSchedule() {
+    clearInterval(burnTimer);
+    burnTimer = setInterval(burnTick, burnEvery);
+  }
+  burnSchedule();
+
+  /* ---- sound ------------------------------------------------------------ */
+  /* WebAudio rather than an audio file: nothing to ship, nothing to 404, and no autoplay policy to fight
+     once the page has been clicked. Two short falling tones - distinct enough to recognise from another
+     room, short enough not to be the thing you resent about the farm. Fires only on the transition INTO a
+     bad state, never on a repaint or a refresh: an alarm that re-sounds every poll is one you mute. */
+  let soundOn = false, ctx = null;
+  function chime(bad) {
+    if (!soundOn) { return; }
+    try {
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === 'suspended') { ctx.resume(); }
+      const notes = bad ? [880, 620] : [660, 880];
+      notes.forEach((f, i) => {
+        const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.18;
+        o.type = 'sine';
+        o.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+        o.connect(g); g.connect(ctx.destination);
+        o.start(t); o.stop(t + 0.36);
+      });
+    } catch (e) { /* no audio device, or the browser said no. Not worth breaking the display over. */ }
+  }
+
+  /* ---- state ------------------------------------------------------------ */
+  const P3 = {
+    dot: document.getElementById('p3-dot'), job: document.getElementById('p3-job'),
+    fill: document.getElementById('p3-fill'), foot: document.getElementById('p3-foot'),
+    eta: document.getElementById('p3-eta'), tile: document.getElementById('p3')
+  };
+  const P4 = {
+    dot: document.getElementById('p4-dot'), job: document.getElementById('p4-job'),
+    tile: document.getElementById('p4')
+  };
+  const pool = document.getElementById('k-pool'), poolSub = document.getElementById('k-pool-sub');
+
+  let state = 'critical';
+  function setState(next) {
+    const wasBad = state === 'critical';
+    state = next;
+    html.setAttribute('data-state', next);
+
+    P3.tile.className = 'p' + (next === 'critical' ? ' bad' : '');
+    P3.dot.className = 'dot' + (next === 'critical' ? ' bad' : '');
+    P3.job.className = 'p-job' + (next === 'critical' ? ' bad' : '');
+    P3.foot.className = 'p-foot' + (next === 'critical' ? ' bad' : '');
+    P3.fill.className = 'fill' + (next === 'critical' ? ' bad' : '');
+    P3.job.textContent = next === 'critical' ? 'Spaghetti - stopped' : 'Rear Shell.stl';
+    P3.eta.textContent = next === 'critical' ? 'needs you' : '1h 48m';
+
+    const bedsUnsure = next !== 'clear';
+    P4.tile.className = 'p' + (bedsUnsure ? ' warn' : '');
+    P4.dot.className = 'dot' + (bedsUnsure ? ' warn' : '');
+    P4.job.className = 'p-job' + (bedsUnsure ? ' warn' : '');
+    P4.job.textContent = bedsUnsure ? 'Idle - bed unverified' : 'Idle';
+
+    pool.textContent = next === 'clear' ? '4' : '4';
+    pool.className = 'value' + (next === 'clear' ? '' : ' bad');
+    poolSub.textContent = next === 'clear' ? 'in the pool' : '1 parked';
+    poolSub.className = 'sub' + (next === 'clear' ? '' : ' bad');
+
+    if (next === 'critical' && !wasBad) { chime(true); }
+    if (next === 'clear' && wasBad) { chime(false); }
+  }
+
+  /* ---- overnight dim ---------------------------------------------------- */
+  /* Dims rather than blanks. The farm still runs at 3am, and a red banner should still be visible from the
+     doorway - just not lighting the room. */
+  let nightForced = false;
+  function nightCheck() {
+    const h = new Date().getHours();
+    document.body.classList.toggle('night', nightForced || h >= 1 && h < 6);
+  }
+  nightCheck();
+  setInterval(nightCheck, 60000);
+
+  /* ---- demo controls ---------------------------------------------------- */
+  const demo = document.getElementById('demo');
+  let hide = null;
+  function peek() {
+    demo.classList.add('show');
+    clearTimeout(hide);
+    hide = setTimeout(() => demo.classList.remove('show'), 3500);
+  }
+  document.addEventListener('mousemove', peek);
+  peek();
+
+  demo.querySelectorAll('button[data-state]').forEach(b =>
+    b.addEventListener('click', () => setState(b.dataset.state)));
+
+  const bSound = document.getElementById('b-sound');
+  bSound.addEventListener('click', () => {
+    soundOn = !soundOn;
+    bSound.setAttribute('aria-pressed', String(soundOn));
+    if (soundOn) { chime(true); }
+  });
+
+  const bBurn = document.getElementById('b-burn');
+  bBurn.addEventListener('click', () => {
+    burnOn = !burnOn;
+    bBurn.setAttribute('aria-pressed', String(burnOn));
+    burnEvery = burnOn ? 600 : 60000;
+    burnSchedule();
+    burnTick();
+  });
+
+  const bNight = document.getElementById('b-night');
+  bNight.addEventListener('click', () => {
+    nightForced = !nightForced;
+    bNight.setAttribute('aria-pressed', String(nightForced));
+    nightCheck();
+  });
+
+  /* Gentle motion on the live tiles so the page reads as alive rather than frozen - if it ever DOES freeze,
+     you want that to be obvious from the doorway. */
+  let pct = 34;
+  setInterval(() => {
+    pct = (pct + 0.4) % 100;
+    document.querySelector('.p .fill').style.width = pct.toFixed(1) + '%';
+    document.querySelector('.p .p-foot span').textContent = Math.round(pct) + '%';
+  }, 4000);
+
+  setState('critical');
+})();
+</script>
+</body>
+</html>
