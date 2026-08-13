@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -612,6 +613,36 @@ public class DispatchQueueService {
         return handedOff;
     }
 
+    /**
+     * Why the bed-clear check produced no verdict, in the words of whoever actually knows.
+     * <p>
+     * This alert used to read "(Ollama unreachable, timed out, or no camera snapshot)" - three causes with
+     * completely different fixes, and no indication which one had happened. It sent a person to check a
+     * perfectly healthy Ollama while the real fault was the mediamtx camera relay not publishing. The
+     * information was never missing: {@link PrintAiService} records "No camera snapshot available" or "AI did
+     * not answer (Ollama error or timeout)" on the way out, and {@code completeDispatch} already fetches that
+     * same record for its snapshot. It just threw the reason away and guessed out loud instead.
+     * <p>
+     * Falls back to the old wording only when there is genuinely nothing recorded, so the alert degrades to
+     * vague rather than to wrong.
+     */
+    private String whyCheckFailed(final String printerName, final Throwable throwable) {
+        if (throwable != null) {
+            // CompletableFuture wraps whatever was thrown; the wrapper's message is noise, the cause's is not.
+            final Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
+                    ? throwable.getCause() : throwable;
+            final String message = cause.getMessage();
+            return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
+        }
+        // Must be this printer's own bed-clear attempt: a concurrent failure check on the same printer would
+        // otherwise supply its description here and explain the wrong thing.
+        return aiService.getLastCheck(printerName)
+                .filter(r -> "bed-clear".equals(r.checkType()) && r.good() == null)
+                .map(PrintAiService.CheckRecord::description)
+                .filter(d -> d != null && !d.isBlank())
+                .orElse("no reason recorded - Ollama unreachable, timed out, or no camera snapshot");
+    }
+
     private void completeDispatch(final BambuPrinters.PrinterDetail pd, final Match match,
             final Optional<OllamaService.AiResult> result, final Throwable throwable) {
         final PendingJob job = match.job();
@@ -630,8 +661,9 @@ public class DispatchQueueService {
                                     .formatted(pd.name(), pool.size() + 1), pd.name(), frame);
                 } else {
                     reportBlocked("ai-unavailable|" + pd.name(),
-                            "%s: the AI bed-clear check couldn't run (Ollama unreachable, timed out, or no camera snapshot), so a waiting order job wasn't started (%d in the pool)."
-                                    .formatted(pd.name(), pool.size() + 1), pd.name(), frame);
+                            "%s: the AI bed-clear check couldn't run (%s), so a waiting order job wasn't started (%d in the pool)."
+                                    .formatted(pd.name(), whyCheckFailed(pd.name(), throwable), pool.size() + 1),
+                            pd.name(), frame);
                 }
                 return;
             }

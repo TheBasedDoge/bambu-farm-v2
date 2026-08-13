@@ -229,9 +229,16 @@ public class AutoStartService {
                     return;
                 }
                 if (result == null || result.isEmpty()) {
-                    // No snapshot or Ollama error - fail closed
-                    hold(name, queueSize, "paused: no snapshot / AI unreachable",
-                            "Auto-start paused: no camera snapshot or AI unreachable (%d job(s) queued)".formatted(queueSize), null);
+                    // Fail closed - but say WHICH failure. "no camera snapshot or AI unreachable" names two
+                    // faults with different fixes and points at neither; PrintAiService already recorded the
+                    // real one on its way out. See DispatchQueueService.whyCheckFailed for the same repair.
+                    final String why = aiService.getLastCheck(name)
+                            .filter(r -> "bed-clear".equals(r.checkType()) && r.good() == null)
+                            .map(PrintAiService.CheckRecord::description)
+                            .filter(d -> d != null && !d.isBlank())
+                            .orElse("no camera snapshot or AI unreachable");
+                    hold(name, queueSize, "paused: %s".formatted(why),
+                            "Auto-start paused: %s (%d job(s) queued)".formatted(why, queueSize), null);
                     return;
                 }
                 final OllamaService.AiResult ai = result.get();
