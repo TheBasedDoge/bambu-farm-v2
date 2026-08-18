@@ -46,7 +46,8 @@ Technologies used:
 3. Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README. This fork adds a WebRTC (WHEP) stream with automatic HLS fallback so the camera also works from outside your LAN without forwarding an extra port - see [Cameras and remote access](#cameras-and-remote-access).
 4. **Batch Priting** allows you to upload a single/multi sliced .3mf and select which plate to send to multiple printers, each with their own filament mapping.
 5. Force a print onto one specific AMS tray (or the external spool), overriding the printer's current filament assignment - see [AMS Slot Override](#ams-slot-override).
-6. **H2D** has two independent nozzles, each of which can be fed by an AMS unit or its own external spool slot. Dashboard, camera overlay, and print dialogs all show both nozzles side by side.
+6. **H2D** has two independent nozzles, each of which can be fed by an AMS unit or its own external spool slot. Dashboard, camera overlay, and print dialogs all show both nozzles side by side. It also has two chamber lights, an active chamber heater, an airduct and a buzzer, all of which this fork drives - see [H2D specifics](#h2d-specifics).
+7. **If a printer accepts every command and does nothing**, it wants signed MQTT - turn on Developer Mode. See [When a printer stops responding](#when-a-printer-stops-responding); this is not a fault you can fix in software.
 
 # Screenshots
 
@@ -169,6 +170,10 @@ The existing Dark Theme toggle now renders a true-black OLED look: pure black pa
 - **Global lights**: header buttons switch all printer chamber lights on/off.
 - **AMS / filament tray highlight**: whichever AMS tray (or external spool slot) is currently feeding the hotend is highlighted with a pulsing glow while printing, so you can see at a glance which color/spool is loaded - including on H2D's independent left/right nozzle slots.
 - **H2D dual-nozzle support**: per-nozzle temperatures, side-by-side external spool slots with "Left Nozzle" / "Right Nozzle" labels, fan speed, firmware/module info, and build plate ID all shown per printer.
+- **Chamber temperature is settable** on printers with an *active* chamber heater (X1E, H2 series) - right-click the Chamber badge, same as Bed and Nozzle, and it shows a target beside the reading. The X1C reports a chamber temperature but cannot heat it, so it keeps a read-only badge; a Set Target that silently does nothing is worse than none.
+
+  Worth knowing why this isn't just another `M140`: outside the X1E the chamber heater is driven by the **airduct**, so `M141` on its own sets a target nothing acts on. Going above 40 °C sends `M145 P1` first; dropping to 40 or below sends `M145 P0` after the new target, so the duct is never left heating toward a lower number. Expect the airduct to spin up when you set a warm target - that's the heater working, not a fault.
+- **Global lights drive both H2D chamber lights.** The H2D has two, and lighting only the first leaves half the chamber dark - which matters beyond aesthetics, because that's the chamber the AI bed check has to photograph.
 
 All layout preferences are stored in **browser localStorage** (per browser/device, not per account).
 
@@ -307,6 +312,8 @@ The second gate exists because the first isn't enough, and the H2D proved it: ei
 It never acts on a single verdict. A suspected failure is re-checked on a fresh snapshot after `bambu.ollama.failure-confirm-delay` (default 12s) and only acted on if both agree — the same reasoning as the two-pass bed gate, and cheap because it only runs on the rare bad path. A genuine tangle is still there twelve seconds later; a nozzle caught mid-travel across the part is not. If the print has already stopped by then, nothing is done. The notification is sent whether or not the pause is enabled or succeeds: being told is the part that must never depend on anything else working.
 
 **Post-print cooldown.** A printer that has just stopped printing is held for **30 minutes** (editable on the AI Settings page, 0 = off) before it can take a pooled order job. In the moments after a print ends the bed is *certainly* occupied — the part that just finished is sitting on it — so there's nothing for a bed check to usefully decide, and asking a vision model to judge that frame is asking it to be right exactly when being wrong is most expensive. On 2026-08-01 a printer finished at 02:08:45 and a bed check ran 61 seconds later; the pixel diff caught that one, but a confident "clear" on a mid-range reading would have printed onto the part. Auto-start has always had this (its `bambu.auto-start-settle`, default 3m); the dispatch pool didn't, so that route in was the unprotected one. It shows on the overview as the usual bed-backoff countdown. Note this removes the *guaranteed*-occupied window — it isn't a substitute for the bed check, which is still what has to catch a part that's still there afterwards.
+
+A restart no longer triggers this on every printer. `getGCodeState()` reports `OFFLINE` until a printer's first status message arrives, and `OFFLINE → IDLE` looks exactly like a print finishing — so for a while **every restart put a full 30-minute hold on the whole farm**, roughly 90 seconds in, logging "just stopped printing" for machines that had been idle for hours. A genuine finish spanning a restart is still recovered, from the print history's real end timestamp rather than by assuming the print ended when the app came back.
 
 **Two-pass verification (bed-clear gate only).** A "clear" verdict must survive a **second, independently captured snapshot** before a print may start - a fresh light-settle, a fresh frame, a fresh inference. One vision-model verdict isn't stable on a marginal bed: on this farm the same plate, at the same pixel reading, was judged not-clear at 01:12 and clear at 01:16, and the "clear" one started a print onto an occupied plate. Two passes turn one coin flip into two that have to agree, and a second look that returns no answer counts as disagreement (the gate authorises a print, so silence fails closed).
 
@@ -579,6 +586,8 @@ Orders are polled on a schedule and filtered to unfulfilled/open only; poll erro
 - **The pool is never silently stuck**: whenever jobs are waiting and a pass dispatches nothing, a `dispatch_blocked` notification fires saying exactly why, and the reason shows on both the Automation overview and the Print Queue tab (camera frame attached where there is one). Two flavours:
   - **⏳ Waiting** (amber) - normal congestion, e.g. *"3 order jobs waiting for a free printer - all 4 eligible printers are busy (3 printing, 1 working through its own queue). They'll dispatch as printers free up."* Notified **once per occurrence**, not repeatedly, since it resolves itself.
   - **⚠ Held** (red) - needs you: no printer has the required filament (the message names it), no printer opted into auto-queue, AI checks off, Ollama unreachable, a bed still dirty, or every job parked. Re-notified every 30 minutes while it persists, because a dirty bed won't clear itself.
+
+  When the bed check can't produce a verdict the alert **names which of the three causes it was** - *"No camera snapshot available"* or *"AI did not answer (Ollama error or timeout)"* - rather than listing all of them. It used to read "(Ollama unreachable, timed out, or no camera snapshot)", which sent people to check a perfectly healthy Ollama while the real fault was a camera relay. The reason was always recorded; the alert just wasn't using it.
 - The **Print Queue** tab shows the pool at the top: each waiting job with a **"Send to…"** picker (only printers that currently have the right filament) to place it on a specific printer manually, plus a remove button. Removing a job also **reduces the order's expected job count**, so the order can still reach "ready to ship". Manual **Batch Print** jobs keep their own per-printer queues (unchanged).
 - **All-or-nothing per order**: an unmapped line item, a missing library file, a part no printer has filament for, or **buyer personalization on any item** (custom text must never be auto-printed from the generic mapping) skips the whole order with an `auto_queue_skipped` notification saying exactly why - nothing partial, queue it manually instead.
 - Queued orders get the "✓ queued" badge and are never auto-queued twice. Adding to the pool fires an `auto_queue` notification; each dispatch fires an `auto_start` notification naming the printer it landed on.
@@ -804,6 +813,24 @@ This app now reads `fun` and **refuses control commands with a logged warning** 
 This is not just a browsing inconvenience. **Dispatch uploads a `.3mf` over FTP and then commands a print against that path** (the `queue file already on SD card in a subfolder, printing from there` line in the log is that mechanism working on a P1S). No writable FTP target means auto-start and auto-queue can never work on that printer, whatever else is configured. Put a card in the slot and browsing, upload and dispatch all behave like the P1 machines.
 
 **An AMS slot that reports filament it does not have.** `tray_type` is the material a slot is *configured* for and it survives the spool being pulled - the slot still says PETG with nothing on the holder. Matching on it alone dispatched an order to an empty printer. The dispatcher now also requires the slot's bit in `tray_exist_bits`, the mask of trays that physically contain filament. When that field is absent or unparseable every tray still passes, because a firmware that doesn't send it must not halt the whole farm; present-and-zero is a real answer and is obeyed. The external spool (`vt_tray`) has no such bit and is still matched on configured type alone.
+
+## H2D specifics
+
+The H2 series differs from the P1/X1 machines in more places than "it has two nozzles", and most of the differences fail silently rather than loudly.
+
+| Area | H2D behaviour |
+|---|---|
+| **Control commands** | Require **signed MQTT** unless Developer Mode is on. Unsigned commands are accepted and discarded - see [When a printer stops responding](#when-a-printer-stops-responding) |
+| **`project_file` URL** | `ftp:///<name>`, **not** `file:///sdcard/<name>`. Only X1/X1C/X1E/P1P/P1S/A1/A1MINI use the legacy form, and the wrong one fails the print with no useful diagnostic |
+| **File storage over FTP** | The FTPS server serves the **microSD slot**, not the 8 GB internal eMMC. With no card fitted, dispatch cannot work at all |
+| **FTPS** | Enforces TLS session reuse - needs `bambu.use-bouncy-castle=true` |
+| **Chamber lights** | Two (`chamber_light`, `chamber_light2`); both are driven together |
+| **Chamber heater** | Active, airduct-coupled, 65 °C ceiling - see [Dashboard](#dashboard) |
+| **Camera** | RTSPS on 322, gated behind **LAN Mode Liveview** plus a reboot |
+| **Buzzer** | `buzzer_ctrl`: silent / fire-alarm / beeping |
+| **Airduct** | `set_airduct` mode + sub-mode |
+| **Prompt sound** | `print_option` `sound_enable` |
+| **AMS** | `ams_get_rfid` re-reads a spool tag when a tray reports stale filament metadata |
 
 ## Quick reference
 
