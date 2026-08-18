@@ -40,7 +40,9 @@ Technologies used:
 1. **Currently only .3mf sliced projects are supported.**
   > In Bambu Studio/Orca slicer, make sure to slice the place and then use the "File -> Export -> Export plate sliced file". This creates a `.3mf` project with embedded `.gcode` plate.
 2. **FTPS Connections needs SSL Session Reuse via [Bouncy Castle](#bouncy-castle)**
-> Without enabling bouncy castle, you will see `552 SSL connection failed: session resuse required`
+> Without enabling bouncy castle, you will see `522 SSL connection failed: session reuse required` when browsing or uploading to the SD card. `bambu.use-bouncy-castle` **defaults to `false`**, so this is off until you set it.
+>
+> Not every printer enforces it, which makes it confusing: the P1 series has been fine without it, while an **H2D moved into LAN mode fails immediately**. Its FTPS server requires the data connection to resume the TLS session from the control connection, and the default JSSE stack won't. `BambuFtp._prepareDataSocket_` implements the reuse, but it is a no-op unless Bouncy Castle is enabled - so the symptom is per-printer even though the switch is global.
 3. Getting the **LiveView** to work requires additional software. For more details check the [docker/bambu-liveview](docker/bambu-liveview) README. This fork adds a WebRTC (WHEP) stream with automatic HLS fallback so the camera also works from outside your LAN without forwarding an extra port - see [Cameras and remote access](#cameras-and-remote-access).
 4. **Batch Priting** allows you to upload a single/multi sliced .3mf and select which plate to send to multiple printers, each with their own filament mapping.
 5. Force a print onto one specific AMS tray (or the external spool), overriding the printer's current filament assignment - see [AMS Slot Override](#ams-slot-override).
@@ -766,7 +768,42 @@ Copying the folder is most of it, but not all of it. In order:
 4. **Install Ollama on whatever host serves it, and re-pull the model.** Ollama is not in the compose stack - it's a plain host install the app talks to over HTTP. Copying this folder brings neither the server nor the ~8GB of `gemma3:12b` weights. Until `ollama pull gemma3:12b` finishes on the new host, every AI check **fails closed**: no bed-clear approval, so auto-dispatch stops. That is the safe direction, but it is not an obvious one to diagnose - the symptom is "nothing is printing", not an error.
 5. **Set `bambu.ollama.fallback-url` to the old host before you start the migration.** Then the cutover costs nothing: checks keep running against the old server while the new one downloads its weights, and you swap `url` and drop `fallback-url` afterwards. Without it there is a hard window where AI checks are simply unavailable.
 6. **Re-create the heartbeat scheduled task** - `schtasks` entries are per-machine and do not travel.
+7. **Check VPN subnet routes on both boxes.** For a while you will have two machines on `192.168.0.0/24`, and if either advertises that subnet over Tailscale the other can end up tunnelling to printers sitting beside it. See "When a printer stops responding" below - this failure looks exactly like broken printer firmware.
+8. **Shut the old instance down before starting the new one.** Two instances against the same five printers both poll, both dispatch, and both hold the same Discord webhook, while keeping *separate* `data/` directories - so order tracking, stock and history silently diverge and a part can be printed twice. An alert arriving from a host you thought was off is the symptom; nothing in the message says which machine sent it.
 7. **Verify before trusting it**: `.\heartbeat.ps1 -WhatIf` (probes and logs, never restarts), then confirm the startup log names the right timezone and the right Ollama endpoint.
+
+### When a printer stops responding
+
+Three failures that look identical from the app and are not, in the order they cost the most time to tell apart.
+
+**A VPN silently stealing the route to your own LAN.** Symptom: `PingSucceeded : True` but `TcpTestSucceeded : False`, and the giveaway is in the same output - `InterfaceAlias` naming your VPN adapter and a `SourceAddress` in its range (Tailscale uses `100.64.0.0/10`). Round-trip time is the other tell: a printer on your own subnet should answer in 1-2 ms, so **23 ms means the packets are not going where you think**.
+
+```powershell
+Test-NetConnection 192.168.0.182 -Port 322
+Get-NetRoute -DestinationPrefix "192.168.0.0/24" | Format-Table -Auto
+tailscale status
+```
+
+If a node advertises `192.168.0.0/24` as a subnet route and this machine accepts it, traffic to a printer three feet away is tunnelled to whatever holds that address on the far side - which answers pings and refuses everything else. `tailscale set --accept-routes=false` locally, or stop advertising the route on the node doing it. **This bites hardest when two machines share a subnet**, which is precisely the situation during a migration. A VPN that is merely *starting* is just as dangerous: it installs and withdraws those routes each cycle, so the printer appears and disappears and the fault reads as flaky hardware.
+
+**The camera specifically (port 322).** X1/H2/P2 speak RTSPS there, gated behind **LAN Mode Liveview** on the printer - a separate switch from LAN Only mode, so the printer can stay cloud-connected. Toggling it does not start the service; that happens at boot, so **reboot the printer afterwards**. `Connection refused` means nothing is listening; a timeout means you are not reaching the printer at all, which sends you back to the routing check above.
+
+**Every control works and nothing happens.** Newer firmware can require MQTT commands to be cryptographically **signed**. The printer accepts an unsigned command, replies with nothing, and discards it - so Home, fan, light and pause all report success in the log and the machine never moves. The printer advertises this in its `fun` bitfield, bit `0x20000000`:
+
+| `fun` | `& 0x20000000` | meaning |
+|---|---|---|
+| `3EC1AFFF9CFF` | `0x20000000` | Developer Mode **off** - commands are ignored |
+| `3EC18FFF9CFF` | `0x0` | Developer Mode **on** - commands work |
+
+**Enabling Developer Mode on the printer is what clears the bit**, and a firmware update commonly turns Developer Mode back off - which is how a printer that worked yesterday goes deaf today. Nobody has implemented request signing; there is no software workaround, only the toggle.
+
+This app now reads `fun` and **refuses control commands with a logged warning** rather than sending them into a void (`REFUSED a control command...`). Status requests are never gated - a printer in this state still reports normally, and blocking status would hide the very field that explains the problem.
+
+**An H2D with no microSD card cannot be dispatched to at all.** Its FTPS server serves the **microSD slot, not the 8 GB internal eMMC** - so with no card in it, the SD browser connects, authenticates, and correctly shows an empty root. Confirmed with FileZilla on port 990 independently of this app, which is the check worth doing before suspecting the code: if a third-party client sees the same thing, the printer is telling the truth.
+
+This is not just a browsing inconvenience. **Dispatch uploads a `.3mf` over FTP and then commands a print against that path** (the `queue file already on SD card in a subfolder, printing from there` line in the log is that mechanism working on a P1S). No writable FTP target means auto-start and auto-queue can never work on that printer, whatever else is configured. Put a card in the slot and browsing, upload and dispatch all behave like the P1 machines.
+
+**An AMS slot that reports filament it does not have.** `tray_type` is the material a slot is *configured* for and it survives the spool being pulled - the slot still says PETG with nothing on the holder. Matching on it alone dispatched an order to an empty printer. The dispatcher now also requires the slot's bit in `tray_exist_bits`, the mask of trays that physically contain filament. When that field is absent or unparseable every tray still passes, because a firmware that doesn't send it must not halt the whole farm; present-and-zero is a real answer and is obeyed. The external spool (`vt_tray`) has no such bit and is still matched on configured type alone.
 
 ## Quick reference
 

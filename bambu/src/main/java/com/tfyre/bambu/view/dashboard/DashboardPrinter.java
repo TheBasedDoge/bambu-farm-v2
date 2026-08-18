@@ -110,6 +110,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     private double temperatureNozzle2 = 0;
     private final Image frameImage = new Image(Images.MONITOR_FRAME_TEMP.getImage(), "Frame");
     private final Span frame = newSpan();
+    private final Span frameTarget = newSpan();
+    /** Last known chamber target, so the Set Target dialog opens on the current value like bed and nozzle do. */
+    private double temperatureChamber;
     private final Image speedImage = new Image(Images.MONITOR_SPEED.getImage(), "Speed");
     private final Span speed = newSpan();
     private final Image thumbnail = new Image();
@@ -420,7 +423,10 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         //Frame/Chamber Temperature
         if (print.hasDevice() && print.getDevice().hasCtc() && print.getDevice().getCtc().hasInfo()) {
             // H2D: device.ctc.info.temp (packed int: low16 = current, high16 = target)
-            setTemperature(frame, (int) (print.getDevice().getCtc().getInfo().getTemp() & 0xFFFFL));
+            final long packed = print.getDevice().getCtc().getInfo().getTemp();
+            setTemperature(frame, (int) (packed & 0xFFFFL));
+            temperatureChamber = (packed >> 16) & 0xFFFFL;
+            setTemperature(frameTarget, temperatureChamber);
         } else if (print.hasChamberTemper()) {
             setTemperature(frame, print.getChamberTemper());
         }
@@ -1521,7 +1527,14 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             result.add(wrapTemperature(getBadge("Nozzle 2", nozzle2Image, nozzle2, nozzle2Target), () -> (int) temperatureNozzle2, BambuConst.TEMPERATURE_MAX_NOZZLE, BambuConst::gcodeTargetTemperatureNozzle));
         }
 
-        if (printer.getModel().isTemperature()) {
+        if (printer.getModel().isActiveChamberHeater()) {
+            // Settable, and shows a target alongside the reading like Bed and Nozzle do.
+            result.add(wrapTemperature(getBadge("Chamber", frameImage, frame, frameTarget),
+                    () -> (int) temperatureChamber, printer.getModel().getMaxChamberTemperature(),
+                    t -> BambuConst.gcodeTargetTemperatureChamber(printer.getModel(), t)));
+        } else if (printer.getModel().isTemperature()) {
+            // Reports a chamber temperature but cannot heat it (X1C) - read-only, because a Set Target that
+            // does nothing is worse than no Set Target at all.
             result.add(getBadge("Frame", frameImage, frame));
         }
 

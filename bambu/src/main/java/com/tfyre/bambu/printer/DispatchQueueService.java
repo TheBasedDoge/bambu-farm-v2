@@ -424,7 +424,20 @@ public class DispatchQueueService {
             final BambuConst.GCodeState previous = lastStates.put(name, state);
             // First sighting (fresh start, or a printer that just connected): we never saw it printing, so there
             // is no finish to cool down from. Inventing one would stall dispatch for 5 minutes after every restart.
-            if (previous == null || previous.isReady() || !state.isReady()) {
+            //
+            // UNKNOWN/OFFLINE previous is the same situation one tick later, and guarding only `previous == null`
+            // missed it completely. getGCodeState() returns OFFLINE until that printer's first MQTT status lands,
+            // and OFFLINE is not "ready" - so the first tick after a restart stores OFFLINE, the second sees a
+            // real IDLE, and OFFLINE -> IDLE matches this edge exactly like a genuine printing -> ready finish
+            // would. The result was a full post-print hold applied to EVERY printer about 90 seconds after every
+            // restart: five printers x 30 min, six restarts in five days, all of it invisible except one INFO
+            // line per printer claiming it had "just stopped printing" when it had been idle for hours.
+            //
+            // Losing sight of a printer says nothing about whether a print finished, so this cannot be treated as
+            // a finish - and it does not need to be. A real finish that happened across the restart is recovered
+            // by seedCooldownsFromHistory() from bambu-history.json, which uses the actual end timestamp instead
+            // of assuming the print ended the moment the app came back.
+            if (previous == null || previous.isError() || previous.isReady() || !state.isReady()) {
                 return;
             }
             final Duration cooldown = bedDiff.getPostPrintCooldown();

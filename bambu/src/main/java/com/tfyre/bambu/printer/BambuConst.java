@@ -16,6 +16,8 @@ import java.util.stream.Collectors;
 public class BambuConst {
 
     public static final String CHAMBER_LIGHT = "chamber_light";
+    /** H2D's second chamber light. Driving only {@link #CHAMBER_LIGHT} leaves half the chamber dark. */
+    public static final String CHAMBER_LIGHT_2 = "chamber_light2";
     public static final String FILE_GCODE = ".gcode";
     public static final String FILE_3MF = ".3mf";
     //FIXME GCODE not printing public static final Set<String> EXT = Set.of(FILE_GCODE, FILE_3MF);
@@ -60,6 +62,30 @@ public class BambuConst {
         return "M104 S%d".formatted(Math.max(Math.min(temperature, TEMPERATURE_MAX_NOZZLE), 0));
     }
 
+    /**
+     * Sets the chamber target on printers with an <i>active</i> chamber heater (X1E, H2 series).
+     * <p>
+     * Unlike the bed and nozzle this is not one command, which is why it never worked here: on everything but
+     * the X1E the chamber heater is tied to the airduct, so {@code M141} alone sets a target the airduct never
+     * acts on. {@code M145 P1} puts the duct in heating mode first; dropping to 40°C or below switches it back
+     * with {@code M145 P0} <i>after</i> the new target, so the duct isn't left heating toward a lower number.
+     * The X1E has no airduct and takes {@code M141} on its own.
+     * <p>
+     * Order matters in both branches and is taken from ha-bambulab's {@code set_temperature_to_gcode}.
+     *
+     * @param model       the printer, because the X1E form differs
+     * @param temperature target °C, clamped to that model's maximum
+     */
+    public static String gcodeTargetTemperatureChamber(final PrinterModel model, final int temperature) {
+        final int clamped = Math.max(Math.min(temperature, model.getMaxChamberTemperature()), 0);
+        if (model == PrinterModel.X1E) {
+            return "M141 S%d".formatted(clamped);
+        }
+        return clamped > 40
+                ? "M145 P1\nM141 S%d".formatted(clamped)
+                : "M141 S%d\nM145 P0".formatted(clamped);
+    }
+
     public static String gcodeDisableSteppers() {
         return "M18";
     }
@@ -86,6 +112,62 @@ public class BambuConst {
                 "M83",
                 "G0 %s%d F900".formatted(Move.E.getValue(), up ? -10 : 10)
         );
+    }
+
+    /**
+     * Bit in the printer's {@code fun} bitfield meaning "MQTT commands must be cryptographically signed".
+     * <p>
+     * This is the single most confusing failure this app can hit, because it produces no failure. The printer
+     * accepts an unsigned command, returns nothing, and discards it - so Home, fan control, pause and light
+     * all report success and do nothing at all. Enabling <b>Developer Mode</b> on the printer clears the bit;
+     * a firmware update can turn Developer Mode back off, which is exactly how an H2D that worked yesterday
+     * stops responding today.
+     * <p>
+     * Values observed by the ha-bambulab project, whose reading of this field this matches:
+     * {@code fun="3EC1AFFF9CFF"} with Developer Mode off (bit set), {@code "3EC18FFF9CFF"} with it on (clear).
+     * Nobody has implemented request signing - that project responds by removing the affected controls from
+     * the UI rather than sending commands into a void, and so does this one.
+     */
+    public static final long MQTT_SIGNATURE_REQUIRED = 0x20000000L;
+
+    /** {@code buzzer_ctrl} modes. H2 series only. */
+    public enum BuzzerMode {
+        SILENT(0),
+        FIRE_ALARM(1),
+        BEEPING(2);
+
+        private final int value;
+
+        private BuzzerMode(final int value) {
+            this.value = value;
+        }
+
+        public int getValue() {
+            return value;
+        }
+    }
+
+    /**
+     * Printers whose {@code project_file} command takes {@code file:///sdcard/<name>}. Everything else -
+     * H2D included - expects {@code ftp:///<name>}, and sending the wrong form fails the print with no
+     * useful diagnostic. Mirrors ha-bambulab's LEGACY_SDCARD_PRINTERS.
+     */
+    private static final Set<PrinterModel> LEGACY_SDCARD_MODELS
+            = Set.of(PrinterModel.X1C, PrinterModel.X1E, PrinterModel.P1P, PrinterModel.P1S,
+                    PrinterModel.A1, PrinterModel.A1MINI);
+
+    /**
+     * The {@code url} for a {@code project_file} print command on this model.
+     *
+     * @param model    the printer's model; {@link PrinterModel#UNKNOWN} takes the legacy form, because every
+     *                 printer this app supported before the H2D used it and an unrecognised model is far more
+     *                 likely to be an older one than a new one
+     * @param fileName SD-card-relative file name, no leading slash
+     */
+    public static String projectFileUrl(final PrinterModel model, final String fileName) {
+        return LEGACY_SDCARD_MODELS.contains(model) || model == PrinterModel.UNKNOWN
+                ? "file:///sdcard/%s".formatted(fileName)
+                : "ftp:///%s".formatted(fileName);
     }
 
     public static String gcodeHomeAll() {
@@ -311,6 +393,25 @@ public class BambuConst {
         /** True for printers with two independent extruders (e.g. H2D). */
         public boolean isDualNozzle() {
             return dualNozzle;
+        }
+
+        /**
+         * True for printers that can actively HEAT the chamber, as opposed to merely reporting its temperature.
+         * <p>
+         * Deliberately narrower than {@link #isTemperature()}: the X1C reports a chamber temperature but has no
+         * heater, so offering a target there would be a control that does nothing - the exact failure mode this
+         * app spent a day chasing on the H2D.
+         */
+        public boolean isActiveChamberHeater() {
+            return this == X1E || this == H2D;
+        }
+
+        /** Chamber ceiling: the X1E stops at 60°C, the H2 series at 65°C. 0 when there is no heater. */
+        public int getMaxChamberTemperature() {
+            if (this == X1E) {
+                return 60;
+            }
+            return this == H2D ? 65 : 0;
         }
 
         public static Optional<PrinterModel> fromModel(final String model) {

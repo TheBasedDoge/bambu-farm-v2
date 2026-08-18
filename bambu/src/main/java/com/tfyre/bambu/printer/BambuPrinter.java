@@ -41,9 +41,29 @@ public interface BambuPrinter {
 
     void commandFullStatus(final boolean force);
 
+    /**
+     * True when this printer requires cryptographically signed MQTT commands, and will therefore accept every
+     * command this app sends and silently do nothing. See {@link BambuConst#MQTT_SIGNATURE_REQUIRED}. Enabling
+     * Developer Mode on the printer clears it; a firmware update commonly turns Developer Mode back off.
+     */
+    boolean isMqttSignatureRequired();
+
     void commandClearPrinterError();
 
+    /** Drives both chamber lights on dual-nozzle printers; a single-light printer ignores the second node. */
     void commandLight(BambuConst.LightMode lightMode);
+
+    /** {@code buzzer_ctrl} - H2 series only; other models ignore it. */
+    void commandBuzzer(BambuConst.BuzzerMode buzzerMode);
+
+    /** {@code set_airduct} - H2/P2/X2. {@code subMode} of -1 means "none". */
+    void commandAirduct(int modeId, int subMode);
+
+    /** {@code print_option} - the prompt/notification sound. A1 and H2D. */
+    void commandPromptSound(boolean enabled);
+
+    /** {@code ams_get_rfid} - re-read a spool's RFID tag when a tray reports stale filament metadata. */
+    void commandAmsReadRfid(int amsId, int slotId);
 
     void commandControl(BambuConst.CommandControl control);
 

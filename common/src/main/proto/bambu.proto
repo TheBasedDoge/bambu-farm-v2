@@ -262,6 +262,27 @@ message Print {
   // H2D virtual external-spool slots (replaces vt_tray for dual-nozzle printers)
   // id=254 = slot 0, id=255 = slot 1; each carries tray_type/tray_info_idx/tray_color
   repeated Tray vir_slot = 102;
+
+  // Printer capability/state bitfield, sent as a hex string e.g. "3EC1AFFF9CFF".
+  // Bit 0x20000000 = MQTT commands must be cryptographically signed. When it is set the printer
+  // ACCEPTS unsigned commands over MQTT and silently discards them - no error, no reply - so every
+  // control in this app appears to work and does nothing. Enabling Developer Mode on the printer
+  // clears the bit. See BambuConst.MQTT_SIGNATURE_REQUIRED.
+  optional string fun = 103;
+
+  // --- H2D-specific command parameters (outbound only; the printer never sends these back) ---
+
+  // buzzer_ctrl: 0 = silent, 1 = fire alarm, 2 = beeping. H2 series only.
+  optional int32 mode = 104;
+  // set_airduct: which airduct mode to select, and an optional sub-mode (-1 = none). H2/P2/X2.
+  // NOTE: `modeId` is camelCase on purpose and must stay that way. Outbound JSON is produced with
+  // JsonFormat.printer().preservingProtoFieldNames(), so the field name here IS the wire name, and
+  // Bambu expects "modeId". Renaming this to mode_id to match proto style would silently break the
+  // command - the printer would receive an unknown key and ignore it.
+  optional int32 modeId = 105;
+  optional int32 submode = 106;
+  // print_option: the prompt/notification sound. A1 and H2D.
+  optional bool sound_enable = 107;
 }
 
 message System {

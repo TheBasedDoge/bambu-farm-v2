@@ -79,6 +79,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     /** Tray colours as the printer reports them - 8-digit RRGGBBAA hex. Kept in step with {@link #amsTrayTypes}. */
     private volatile java.util.Map<Integer, String> amsTrayColors = java.util.Map.of();
     private volatile Optional<BambuConst.LightMode> lightMode = Optional.empty();
+    /** See {@link BambuConst#MQTT_SIGNATURE_REQUIRED}. False until the printer says otherwise. */
+    private volatile boolean mqttSignatureRequired;
     private volatile int activeTrayId = -1;
     private volatile int layerNum = -1;
     private volatile int mcPercent = -1;
@@ -106,6 +108,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         if (print.hasPrintError()) {
             printerError = print.getPrintError();
         }
+        updateMqttSignatureRequired(print);
         // Mirrors the dashboard's HMS badge filter: severity 1 (fatal) or 2 (serious) only. Recomputed from
         // this message's hms list (not sticky) - matches the existing, already-working badge behaviour.
         activeHmsErrors = print.getHmsList().stream()
@@ -205,6 +208,20 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         // slot 4 is black because the type map and the colour map came from different messages is worse than
         // one that doesn't filter by colour at all.
         final java.util.Map<Integer, String> colors = new java.util.HashMap<>();
+        // PHYSICAL PRESENCE, not the slot's configured material.
+        //
+        // tray_type is what the AMS was TOLD a slot holds, and it survives the spool being pulled - the slot
+        // keeps its assignment until you clear it. So an empty slot 1 still reports "PETG", the strict branch
+        // in AutoQueueService.resolveSlot asks "does slot 0 report PETG?", the AMS says yes, and an order gets
+        // dispatched to a printer with nothing on that spool holder. That is exactly how the Infiniti FX35 job
+        // went to P1S on 2026-08-13 with slot 1 empty.
+        //
+        // tray_exist_bits is the bitmask of trays that actually have filament in them (bit n = amsId*4+trayId).
+        // Absent or unparseable means no opinion and every tray passes, because a firmware that doesn't send
+        // this field must not have dispatch stopped farm-wide. Present-and-zero is a real answer and is obeyed.
+        final long existBits = print.getAms().hasTrayExistBits()
+                ? parseHexSafe(print.getAms().getTrayExistBits(), -1L)
+                : -1L;
         print.getAms().getAmsList().forEach(single -> {
             final int amsId = parseIntSafe(single.getId(), -1);
             if (amsId < 0) {
@@ -213,6 +230,11 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
             single.getTrayList().forEach(tray -> {
                 final int trayId = parseIntSafe(tray.getId(), -1);
                 if (trayId < 0 || !tray.hasTrayType() || tray.getTrayType().isBlank()) {
+                    return;
+                }
+                if (existBits >= 0 && (existBits & (1L << (amsId * 4 + trayId))) == 0) {
+                    // Configured for a material, but nothing is loaded. Leaving it out of the map is what makes
+                    // resolveSlot's `want.equals(trays.get(slot))` fail closed instead of dispatching into air.
                     return;
                 }
                 types.put(amsId * 4 + trayId, tray.getTrayType().toUpperCase());
@@ -235,6 +257,59 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         }
         amsTrayTypes = java.util.Map.copyOf(types);
         amsTrayColors = java.util.Map.copyOf(colors);
+    }
+
+    /**
+     * Tracks whether this printer will silently discard every unsigned MQTT command.
+     * <p>
+     * Sticky in the same way as the tray map: {@code fun} rides in some pushes and not others, and its absence
+     * from a partial delta is not a statement that signing is no longer required. Only an actual value updates
+     * it. Logged on transition rather than every message - it changes when someone toggles Developer Mode or a
+     * firmware update resets it, and both are worth a line in the log.
+     */
+    private void updateMqttSignatureRequired(final Print print) {
+        if (!print.hasFun() || print.getFun().isBlank()) {
+            return;
+        }
+        final long fun = parseHexSafe(print.getFun(), -1L);
+        if (fun < 0) {
+            return;
+        }
+        final boolean required = (fun & BambuConst.MQTT_SIGNATURE_REQUIRED) != 0;
+        if (required == mqttSignatureRequired) {
+            return;
+        }
+        mqttSignatureRequired = required;
+        if (required) {
+            Log.warnf("%s: printer now requires SIGNED MQTT commands (fun=%s) - control commands will be "
+                    + "accepted and silently ignored. Enable Developer Mode on the printer to restore control; "
+                    + "a firmware update commonly turns it back off.", name, print.getFun());
+        } else {
+            Log.infof("%s: printer accepts unsigned MQTT commands (fun=%s) - control is available", name, print.getFun());
+        }
+    }
+
+    @Override
+    public boolean isMqttSignatureRequired() {
+        return mqttSignatureRequired;
+    }
+
+    /**
+     * Bambu sends bitmasks as hex strings, inconsistently formatted ({@code "f"}, {@code "0x0f"},
+     * {@code "0000000f"}). Returns {@code fallback} when absent or unparseable - callers must treat that as
+     * "no opinion", never as "nothing is present", or a firmware quirk turns into a farm-wide dispatch halt.
+     */
+    private static long parseHexSafe(final String value, final long fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        final String trimmed = value.strip();
+        final String digits = trimmed.regionMatches(true, 0, "0x", 0, 2) ? trimmed.substring(2) : trimmed;
+        try {
+            return Long.parseLong(digits, 16);
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
     }
 
     private static int parseIntSafe(final String value, final int fallback) {
@@ -528,7 +603,28 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         }
     }
 
+    /**
+     * Sends a CONTROL command, refusing rather than pretending when the printer requires signed MQTT.
+     * <p>
+     * Every control in this class funnels through here. Without the guard the printer accepts the message and
+     * discards it, so the app logs a successful send, the UI shows no error, and nothing happens - which is
+     * how an H2D swallowed Home, fan and pause commands with the log insisting all of them were sent. Refusing
+     * out loud is the whole point; there is no signing implementation to fall back to.
+     * <p>
+     * Status requests use {@link #sendStatusData} instead: they are safe to attempt regardless, and stopping
+     * them would blind the app to the very field that reports this condition.
+     */
     private void sendData(final String data) {
+        if (mqttSignatureRequired) {
+            Log.warnf("%s: REFUSED a control command - this printer requires signed MQTT commands and would "
+                    + "have discarded it silently. Enable Developer Mode on the printer; a firmware update "
+                    + "commonly turns it back off.", name);
+            return;
+        }
+        sendStatusData(data);
+    }
+
+    private void sendStatusData(final String data) {
         if (producerTemplate == null) {
             Log.debugf("%s: producerTemplate is null", name);
             return;
@@ -566,7 +662,9 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                                 .setSequenceId("%d".formatted(counter.incrementAndGet()))
                 )
                 .build();
-        toJson(message).ifPresent(this::sendData);
+        // Status, not control - never gated. Blocking this would blind the app to `fun`, the field that says
+        // whether control is possible at all, and a printer that requires signing still answers status fine.
+        toJson(message).ifPresent(this::sendStatusData);
     }
 
     @Override
@@ -598,17 +696,71 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public void commandLight(final BambuConst.LightMode lightMode) {
         logUser("%s: commandLight %s".formatted(name, lightMode));
+        sendLedControl(BambuConst.CHAMBER_LIGHT, lightMode);
+        // The H2D has two chamber lights and ignores a node it doesn't have, so driving the second one is
+        // harmless on single-light printers. Without this, "lights on" leaves half an H2D chamber dark - and
+        // the AI bed check then judges a half-lit plate, which is a worse failure than the cosmetic one.
+        if (model.isDualNozzle()) {
+            sendLedControl(BambuConst.CHAMBER_LIGHT_2, lightMode);
+        }
+    }
+
+    private void sendLedControl(final String ledNode, final BambuConst.LightMode lightMode) {
         final BambuMessage message = BambuMessage.newBuilder()
                 .setSystem(
                         com.tfyre.bambu.model.System.newBuilder()
                                 .setSequenceId("%d".formatted(counter.incrementAndGet()))
                                 .setCommand("ledctrl")
-                                .setLedNode(BambuConst.CHAMBER_LIGHT)
+                                .setLedNode(ledNode)
                                 .setLedMode(lightMode.getValue())
                                 .setLedOnTime(500)
                                 .setLedOffTime(500)
                                 .setLoopTimes(1)
                                 .setIntervalTime(1000)
+                )
+                .build();
+        toJson(message).ifPresent(this::sendData);
+    }
+
+    @Override
+    public void commandBuzzer(final BambuConst.BuzzerMode buzzerMode) {
+        logUser("%s: commandBuzzer %s".formatted(name, buzzerMode));
+        final BambuMessage message = BambuMessage.newBuilder()
+                .setPrint(
+                        Print.newBuilder()
+                                .setSequenceId("%d".formatted(counter.incrementAndGet()))
+                                .setCommand("buzzer_ctrl")
+                                .setMode(buzzerMode.getValue())
+                                .setReason("")
+                )
+                .build();
+        toJson(message).ifPresent(this::sendData);
+    }
+
+    @Override
+    public void commandAirduct(final int modeId, final int subMode) {
+        logUser("%s: commandAirduct mode[%d] sub[%d]".formatted(name, modeId, subMode));
+        final BambuMessage message = BambuMessage.newBuilder()
+                .setPrint(
+                        Print.newBuilder()
+                                .setSequenceId("%d".formatted(counter.incrementAndGet()))
+                                .setCommand("set_airduct")
+                                .setModeId(modeId)
+                                .setSubmode(subMode)
+                )
+                .build();
+        toJson(message).ifPresent(this::sendData);
+    }
+
+    @Override
+    public void commandPromptSound(final boolean enabled) {
+        logUser("%s: commandPromptSound %s".formatted(name, enabled));
+        final BambuMessage message = BambuMessage.newBuilder()
+                .setPrint(
+                        Print.newBuilder()
+                                .setSequenceId("%d".formatted(counter.incrementAndGet()))
+                                .setCommand("print_option")
+                                .setSoundEnable(enabled)
                 )
                 .build();
         toJson(message).ifPresent(this::sendData);
@@ -674,7 +826,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                                 .setSequenceId("%d".formatted(counter.incrementAndGet()))
                 )
                 .build();
-        toJson(message).ifPresent(this::sendData);
+        // Status, not control - see commandFullStatusInternal.
+        toJson(message).ifPresent(this::sendStatusData);
     }
 
     @Override
@@ -715,6 +868,18 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                 + "\"ams_id\":%d,\"temp\":0,\"cooling_temp\":40,\"duration\":0,"
                 + "\"humidity\":0,\"mode\":0,\"rotate_tray\":false}}")
                 .formatted(counter.incrementAndGet(), amsId);
+        sendData(json);
+    }
+
+    @Override
+    public void commandAmsReadRfid(final int amsId, final int slotId) {
+        logUser("%s: commandAmsReadRfid ams[%d] slot[%d]".formatted(name, amsId, slotId));
+        // Re-reads the spool's RFID tag. Useful after swapping a spool when the tray still reports the
+        // previous filament - the same stale-metadata problem that let a job dispatch to an empty slot,
+        // approached from the other end.
+        final String json = ("{\"print\":{\"sequence_id\":\"%d\",\"command\":\"ams_get_rfid\","
+                + "\"ams_id\":%d,\"slot_id\":%d}}")
+                .formatted(counter.incrementAndGet(), amsId, slotId);
         sendData(json);
     }
 
@@ -837,7 +1002,9 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                                 .setSubtaskId("0")
                                 .setSubtaskName(taskName)
                                 .setFile("")
-                                .setUrl("file:///sdcard/%s".formatted(_filename))
+                                // Model-dependent: only the pre-H2D printers take file:///sdcard/. Sending the
+                                // wrong form fails the print with no useful diagnostic. See BambuConst.
+                                .setUrl(BambuConst.projectFileUrl(model, _filename))
                                 .setMd5("")
                                 .setTimelapse(command.timelapse())
                                 .setBedType("auto")
