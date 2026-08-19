@@ -60,6 +60,15 @@ message Tray {
   optional string ctype = 23;
   optional string drying_temp = 24;
   optional string drying_time = 25;
+
+  // Per-tray state flags - THE authoritative "is a spool physically in this slot" signal.
+  // 0x01 SPOOL, 0x02 METADATA, 0x04 MOTION, 0x08 STEADY, 0x10 RFID; values <= 3 are the legacy
+  // encoding where only 3 means loaded. See BambuConst.amsTraySpoolLoaded.
+  //
+  // This field was missing here for a long time, and because the parser is built with
+  // ignoringUnknownFields() the printer was sending it and we were silently throwing it away -
+  // which is why an emptied slot kept reporting its old filament and a job was dispatched onto it.
+  optional int32 state = 26;
 }
 
 message AmsSingle {

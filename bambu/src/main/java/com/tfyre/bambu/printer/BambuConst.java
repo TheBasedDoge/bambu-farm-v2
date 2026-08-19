@@ -130,6 +130,41 @@ public class BambuConst {
      */
     public static final long MQTT_SIGNATURE_REQUIRED = 0x20000000L;
 
+    /** Highest AMS tray {@code state} value using the legacy encoding, where only 3 means "spool loaded". */
+    private static final int AMS_TRAY_STATE_LEGACY_MAX = 3;
+    /** A spool is physically present in the slot. */
+    private static final int AMS_TRAY_STATE_SPOOL = 0x01;
+    /** The tray has settled - not mid-load, mid-unload or scanning. */
+    private static final int AMS_TRAY_STATE_STEADY = 0x08;
+
+    /**
+     * Whether an AMS tray physically holds a spool, from its {@code state} flags.
+     * <p>
+     * <b>This, not {@code tray_type}, is what "has filament" means.</b> {@code tray_type} is the material a
+     * slot is <i>configured</i> for and it survives the spool being pulled, so an emptied slot goes on
+     * reporting PETG indefinitely - which is how an order was dispatched onto a printer with nothing in slot 1
+     * while the overview cheerfully displayed "PETG". {@code tray_exist_bits} on the AMS looked like the
+     * answer and is not: it did not stop that dispatch.
+     * <p>
+     * Two encodings, and the boundary matters. Values at or below {@value #AMS_TRAY_STATE_LEGACY_MAX} are the
+     * legacy form where only exactly 3 counts as loaded; above that the flags apply and a spool must be both
+     * present ({@code SPOOL}) and settled ({@code STEADY}). Requiring STEADY is deliberate: a tray mid-load or
+     * being scanned reports SPOOL but its metadata is not yet trustworthy, and dispatching against it would
+     * reintroduce the same class of bug one step later.
+     * <p>
+     * Mirrors ha-bambulab's {@code ams_tray_spool_loaded}, checked against all eleven of its test vectors
+     * (0,1,2,5,8,10,17,21 → empty; 3,9,11 → loaded).
+     */
+    public static boolean amsTraySpoolLoaded(final int state) {
+        if ((state & AMS_TRAY_STATE_SPOOL) == 0) {
+            return false;
+        }
+        if (state <= AMS_TRAY_STATE_LEGACY_MAX) {
+            return state == AMS_TRAY_STATE_LEGACY_MAX;
+        }
+        return (state & AMS_TRAY_STATE_STEADY) != 0;
+    }
+
     /** {@code buzzer_ctrl} modes. H2 series only. */
     public enum BuzzerMode {
         SILENT(0),

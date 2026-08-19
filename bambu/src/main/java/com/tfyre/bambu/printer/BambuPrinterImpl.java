@@ -229,17 +229,41 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
             }
             single.getTrayList().forEach(tray -> {
                 final int trayId = parseIntSafe(tray.getId(), -1);
-                if (trayId < 0 || !tray.hasTrayType() || tray.getTrayType().isBlank()) {
+                if (trayId < 0) {
                     return;
                 }
-                if (existBits >= 0 && (existBits & (1L << (amsId * 4 + trayId))) == 0) {
-                    // Configured for a material, but nothing is loaded. Leaving it out of the map is what makes
-                    // resolveSlot's `want.equals(trays.get(slot))` fail closed instead of dispatching into air.
+                final int slot = amsId * 4 + trayId;
+                // Presence, in order of trustworthiness. Leaving a tray out of the map is what makes
+                // resolveSlot's `want.equals(trays.get(slot))` fail closed instead of dispatching into air.
+                //
+                // The per-tray `state` is authoritative and is checked FIRST. tray_exist_bits was tried as the
+                // presence signal and demonstrably did not work - a job still went onto an empty slot 1 with
+                // it in place, while the overview showed "PETG" - so it is kept only as a fallback for
+                // firmware that sends the mask but no per-tray state.
+                if (tray.hasState()) {
+                    if (!BambuConst.amsTraySpoolLoaded(tray.getState())) {
+                        return;
+                    }
+                } else if (existBits >= 0 && (existBits & (1L << slot)) == 0) {
                     return;
                 }
-                types.put(amsId * 4 + trayId, tray.getTrayType().toUpperCase());
-                if (tray.hasTrayColor() && !tray.getTrayColor().isBlank()) {
-                    colors.put(amsId * 4 + trayId, tray.getTrayColor().toUpperCase());
+                // Type from THIS message when it carries one, otherwise the last known type for this slot.
+                // Bambu sends metadata-only tray pushes carrying just id and state; since this map is rebuilt
+                // wholesale, dropping those trays would empty it and halt dispatch farm-wide until the next
+                // full push - a self-inflicted "no printer has the required filament" every minute or so.
+                // Carrying the value forward is safe precisely because presence was already checked above.
+                final String type = tray.hasTrayType() && !tray.getTrayType().isBlank()
+                        ? tray.getTrayType().toUpperCase()
+                        : amsTrayTypes.get(slot);
+                if (type == null) {
+                    return;
+                }
+                types.put(slot, type);
+                final String color = tray.hasTrayColor() && !tray.getTrayColor().isBlank()
+                        ? tray.getTrayColor().toUpperCase()
+                        : amsTrayColors.get(slot);
+                if (color != null) {
+                    colors.put(slot, color);
                 }
             });
         });

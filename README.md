@@ -812,7 +812,19 @@ This app now reads `fun` and **refuses control commands with a logged warning** 
 
 This is not just a browsing inconvenience. **Dispatch uploads a `.3mf` over FTP and then commands a print against that path** (the `queue file already on SD card in a subfolder, printing from there` line in the log is that mechanism working on a P1S). No writable FTP target means auto-start and auto-queue can never work on that printer, whatever else is configured. Put a card in the slot and browsing, upload and dispatch all behave like the P1 machines.
 
-**An AMS slot that reports filament it does not have.** `tray_type` is the material a slot is *configured* for and it survives the spool being pulled - the slot still says PETG with nothing on the holder. Matching on it alone dispatched an order to an empty printer. The dispatcher now also requires the slot's bit in `tray_exist_bits`, the mask of trays that physically contain filament. When that field is absent or unparseable every tray still passes, because a firmware that doesn't send it must not halt the whole farm; present-and-zero is a real answer and is obeyed. The external spool (`vt_tray`) has no such bit and is still matched on configured type alone.
+**An AMS slot that reports filament it does not have.** `tray_type` is the material a slot is *configured* for and it survives the spool being pulled - the slot still says PETG with nothing on the holder, and both the dispatcher and the overview believed it. Presence comes from the **per-tray `state` flags** instead:
+
+| flag | meaning |
+|---|---|
+| `0x01` SPOOL | a spool is physically in the slot |
+| `0x02` METADATA | filament metadata is populated |
+| `0x04` MOTION | mid-load / mid-unload |
+| `0x08` STEADY | settled, not moving or scanning |
+| `0x10` RFID | tag read |
+
+A slot counts as loaded only when it is both **present and steady** (`state > 3` → `SPOOL && STEADY`), or exactly `3` under the older encoding where values `0-3` mean something different. Requiring STEADY matters: a tray mid-load reports SPOOL while its metadata is still wrong, and trusting it just moves the bug one step later.
+
+Trays that fail this drop out of the filament map entirely, so the dispatcher's existing "does slot N hold PETG?" test fails closed on its own. `tray_exist_bits` remains only as a fallback for firmware that sends the AMS-level mask but no per-tray state - **it was tried as the primary signal and did not work**. The external spool (`vt_tray`) has no state field and is still matched on configured type alone.
 
 ## H2D specifics
 
