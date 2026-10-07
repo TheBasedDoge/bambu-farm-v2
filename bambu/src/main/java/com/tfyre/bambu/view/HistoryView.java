@@ -59,6 +59,26 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
     private final Grid<PrintJob> grid = new Grid<>();
     private final Div stats = new Div();
     private final Div charts = new Div();
+    private final Grid<FileStat> fileGrid = new Grid<>();
+    private final com.vaadin.flow.component.details.Details fileSection
+            = new com.vaadin.flow.component.details.Details("Failure rate by file", fileGrid);
+
+    /**
+     * One print file's record across every printer. {@code failed} counts prints the printer itself reported as
+     * Failed; Stopped (you cancelled it) and Offline (the app lost sight of the printer) are shown but are not
+     * failures of the file and are left out of the rate.
+     */
+    public record FileStat(String file, int finished, int failed, int other, java.time.OffsetDateTime lastFailed) {
+
+        int total() {
+            return finished + failed + other;
+        }
+
+        /** Failed as a share of the prints that ran to a verdict, 0-100. */
+        int failPct() {
+            return finished + failed == 0 ? 0 : Math.round(100f * failed / (finished + failed));
+        }
+    }
 
     private String cost(final double grams) {
         if (grams <= 0 || config.costPerKg() <= 0) {
@@ -80,12 +100,14 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
         stats.addClassName("history-stats");
         charts.addClassName("history-charts");
         configureGrid();
-        add(stats, charts, grid);
+        configureFileGrid();
+        add(stats, charts, fileSection, grid);
         refreshItems();
     }
 
     private void refreshItems() {
         grid.setItems(history.getJobs());
+        fileGrid.setItems(fileStats(history.getJobs()));
         buildStats();
         buildCharts();
     }
@@ -162,6 +184,73 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
         final Span title = new Span("Utilization (7d)");
         title.addClassName("chart-title");
         return newDiv("chart", title, rows);
+    }
+
+    /**
+     * Groups the history by file. A job started from an SD subfolder is recorded as "_S2000/x.gcode.3mf" and the
+     * same file from the root as "x.gcode.3mf", so the folder is dropped - they are one file.
+     */
+    private static List<FileStat> fileStats(final List<PrintJob> jobs) {
+        final java.util.Map<String, int[]> counts = new java.util.HashMap<>();
+        final java.util.Map<String, java.time.OffsetDateTime> lastFailed = new java.util.HashMap<>();
+        for (final PrintJob j : jobs) {
+            final String raw = j.file() == null ? "" : j.file();
+            final String file = raw.isBlank() ? "(unnamed)" : raw.substring(raw.lastIndexOf('/') + 1);
+            final int[] c = counts.computeIfAbsent(file, k -> new int[3]);
+            switch (j.result() == null ? "" : j.result()) {
+                case "Finished" ->
+                    c[0]++;
+                case "Failed" -> {
+                    c[1]++;
+                    if (j.ended() != null) {
+                        lastFailed.merge(file, j.ended(), (a, b) -> a.isAfter(b) ? a : b);
+                    }
+                }
+                default ->
+                    c[2]++;
+            }
+        }
+        final List<FileStat> out = new java.util.ArrayList<>();
+        counts.forEach((file, c) -> out.add(new FileStat(file, c[0], c[1], c[2], lastFailed.get(file))));
+        // Worst first: the files that fail most often, by rate and then by count.
+        out.sort(Comparator.comparingInt(FileStat::failPct).reversed()
+                .thenComparing(Comparator.comparingInt(FileStat::failed).reversed())
+                .thenComparing(FileStat::file, String.CASE_INSENSITIVE_ORDER));
+        return out;
+    }
+
+    private void configureFileGrid() {
+        if (!fileGrid.getColumns().isEmpty()) {
+            return;
+        }
+        fileGrid.addColumn(FileStat::file).setHeader("File").setFlexGrow(3).setSortable(true)
+                .setComparator(Comparator.comparing(FileStat::file, String.CASE_INSENSITIVE_ORDER))
+                .setTooltipGenerator(FileStat::file);
+        fileGrid.addColumn(FileStat::total).setHeader("Prints").setAutoWidth(true).setSortable(true)
+                .setComparator(Comparator.comparingInt(FileStat::total));
+        fileGrid.addColumn(FileStat::finished).setHeader("Finished").setAutoWidth(true).setSortable(true)
+                .setComparator(Comparator.comparingInt(FileStat::finished));
+        fileGrid.addColumn(FileStat::failed).setHeader("Failed").setAutoWidth(true).setSortable(true)
+                .setComparator(Comparator.comparingInt(FileStat::failed));
+        fileGrid.addComponentColumn(s -> {
+            final Span rate = new Span(s.finished() + s.failed() == 0 ? "--" : s.failPct() + "%");
+            // Colour only where it means something: a file that fails one print in five needs re-slicing.
+            if (s.failed() >= 2 && s.failPct() >= 20) {
+                rate.addClassName(LumoUtility.TextColor.ERROR);
+            } else if (s.failed() > 0) {
+                rate.addClassName(LumoUtility.TextColor.WARNING);
+            }
+            return rate;
+        }).setHeader("Failure rate").setAutoWidth(true).setSortable(true)
+                .setComparator(Comparator.comparingInt(FileStat::failPct));
+        fileGrid.addColumn(s -> s.other() == 0 ? "" : String.valueOf(s.other())).setHeader("Stopped / offline").setAutoWidth(true);
+        fileGrid.addColumn(s -> s.lastFailed() == null ? "" : DTF.format(s.lastFailed())).setHeader("Last failed").setAutoWidth(true);
+        fileGrid.setHeight("260px");
+        fileGrid.setColumnReorderingAllowed(true);
+        fileGrid.getColumns().forEach(c -> c.setResizable(true));
+        GridLayoutMemory.remember(fileGrid, "history-files");
+        fileSection.setOpened(true);
+        fileSection.setWidthFull();
     }
 
     private void buildStats() {

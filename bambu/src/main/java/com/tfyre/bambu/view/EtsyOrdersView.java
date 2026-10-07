@@ -257,6 +257,15 @@ public class EtsyOrdersView extends VerticalLayout implements NotificationHelper
         });
         titleRow.add(dismiss);
         card.add(titleRow);
+        // What the buyer wrote at checkout - above the items, where it is read before anything is packed.
+        if (receipt.buyerNote() != null && !receipt.buyerNote().isBlank()) {
+            final Div note = new Div(new Span("Buyer note: " + receipt.buyerNote()));
+            note.getStyle().set("background", "var(--lumo-warning-color-10pct, rgba(232,163,61,0.12))")
+                    .set("border-left", "3px solid var(--lumo-warning-color, #e8a33d)")
+                    .set("border-radius", "6px").set("padding", "var(--lumo-space-xs) var(--lumo-space-s)")
+                    .set("margin-bottom", "var(--lumo-space-xs)").set("white-space", "pre-wrap");
+            card.add(note);
+        }
 
         receipt.transactions().forEach(t -> card.add(buildTransactionRow(t, orderKey, queuedBadge)));
         return card;

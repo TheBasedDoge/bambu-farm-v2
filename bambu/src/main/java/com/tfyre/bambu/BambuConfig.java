@@ -72,6 +72,13 @@ public interface BambuConfig {
     @WithDefault("bambu-maintenance.json")
     String maintenanceFile();
 
+    /**
+     * Optional cron for the daily digest ({@code 0 0 7 * * ?}). The scheduler reads this property directly;
+     * it is surfaced here only so the app can say whether a cron schedule is active. The Notification Settings
+     * page offers a time-of-day instead, which needs no restart.
+     */
+    Optional<String> digestCron();
+
     @WithDefault("bambu-history.json")
     String historyFile();
 
@@ -161,8 +168,10 @@ public interface BambuConfig {
         /**
          * How long to keep waiting for the printer to report a layer number before giving up on the first-layer
          * check. This is a timeout, not a delay - the check fires as soon as the first layer is actually reported.
+         * 30 minutes because an ASA print with a chamber preheat (the H2D above all) spends well over the old
+         * 8 minutes in PREPARE before layer 1 exists; 22 of the H2D's checks were skipped on that deadline.
          */
-        @WithDefault("8m")
+        @WithDefault("30m")
         Duration firstLayerDelay();
 
         /**
@@ -232,6 +241,26 @@ public interface BambuConfig {
         Duration failureConfirmDelay();
 
         /**
+         * Layers a print must advance between the two frames of the "is it still extruding" check; 0 turns the
+         * check off.
+         * <p>
+         * A clogged nozzle or a snapped filament leaves the printer happily tracing its toolpath in the air.
+         * Nothing reports it: the P1 has no extruder encoder and no error is raised, so a job can "print" for
+         * eight hours and finish at 100% with a centimetre of part on the plate. The only evidence is that the
+         * part stopped getting taller, and that needs two frames far enough apart for the difference to be
+         * unmistakable.
+         * <p>
+         * <b>Off by default since its first morning (2026-10-05).</b> gemma3:12b answered "no growth" on every
+         * comparison it was given - three out of three, at 95-100% confidence, on a print that was fine - and
+         * paused it. On these printers the BED descends as the part grows, so the top of the part stays at the
+         * same place in the frame and 40 layers is about 3% of the picture: the model was describing what it saw.
+         * Set a layer count to try it again (alert only, it no longer pauses); it needs a better question or a
+         * better model before it is worth leaving on.
+         */
+        @WithDefault("0")
+        int extrusionCheckLayers();
+
+        /**
          * Whether a "bed is clear" verdict must survive a SECOND, independently captured snapshot before a print
          * is allowed to start.
          * <p>
@@ -297,6 +326,49 @@ public interface BambuConfig {
     Etsy etsy();
 
     Ebay ebay();
+
+    Usps usps();
+
+    Backup backup();
+
+    /**
+     * USPS Carrier Pickup (the USPS Pickup page). Credentials come from an app created at
+     * https://developers.usps.com - "Add App" issues a Consumer Key and Secret. Unset = the page explains how
+     * to set it up and schedules nothing.
+     */
+    public interface Usps {
+
+        /** The app's Consumer Key. */
+        Optional<String> clientId();
+
+        /** The app's Consumer Secret. */
+        Optional<String> clientSecret();
+
+        /**
+         * API host. Production by default; {@code https://apis-tem.usps.com} is USPS's test environment, which
+         * accepts the same calls without sending a carrier to the door.
+         */
+        @WithDefault("https://apis.usps.com")
+        String baseUrl();
+
+        @WithDefault("20s")
+        Duration timeout();
+    }
+
+    /** The nightly zip of the app's data files (BackupService). */
+    public interface Backup {
+
+        /**
+         * Where the zips go. Unset = a {@code backups} folder beside the data files, which protects against a
+         * bad write or a mistake but not against losing the disk - point this at another drive or a network
+         * share for that.
+         */
+        Optional<String> dir();
+
+        /** How many daily zips to keep; older ones are deleted. 0 turns the backup off. */
+        @WithDefault("14")
+        int keep();
+    }
 
     public interface Ebay {
 
@@ -520,6 +592,16 @@ public interface BambuConfig {
             Optional<String> reportTopic();
 
             Optional<String> requestTopic();
+
+            /**
+             * Diagnostic: also subscribe to this printer's <b>request</b> topic and log every print-related
+             * command anyone sends it - Bambu Studio, Handy, this app. The way to see exactly what Studio puts
+             * in a {@code project_file} command (its AMS filament-identity fields are undocumented and the
+             * network plugin is closed) so the same can be sent from here. Off by default; one more MQTT
+             * session per printer while on.
+             */
+            @WithDefault("false")
+            boolean captureRequests();
 
             @WithDefault("10m")
             Duration fullStatus();

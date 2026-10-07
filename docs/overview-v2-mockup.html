@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}</style>
+<title>Overview Wall Mockup</title>
+<style>
+/* Layout: cameras own the screen. One status line on top, a "needs you" rail on the side (below on portrait),
+   and a camera wall that re-computes its grid to make every tile as large as the space allows. */
+:root {
+  color-scheme: dark;
+  --bg: #000;            /* OLED black, same as the app's wall display */
+  --panel: #0d0f11;
+  --panel-2: #15181b;
+  --line: #23272c;
+  --fg: #e9edf0;
+  --dim: #8d96a0;
+  --ok: #3ddc84;         /* the app's existing green */
+  --warn: #f5b83d;
+  --bad: #ff5f5f;
+  --info: #6cb6ff;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --gap: clamp(8px, 0.9vw, 16px);
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-variant-numeric: tabular-nums; }
+.app { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); padding-inline: 16px; padding-block: 10px; gap: var(--gap); box-sizing: border-box; }
+
+/* ---------- status line ---------- */
+.bar { display: flex; align-items: center; gap: clamp(8px, 1.2vw, 22px); flex-wrap: wrap; font-size: clamp(13px, 1.05vw, 20px); }
+.bar h1 { margin: 0; font-size: 1.25em; font-weight: 600; letter-spacing: .01em; }
+.stat { display: flex; align-items: baseline; gap: .4em; color: var(--dim); white-space: nowrap; }
+.stat b { color: var(--fg); font-size: 1.35em; font-weight: 650; }
+.stat .ok { color: var(--ok); } .stat .bad { color: var(--bad); }
+.sep { width: 1px; align-self: stretch; background: var(--line); }
+.clock { margin-left: auto; font-size: 1.5em; font-weight: 300; color: var(--fg); }
+.health { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 999px; padding: .15em .7em; font-size: .85em; white-space: nowrap; }
+
+/* ---------- mockup controls (not part of the design) ---------- */
+.mock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; color: var(--dim); font-size: 12px; }
+.mock strong { color: var(--info); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { background: none; color: var(--dim); border: 0; padding: 4px 10px; font: inherit; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--fg); }
+.seg button:focus-visible, .tile:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---------- stage ---------- */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) clamp(250px, 21vw, 460px); gap: var(--gap); min-height: 0; }
+.stage.rail-bottom { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+.stage.rail-off { grid-template-columns: minmax(0, 1fr); }
+.stage.rail-off .rail { display: none; }
+
+.wall { min-width: 0; min-height: 0; display: flex; flex-wrap: wrap; gap: var(--gap); justify-content: center; align-content: center; }
+.wall.focus { flex-wrap: nowrap; align-items: stretch; }
+.wall.focus .strip { display: flex; flex-direction: column; gap: var(--gap); justify-content: center; flex: none; }
+
+/* ---------- camera tile ---------- */
+.tile { position: relative; aspect-ratio: 16 / 9; max-width: 100%; flex: none; border-radius: 10px; overflow: hidden; background: #050607;
+        container-type: inline-size; cursor: pointer; border: 0; padding: 0; color: inherit; font: inherit; text-align: left;
+        box-shadow: inset 0 0 0 2px transparent; }
+.tile.bad  { box-shadow: 0 0 0 3px var(--bad); }
+.tile.done { box-shadow: 0 0 0 3px var(--ok); }
+.cam { position: absolute; inset: 0; background:
+        radial-gradient(60% 45% at 62% 18%, #cfd6e6 0%, #6d7483 22%, transparent 60%),
+        linear-gradient(#1b1e24, #07080a); }
+.cam::before { content: ""; position: absolute; left: 6%; right: 6%; top: 38%; bottom: -6%;
+        clip-path: polygon(14% 0, 86% 0, 100% 100%, 0 100%);
+        background: radial-gradient(#0000 1px, #0003 1.6px) 0 0 / 5px 5px, linear-gradient(#8a8f9c, #4b4f59); }
+.cam .part { position: absolute; left: 36%; width: 28%; bottom: 22%; border-radius: 6px 6px 3px 3px;
+        background: linear-gradient(#2c2f36, #111317); box-shadow: 0 6px 14px #0009; }
+.scrim { position: absolute; inset: auto 0 0 0; height: 62%; background: linear-gradient(transparent, #000c 55%, #000e); }
+.pill { position: absolute; top: 3cqw; left: 3cqw; font-size: max(11px, 2.9cqw); font-weight: 600; padding: .25em .7em; border-radius: 999px;
+        background: #000a; backdrop-filter: blur(6px); display: flex; align-items: center; gap: .45em; }
+.pill i { width: .6em; height: .6em; border-radius: 50%; background: var(--ok); }
+.bad .pill { background: var(--bad); color: #1a0000; } .bad .pill i { background: #1a0000; }
+.done .pill { background: var(--ok); color: #00210f; } .done .pill i { background: #00210f; }
+.layer { position: absolute; top: 3cqw; right: 3cqw; font-size: max(10px, 2.5cqw); color: #fffc; background: #0008; padding: .25em .6em; border-radius: 6px; }
+.info { position: absolute; left: 3.2cqw; right: 3.2cqw; bottom: 4.6cqw; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; column-gap: 3cqw; }
+.name { font-size: max(15px, 6.2cqw); font-weight: 650; line-height: 1; }
+.file { font-size: max(11px, 3cqw); color: #ffffffb8; margin-top: .45em; overflow-wrap: anywhere; }
+.order { font-size: max(10px, 2.5cqw); color: var(--info); margin-top: .3em; }
+.right { text-align: right; }
+.pct { font-size: max(18px, 9cqw); font-weight: 300; line-height: .9; }
+.left { font-size: max(11px, 3cqw); color: #ffffffb8; margin-top: .35em; white-space: nowrap; }
+.left b { color: var(--fg); font-weight: 600; }
+.prog { position: absolute; left: 0; right: 0; bottom: 0; height: max(4px, 1.5cqw); background: #ffffff1f; }
+.prog span { display: block; height: 100%; background: var(--ok); }
+.bad .prog span { background: var(--bad); }
+
+/* ---------- rail ---------- */
+.rail { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--gap); font-size: clamp(13px, .95vw, 19px); }
+.rail-bottom .rail { flex-direction: row; flex-wrap: wrap; overflow: visible; }
+.rail-bottom .rail section { flex: 1 1 260px; }
+.rail section { background: var(--panel); border-radius: 10px; padding: .9em 1em; min-width: 0; }
+.rail h2 { margin: 0 0 .7em; font-size: .78em; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); display: flex; justify-content: space-between; }
+.rail h2 span { color: var(--fg); }
+.todo { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .75em; }
+.todo li { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: .7em; }
+.todo .dot { width: .7em; height: .7em; border-radius: 50%; margin-top: .35em; background: var(--warn); }
+.todo .dot.bad { background: var(--bad); } .todo .dot.ok { background: var(--ok); } .todo .dot.info { background: var(--info); }
+.todo strong { font-weight: 600; }
+.todo small { display: block; color: var(--dim); font-size: .86em; margin-top: .15em; overflow-wrap: anywhere; }
+.pipe { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5em; text-align: center; }
+.pipe div { background: var(--panel-2); border-radius: 8px; padding: .55em .2em; }
+.pipe b { display: block; font-size: 1.6em; font-weight: 500; line-height: 1.1; }
+.pipe span { font-size: .72em; color: var(--dim); }
+.pipe .ship b, .pipe .ship span { color: var(--ok); }
+.orders { list-style: none; margin: .9em 0 0; padding: .8em 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: .55em; font-size: .9em; }
+.orders li { display: flex; justify-content: space-between; gap: 1em; }
+.orders span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orders span:last-child { color: var(--dim); white-space: nowrap; }
+.orders .ship span:first-child { color: var(--ok); }
+.orders .hold span:last-child { color: var(--warn); }
+.next { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55em; }
+.next li { display: flex; justify-content: space-between; gap: 1em; }
+.next span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.next span:last-child { color: var(--dim); white-space: nowrap; }
+.quiet { color: var(--dim); font-size: .86em; }
+
+/* ---------- phone / narrow: stack and scroll ---------- */
+@media (max-width: 820px) {
+  html, body { height: auto; }
+  .app { height: auto; }
+  .stage, .stage.rail-bottom { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+  .wall, .wall.focus { flex-wrap: wrap; }
+  .wall.focus .strip { flex-direction: row; flex-wrap: wrap; width: 100%; }
+  .rail { overflow: visible; }
+  .clock { margin-left: 0; }
+}
+@media (prefers-reduced-motion: no-preference) { .tile { transition: box-shadow .2s; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="bar">
+    <h1>Overview</h1>
+    <span class="stat"><b id="s-print">4</b>/<span id="s-total">5</span> printing</span>
+    <span class="sep"></span>
+    <span class="stat"><b>7</b> open orders</span>
+    <span class="stat"><b class="ok">3</b> ready to ship</span>
+    <span class="stat"><b>1</b> waiting for a bed</span>
+    <span class="sep"></span>
+    <span class="stat">today <b>4</b> done <b class="bad">2</b> failed</span>
+    <span class="health" title="Replaces the full-width yellow banner">4 beds without a reference</span>
+    <span class="clock">8:29 am</span>
+  </header>
+
+  <div class="mock" aria-label="Mockup controls">
+    <strong>Mockup controls</strong>
+    <span>Printers</span>
+    <span class="seg" id="seg-n"><button data-n="4">4</button><button data-n="5" aria-pressed="true">5</button><button data-n="6">6</button><button data-n="8">8</button></span>
+    <span>Side panel</span>
+    <span class="seg" id="seg-rail"><button data-rail="side" aria-pressed="true">Side</button><button data-rail="bottom">Bottom</button><button data-rail="off">Hidden</button></span>
+    <span>Click a camera to enlarge it, click again to go back. Resize the window to see it re-flow. Camera frames are placeholders.</span>
+  </div>
+
+  <main class="stage" id="stage">
+    <section class="wall" id="wall" aria-label="Cameras"></section>
+
+    <aside class="rail" aria-label="What needs you">
+      <section>
+        <h2>Needs you <span>4</span></h2>
+        <ul class="todo">
+          <li><i class="dot bad"></i><div><strong>Clear P1S-3</strong><small>Failed print still on the bed. 1 order job is waiting for it.</small></div></li>
+          <li><i class="dot ok"></i><div><strong>Ship 3 orders</strong><small>All parts printed. Listed under Orders below.</small></div></li>
+          <li><i class="dot"></i><div><strong>Map 1 listing</strong><small>S2000 AP2 Cupholder Button Replacement has no print file, so its order is not queued.</small></div></li>
+          <li><i class="dot"></i><div><strong>H2D nozzle clean overdue</strong><small>244 h since last done</small></div></li>
+        </ul>
+      </section>
+      <section>
+        <h2>Orders</h2>
+        <div class="pipe">
+          <div><b>1</b><span>not queued</span></div>
+          <div><b>1</b><span>waiting</span></div>
+          <div><b>3</b><span>printing</span></div>
+          <div class="ship"><b>3</b><span>to ship</span></div>
+        </div>
+        <ul class="orders">
+          <li class="ship"><span>Etsy · 1x Folding Cupholder Bracket - for Honda S2000</span><span>1/1 printed</span></li>
+          <li class="ship"><span>Etsy · 1x Center Console Cupholder Insert for Audi</span><span>1/1 printed</span></li>
+          <li class="ship"><span>Etsy · 1x Audi Upgraded Rear Cupholder Insert | Q5 Q7 Q8</span><span>1/1 printed</span></li>
+          <li><span>eBay · 1x 6.5" Door Speaker Adapter for Honda (Set of 2)</span><span>1/2 printed</span></li>
+          <li><span>Etsy · 1x S2000 AP1 Fog Light Bezel</span><span>0/1 printed</span></li>
+          <li><span>Etsy · 1x Audi Upgraded Rear Cupholder Insert | Q5 Q7 Q8</span><span>0/1 printed</span></li>
+          <li class="hold"><span>Etsy · 1x S2000 AP2 Cupholder Button Replacement</span><span>not queued</span></li>
+        </ul>
+      </section>
+      <section>
+        <h2>Beds free next</h2>
+        <ul class="next">
+          <li><span>H2D</span><span>9:41 am</span></li>
+          <li><span>P1S-2</span><span>10:03 am</span></li>
+          <li><span>P1S</span><span>1:34 pm</span></li>
+          <li><span>P1P</span><span>3:44 pm</span></li>
+        </ul>
+      </section>
+      <p class="quiet">Nothing here when the farm is fine: the panel collapses and the cameras take the full width.</p>
+    </aside>
+  </main>
+</div>
+
+<script>
+const PRINTERS = [
+  { name: "H2D",   state: "run",  pill: "Printing", file: "S2k_Roll_Hoop_V4", order: "",                         pct: 84, left: "1h 12m", eta: "9:41 am",  layer: "Layer 212 / 252", h: 46 },
+  { name: "P1P",   state: "run",  pill: "Printing", file: "S2000_AP1_FogLights", order: "Etsy #4191109973",      pct: 6,  left: "7h 15m", eta: "3:44 pm",  layer: "Layer 9 / 148",   h: 6 },
+  { name: "P1S",   state: "run",  pill: "Printing", file: "Audi_Rear_Cupholder", order: "Etsy #4191871593",      pct: 9,  left: "5h 05m", eta: "1:34 pm",  layer: "Layer 14 / 160",  h: 8 },
+  { name: "P1S-2", state: "run",  pill: "Printing", file: "S2000_Door_Speaker_Adapter", order: "eBay 22-15230-55032", pct: 25, left: "1h 34m", eta: "10:03 am", layer: "Layer 22 / 88", h: 18 },
+  { name: "P1S-3", state: "bad",  pill: "Failed · part on bed", file: "Audi_B9_Cupholder_Phone_Slot", order: "Queue empty", pct: 31, left: "", eta: "", layer: "", h: 20 },
+  { name: "P1S-4", state: "done", pill: "Finished · clear bed", file: "S2000_Folding_Cupholder_Bracket", order: "Etsy #4190023219", pct: 100, left: "", eta: "", layer: "", h: 26 },
+  { name: "A1-1",  state: "run",  pill: "Printing", file: "S2000_Climate_Knob_Knurled", order: "", pct: 52, left: "0h 41m", eta: "9:10 am", layer: "Layer 96 / 184", h: 30 },
+  { name: "A1-2",  state: "idle", pill: "Idle", file: "Nothing queued", order: "", pct: 0, left: "", eta: "", layer: "", h: 0 },
+];
+const wall = document.getElementById("wall"), stage = document.getElementById("stage");
+let count = 5, focus = null;
+
+function tileHtml(p) {
+  const cls = p.state === "bad" ? "bad" : p.state === "done" ? "done" : "";
+  const right = p.state === "run"
+    ? `<div class="pct">${p.pct}%</div><div class="left"><b>${p.left}</b> left · done ${p.eta}</div>`
+    : p.state === "bad" ? `<div class="left">stopped at ${p.pct}%</div>`
+    : p.state === "done" ? `<div class="left">finished 7:52 am</div>` : "";
+  return `<button class="tile ${cls}" data-name="${p.name}" aria-label="${p.name}: ${p.pill}">
+    <div class="cam">${p.h ? `<div class="part" style="height:${p.h}%"></div>` : ""}</div><div class="scrim"></div>
+    <div class="pill"><i></i>${p.pill}</div>${p.layer ? `<div class="layer">${p.layer}</div>` : ""}
+    <div class="info"><div><div class="name">${p.name}</div><div class="file">${p.file}</div>${p.order ? `<div class="order">${p.order}</div>` : ""}</div>
+    <div class="right">${right}</div></div>
+    ${p.state === "idle" ? "" : `<div class="prog"><span style="width:${p.pct}%"></span></div>`}</button>`;
+}
+
+function render() {
+  const list = PRINTERS.slice(0, count);
+  if (focus && !list.some(p => p.name === focus)) focus = null;
+  wall.classList.toggle("focus", !!focus);
+  if (focus) {
+    const big = list.find(p => p.name === focus), rest = list.filter(p => p !== big);
+    wall.innerHTML = tileHtml(big) + `<div class="strip">${rest.map(tileHtml).join("")}</div>`;
+  } else {
+    wall.innerHTML = list.map(tileHtml).join("");
+  }
+  document.getElementById("s-total").textContent = count;
+  document.getElementById("s-print").textContent = list.filter(p => p.state === "run").length;
+  layout();
+}
+
+// The whole point of the redesign: pick the column count that makes 16:9 tiles as big as the space allows.
+function layout() {
+  const tiles = [...wall.querySelectorAll(".tile")];
+  if (window.innerWidth <= 820) { tiles.forEach(t => t.style.width = "100%"); return; }
+  const gap = parseFloat(getComputedStyle(wall).columnGap) || 12;
+  const W = wall.clientWidth, H = wall.clientHeight, n = tiles.length;
+  if (focus) {
+    // one large tile plus a column of the others, sized so the column is exactly as tall as the large tile
+    const m = n - 1;
+    let bigW = W;
+    if (m > 0) {
+      // strip tile width s, big width b: b + gap + s = W ; m*s*9/16 + (m-1)*gap = b*9/16
+      bigW = (m * (W - gap) + (m - 1) * gap * 16 / 9) / (m + 1);
+    }
+    if (bigW * 9 / 16 > H) bigW = H * 16 / 9;
+    const s = m > 0 ? (bigW * 9 / 16 - (m - 1) * gap) / m * 16 / 9 : 0;
+    tiles[0].style.width = Math.floor(bigW) + "px";
+    tiles.slice(1).forEach(t => t.style.width = Math.floor(s) + "px");
+    return;
+  }
+  let best = 0;
+  for (let c = 1; c <= n; c++) {
+    const rows = Math.ceil(n / c);
+    const w = Math.min((W - gap * (c - 1)) / c, ((H - gap * (rows - 1)) / rows) * 16 / 9);
+    if (w > best) best = w;
+  }
+  tiles.forEach(t => t.style.width = Math.floor(best) + "px");
+}
+
+wall.addEventListener("click", e => {
+  const t = e.target.closest(".tile"); if (!t) return;
+  focus = focus === t.dataset.name ? null : t.dataset.name; render();
+});
+function seg(id, attr, fn) {
+  document.getElementById(id).addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    [...b.parentNode.children].forEach(x => x.setAttribute("aria-pressed", x === b));
+    fn(b.dataset[attr]);
+  });
+}
+seg("seg-n", "n", v => { count = +v; render(); });
+seg("seg-rail", "rail", v => { stage.className = "stage" + (v === "bottom" ? " rail-bottom" : v === "off" ? " rail-off" : ""); layout(); });
+new ResizeObserver(layout).observe(wall);
+window.addEventListener("resize", layout);
+render();
+</script>
+</body>
+</html>

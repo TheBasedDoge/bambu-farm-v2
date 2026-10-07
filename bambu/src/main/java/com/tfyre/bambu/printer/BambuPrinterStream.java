@@ -48,6 +48,13 @@ public class BambuPrinterStream {
 
     private final AtomicBoolean running = new AtomicBoolean();
     private boolean rtspsWarned = false;
+    /**
+     * Consecutive watchdog misses. Drives two things: after five misses reconnects are attempted every fifth
+     * minute instead of every minute (a printer that is off is not coming back because we knocked harder),
+     * and only the first miss and every tenth after it are logged. One printer being unplugged for two days
+     * used to produce 2,900 identical ERROR lines and 10 MB of log, which buried everything else that week.
+     */
+    private int misses = 0;
 
     @Inject
     public BambuPrinterStream(final Vertx vertx) {
@@ -124,6 +131,10 @@ public class BambuPrinterStream {
                             return;
                         }
 
+                        if (misses > 0) {
+                            Log.infof("%s: camera stream back after %d missed watchdog check(s)", name, misses);
+                            misses = 0;
+                        }
                         consumer.accept(new BambuPrinter.Thumbnail(OffsetDateTime.now(), new StreamResource("image.jpg", () -> new ByteArrayInputStream(data)), data));
                         nextImage = OffsetDateTime.now().plus(config.stream().watchDog());
                     })
@@ -133,7 +144,10 @@ public class BambuPrinterStream {
                             });
                 })
                 .onFailure(h -> {
-                    Log.errorf("%s: clientFailure: %s - %s", name, h.getClass().getName(), h.getMessage());
+                    if (shouldLogMiss()) {
+                        Log.errorf("%s: clientFailure: %s - %s%s", name, h.getClass().getName(), h.getMessage(),
+                                misses > 1 ? " (miss %d - next log at %d)".formatted(misses, nextLoggedMiss()) : "");
+                    }
                 });
     }
 
@@ -152,9 +166,25 @@ public class BambuPrinterStream {
         if (nextImage.isAfter(OffsetDateTime.now())) {
             return;
         }
-        Log.errorf("%s: No image received since %s", name, nextImage);
+        misses++;
+        if (shouldLogMiss()) {
+            Log.errorf("%s: No image received since %s%s", name, nextImage,
+                    misses > 1 ? " (miss %d - reconnecting every %d min, next log at miss %d)"
+                            .formatted(misses, misses >= 5 ? 5 : 1, nextLoggedMiss()) : "");
+        }
+        if (misses >= 5 && misses % 5 != 0) {
+            return; // backed off: leave the dead socket alone until the fifth minute
+        }
         closeSocket();
         executor.schedule(this::startStream, 10, TimeUnit.SECONDS);
+    }
+
+    private boolean shouldLogMiss() {
+        return misses <= 1 || misses % 10 == 0;
+    }
+
+    private int nextLoggedMiss() {
+        return misses < 10 ? 10 : (misses / 10 + 1) * 10;
     }
 
     public void start() {

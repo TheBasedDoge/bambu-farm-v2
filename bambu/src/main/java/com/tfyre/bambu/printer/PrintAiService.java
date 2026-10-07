@@ -468,12 +468,103 @@ public class PrintAiService {
             if (!suspected) {
                 // A clean check breaks the streak. Two consecutive confirmed failures have to be consecutive.
                 failureStreak.remove(name);
+                // Nothing looks wrong in this frame - which is exactly what a clogged nozzle looks like. That
+                // one can only be seen by comparing against an earlier frame.
+                runExtrusionCheck(printer);
                 return;
             }
             confirmAndActOnFailure(printer);
         } finally {
             checksInProgress.remove(name);
         }
+    }
+
+    /** An earlier frame of the print in progress, for {@link #runExtrusionCheck}. */
+    private record GrowthBaseline(byte[] frame, int layer, String job) {
+
+    }
+
+    private final Map<String, GrowthBaseline> growthBaselines = new ConcurrentHashMap<>();
+    /** Printers whose last growth comparison already said "not growing" - same two-in-a-row rule as failures. */
+    private final Set<String> stallStreak = ConcurrentHashMap.newKeySet();
+    /** The first few layers are a film on the plate; there is no height to compare yet. */
+    private static final int EXTRUSION_FIRST_LAYER = 5;
+
+    /**
+     * Is plastic still coming out? Compares the frame the failure check just took with one from at least
+     * {@code extrusion-check-layers} layers ago and asks whether the part got taller.
+     * <p>
+     * <b>Why this exists.</b> 2026-10-05: a door speaker adapter on P1S-3 "printed" all night with a clogged
+     * extruder. Every five-minute failure check passed, correctly - there was no spaghetti, no blob, nothing
+     * detached, just a short part and a nozzle tracing circles above it. A single frame of that is a normal
+     * print at an early layer. The failure is only visible as an absence of change.
+     * <p>
+     * <b>How it stays quiet.</b> It never takes its own snapshot or touches the lights - it reuses the failure
+     * check's frame, so it adds one model call per printer per {@code extrusion-check-layers} layers, not per
+     * tick. When the part HAS grown, the newer frame becomes the baseline. When it has not, the baseline is
+     * kept and the next tick asks again against the same old frame with even more layers in between; only
+     * that second "no" pauses the print (if pause-on-failure is on). The alert goes out on the first.
+     */
+    private void runExtrusionCheck(final BambuPrinter printer) {
+        final String name = printer.getName();
+        final int minLayers = config.ollama().extrusionCheckLayers();
+        if (minLayers <= 0) {
+            return;
+        }
+        final int layer = printer.getLayerNum();
+        final String job = printer.getSubtaskName().orElse("");
+        final byte[] frame = getLastCheck(name)
+                .filter(r -> "failure".equals(r.checkType()))
+                .map(CheckRecord::snapshot)
+                .orElse(null);
+        if (frame == null || layer < EXTRUSION_FIRST_LAYER) {
+            return;
+        }
+        final GrowthBaseline base = growthBaselines.get(name);
+        if (base == null || !base.job().equals(job) || layer < base.layer()) {
+            // First usable frame of this job (or a new job on the same printer).
+            growthBaselines.put(name, new GrowthBaseline(frame, layer, job));
+            stallStreak.remove(name);
+            return;
+        }
+        if (layer - base.layer() < minLayers) {
+            return;
+        }
+        final Optional<OllamaService.AiResult> result = ollama.checkExtrusion(
+                bedDiff.cropForAi(name, base.frame(), FAILURE_HEADROOM),
+                bedDiff.cropForAi(name, frame, FAILURE_HEADROOM),
+                base.layer(), layer, printer.getTotalLayerNum());
+        if (result.isEmpty()) {
+            record(new CheckRecord(Instant.now(), name, "extrusion", "scheduled", null, null, null,
+                    "AI did not answer (Ollama error or timeout)", frame));
+            return;
+        }
+        final boolean stalled = result.get().positive();
+        final String what = "Layer %d vs %d: %s".formatted(base.layer(), layer, result.get().description());
+        record(new CheckRecord(Instant.now(), name, "extrusion", "scheduled", null, !stalled,
+                stalled ? OllamaService.Severity.FAIL : OllamaService.Severity.OK, what, frame));
+        if (!stalled) {
+            growthBaselines.put(name, new GrowthBaseline(frame, layer, job));
+            stallStreak.remove(name);
+            Log.infof("PrintAiService: %s: still extruding (layer %d vs %d)", name, base.layer(), layer);
+            return;
+        }
+        lastResults.put(name, new AiCheckResult(false, OllamaService.Severity.FAIL, what, "extrusion", Instant.now()));
+        final boolean repeat = !stallStreak.add(name);
+        Log.warnf("PrintAiService: %s: part has NOT grown between layer %d and %d%s - %s", name, base.layer(), layer,
+                repeat ? " for the SECOND comparison running" : " (first time - watching, not acting yet)",
+                result.get().description());
+        // Alert only - this check does NOT pause. It did on its first morning, and paused a healthy print on
+        // the strength of a model that said "no growth" to every pair of frames it was shown. Until it has
+        // been right at least once, it is not allowed to touch a printer. One alert per stall, not one a tick.
+        final String action = "\nThis check is experimental and does not pause the print - go and look.";
+        if (repeat) {
+            return;
+        }
+        notificationService.notifyEvent("failure_detected", name,
+                "Nothing new printed between layer %d and %d - the nozzle may be clogged or the filament has run out: %s%s"
+                        .formatted(base.layer(), layer, truncate(result.get().description(), 200), action),
+                frame);
     }
 
     /**
@@ -587,13 +678,18 @@ public class PrintAiService {
                 return;
             }
 
-            // IDLE / FINISH / FAILED → RUNNING: new print started, schedule first-layer check
-            if (!previous.isPrinting() && current == BambuConst.GCodeState.RUNNING) {
+            // A new print is IDLE/FINISH/FAILED/OFFLINE → PREPARE or RUNNING. Two things this must not count:
+            // PAUSE → RUNNING is a resume (filament change, an AMS retry, a human pressing Resume) - it used to
+            // schedule a "first-layer" check that landed on layer 45, 77... - and PREPARE → RUNNING is the same
+            // print moving on, which the old rule (RUNNING only, from a non-printing state) missed entirely
+            // whenever the 30 s sample caught PREPARE, so some prints were never checked at all.
+            final boolean wasInPrint = previous.isPrinting() || previous == BambuConst.GCodeState.PAUSE;
+            if (!wasInPrint && current.isPrinting()) {
                 scheduleFirstLayerCheck(printer.getName());
             }
 
-            // Print ended: clear the first-layer guard so the next print gets checked too
-            if (previous.isPrinting() && !current.isPrinting()) {
+            // Print ended: clear the first-layer guard so the next print gets checked too. A pause is not an end.
+            if (wasInPrint && !current.isPrinting() && current != BambuConst.GCodeState.PAUSE) {
                 firstLayerScheduled.remove(printer.getName());
             }
         });
@@ -615,7 +711,8 @@ public class PrintAiService {
             int layer;
             while (true) {
                 final Optional<BambuPrinter> p = findPrinter(printerName);
-                if (p.isEmpty() || !p.get().getGCodeState().isPrinting()) {
+                // PAUSE keeps waiting: a filament prompt before layer 1 is still the same print.
+                if (p.isEmpty() || !(p.get().getGCodeState().isPrinting() || p.get().getGCodeState() == BambuConst.GCodeState.PAUSE)) {
                     Log.debugf("PrintAiService: %s: print ended before the first layer, skipping", printerName);
                     firstLayerScheduled.remove(printerName);
                     return;
@@ -625,8 +722,10 @@ public class PrintAiService {
                     break;
                 }
                 if (System.currentTimeMillis() - started > deadlineMs) {
-                    Log.infof("PrintAiService: %s: no layer number reported within %dms, skipping the first-layer check",
-                            printerName, deadlineMs);
+                    Log.infof("PrintAiService: %s: no layer number reported within %d min (still %s, layer %d), skipping the "
+                            + "first-layer check - if this printer's preheat/levelling runs longer than that, raise "
+                            + "bambu.ollama.first-layer-delay", printerName, deadlineMs / 60000,
+                            p.get().getGCodeState(), layer);
                     firstLayerScheduled.remove(printerName);
                     return;
                 }

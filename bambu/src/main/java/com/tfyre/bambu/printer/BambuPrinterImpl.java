@@ -49,6 +49,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private String name;
     private BambuConfig.Printer config;
     private Optional<BambuPrinter.Message> status = Optional.empty();
+    /** {@link System#nanoTime()} of the last status message - see {@link #printerIsLive()}. */
+    private volatile long statusNanos = System.nanoTime();
     private Optional<BambuPrinter.Message> fullStatus = Optional.empty();
     private Optional<BambuPrinter.Thumbnail> thumbnail = Optional.empty();
     private Optional<byte[]> snapshotBytes = Optional.empty();
@@ -435,6 +437,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     public void setStatus(final BambuPrinter.Message status) {
         addLast(status);
         this.status = Optional.of(status);
+        this.statusNanos = System.nanoTime();
     }
 
     public void setFullStatus(final BambuPrinter.Message fullStatus) {
@@ -497,14 +500,23 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         return totalLayerNum;
     }
 
-    private boolean printerIsLive(final OffsetDateTime lastUpdated) {
-        return lastUpdated.isAfter(OffsetDateTime.now().minus(LASTUPDATED));
+    /**
+     * Whether a status message arrived within {@link #LASTUPDATED}, measured on the monotonic clock.
+     * <p>
+     * This compared the message's wall-clock timestamp with {@code OffsetDateTime.now()} until 2026-10-04. On
+     * that day the host clock was corrected three times (2 h, then 5 h, forward), and each correction made every
+     * message look hours old for one instant: all printers read OFFLINE, every running job was closed as
+     * "Offline", lost its order link and was requeued as a duplicate. How long ago a message arrived is an
+     * elapsed-time question, and {@code nanoTime} is the clock that does not move when someone sets the time.
+     */
+    private boolean printerIsLive() {
+        return System.nanoTime() - statusNanos < LASTUPDATED.toNanos();
     }
 
     @Override
     public BambuConst.GCodeState getGCodeState() {
         return status
-                .filter(m -> printerIsLive(m.lastUpdated()))
+                .filter(m -> printerIsLive())
                 .map(m -> gcodeState)
                 .orElse(BambuConst.GCodeState.OFFLINE);
     }
@@ -943,6 +955,20 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                                 .setSequenceId("%d".formatted(counter.incrementAndGet()))
                                 .setCommand("print_speed")
                                 .setParam("%d".formatted(speed.getSpeed()))
+                )
+                .build();
+        toJson(message).ifPresent(this::sendData);
+    }
+
+    @Override
+    public void commandAmsControl(final String action) {
+        logUser("%s: commandAmsControl: %s".formatted(name, action));
+        final BambuMessage message = BambuMessage.newBuilder()
+                .setPrint(
+                        Print.newBuilder()
+                                .setSequenceId("%d".formatted(counter.incrementAndGet()))
+                                .setCommand("ams_control")
+                                .setParam(action)
                 )
                 .build();
         toJson(message).ifPresent(this::sendData);

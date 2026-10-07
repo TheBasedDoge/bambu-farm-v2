@@ -4,6 +4,7 @@ import com.tfyre.bambu.security.SecurityUtils;
 import com.tfyre.bambu.view.batchprint.BatchPrintView;
 import com.tfyre.bambu.view.CameraView;
 import com.tfyre.bambu.view.HistoryView;
+import com.tfyre.bambu.view.InventoryView;
 import com.tfyre.bambu.view.LogsView;
 import com.tfyre.bambu.view.MaintenanceView;
 import com.tfyre.bambu.view.PrinterView;
@@ -13,10 +14,13 @@ import com.tfyre.bambu.view.AutomationView;
 import com.tfyre.bambu.view.EbayOrdersView;
 import com.tfyre.bambu.view.EtsyOrdersView;
 import com.tfyre.bambu.view.NotificationSettingsView;
+import com.tfyre.bambu.view.NotificationsView;
 import com.tfyre.bambu.view.OverviewView;
 import com.tfyre.bambu.view.SpoolsView;
 import com.tfyre.bambu.view.TasmotaSettingsView;
 import com.tfyre.bambu.view.UpdateHeader;
+import com.tfyre.bambu.view.ProfitView;
+import com.tfyre.bambu.view.UspsPickupView;
 import com.tfyre.bambu.view.dashboard.Dashboard;
 import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.Component;
@@ -64,14 +68,18 @@ public class MainLayout extends AppLayout {
             PrinterView.class,
             BatchPrintView.class,
             AutomationView.class,
+            InventoryView.class,
             HistoryView.class,
+            ProfitView.class,
             LogsView.class,
             MaintenanceView.class,
             SpoolsView.class,
+            NotificationsView.class,
             NotificationSettingsView.class,
             TasmotaSettingsView.class,
             EtsyOrdersView.class,
-            EbayOrdersView.class
+            EbayOrdersView.class,
+            UspsPickupView.class
     ));
 
     private static final Map<Class<? extends Component>, VaadinIcon> ICONS = Map.ofEntries(
@@ -81,15 +89,19 @@ public class MainLayout extends AppLayout {
             Map.entry(PrinterView.class, VaadinIcon.PRINT),
             Map.entry(BatchPrintView.class, VaadinIcon.COPY),
             Map.entry(AutomationView.class, VaadinIcon.AUTOMATION),
+            Map.entry(InventoryView.class, VaadinIcon.PACKAGE),
             Map.entry(SdCardView.class, VaadinIcon.ARCHIVE),
             Map.entry(HistoryView.class, VaadinIcon.CLOCK),
+            Map.entry(ProfitView.class, VaadinIcon.DOLLAR),
             Map.entry(LogsView.class, VaadinIcon.CLIPBOARD_TEXT),
             Map.entry(MaintenanceView.class, VaadinIcon.WRENCH),
             Map.entry(SpoolsView.class, VaadinIcon.CIRCLE_THIN),
+            Map.entry(NotificationsView.class, VaadinIcon.ENVELOPE_O),
             Map.entry(NotificationSettingsView.class, VaadinIcon.BELL),
             Map.entry(TasmotaSettingsView.class, VaadinIcon.PLUG),
             Map.entry(EtsyOrdersView.class, VaadinIcon.SHOP),
-            Map.entry(EbayOrdersView.class, VaadinIcon.CART)
+            Map.entry(EbayOrdersView.class, VaadinIcon.CART),
+            Map.entry(UspsPickupView.class, VaadinIcon.TRUCK)
     );
 
     private final HorizontalLayout header = new HorizontalLayout();
@@ -237,10 +249,33 @@ public class MainLayout extends AppLayout {
         addToDrawer(layout);
     }
 
+    /**
+     * Optional image files that replace the stock icon for a sidebar entry - the marketplace pages, so they can
+     * carry the marketplace's own mark. The files are NOT shipped with the project (they are those companies'
+     * trademarks, to be taken from their brand pages): drop them at
+     * {@code bambu/src/main/resources/META-INF/resources/icons/} under these names and rebuild. An entry whose
+     * file is absent keeps its stock icon, so a missing file is never a broken image.
+     */
+    private static final Map<Class<? extends Component>, String> ICON_FILES = Map.of(
+            EtsyOrdersView.class, "icons/nav-etsy.png",
+            EbayOrdersView.class, "icons/nav-ebay.png");
+
+    private static Component drawerIcon(final Class<? extends Component> clazz) {
+        final String file = ICON_FILES.get(clazz);
+        if (file != null && MainLayout.class.getResource("/META-INF/resources/" + file) != null) {
+            final com.vaadin.flow.component.html.Image img = new com.vaadin.flow.component.html.Image("/" + file, "");
+            // Same box as the vaadin-icon rule for .drawer-link, inline so no theme rebuild is needed.
+            img.getStyle().set("width", "20px").set("height", "20px").set("object-fit", "contain")
+                    .set("flex", "none");
+            return img;
+        }
+        return new Icon(ICONS.getOrDefault(clazz, VaadinIcon.CIRCLE_THIN));
+    }
+
     private RouterLink newDrawerLink(final String name, final Class<? extends Component> clazz) {
         final RouterLink result = new RouterLink();
         result.setRoute(clazz);
-        result.add(new Icon(ICONS.getOrDefault(clazz, VaadinIcon.CIRCLE_THIN)), new Span(name));
+        result.add(drawerIcon(clazz), new Span(name));
         result.addClassName("drawer-link");
         result.getElement().setAttribute("title", name);
         // Identity for the saved menu order. The class name rather than the route path or the label: paths and
@@ -371,15 +406,19 @@ public class MainLayout extends AppLayout {
                 PrinterView.class,
                 BatchPrintView.class,
                 AutomationView.class,
+                InventoryView.class,
                 SdCardView.class,
                 HistoryView.class,
+                ProfitView.class,
                 LogsView.class,
                 MaintenanceView.class,
                 SpoolsView.class,
+                NotificationsView.class,
                 NotificationSettingsView.class,
                 TasmotaSettingsView.class,
                 EtsyOrdersView.class,
-                EbayOrdersView.class))
+                EbayOrdersView.class,
+                UspsPickupView.class))
                 .ifPresent(nav -> {
                     addToDrawerVL(nav);
                     setupNavReorder(nav);

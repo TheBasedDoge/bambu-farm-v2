@@ -207,7 +207,8 @@ public class OllamaService {
                     Thread.currentThread().interrupt();
                 }
                 last = ex;
-                Log.warnf("OllamaService: %s unreachable (%s)%s", base, ex.getMessage(),
+                Log.warnf("OllamaService: %s unreachable (%s)%s", base,
+                        ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(),
                         i + 1 < endpoints.size() ? " - trying the fallback" : "");
             }
         }
@@ -544,6 +545,16 @@ public class OllamaService {
     public Optional<AiResult> checkFailure(final byte[] imageJpeg, final Optional<String> context) {
         return analyze(imageJpeg, prompts.getPrompt(AiPromptService.PromptType.FAILURE),
                 AiPromptService.PromptType.FAILURE.positiveKeyword(), context);
+    }
+
+    /**
+     * Compares an earlier frame of a print with the current one. positive=true means the part has NOT grown -
+     * extrusion has stopped (clogged nozzle, snapped or finished filament).
+     */
+    public Optional<AiResult> checkExtrusion(final byte[] earlierJpeg, final byte[] currentJpeg, final int fromLayer,
+            final int toLayer, final int totalLayers) {
+        return analyze(List.of(earlierJpeg, currentJpeg), prompts.getExtrusionPrompt(fromLayer, toLayer, totalLayers),
+                AiPromptService.PromptType.FAILURE.positiveKeyword(), Optional.empty());
     }
 
     /**

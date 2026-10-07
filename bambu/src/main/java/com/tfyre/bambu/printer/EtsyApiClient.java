@@ -31,12 +31,23 @@ public class EtsyApiClient {
 
     public record Transaction(
             long transactionId, long listingId, String title, int quantity,
-            List<Variation> variations, Optional<String> personalization, Optional<String> imageUrl) {
+            List<Variation> variations, Optional<String> personalization, Optional<String> imageUrl,
+            double unitPrice) {
     }
 
     public record Receipt(
             long receiptId, String buyerName, boolean isShipped, boolean isPaid, String status,
-            Instant createTimestamp, List<Transaction> transactions) {
+            Instant createTimestamp, List<Transaction> transactions, String buyerNote, double shippingCharged,
+            double itemTotal) {
+
+        /**
+         * The sale is off: cancelled, or refunded in full. A partial refund is not - the order still ships.
+         * Says nothing about whether it had already shipped; check {@link #isShipped()} for that.
+         */
+        public boolean isCancelled() {
+            final String s = status == null ? "" : status.toLowerCase();
+            return s.contains("cancel") || s.equals("fully refunded");
+        }
 
         /** Still needs to be printed/shipped - not already shipped, canceled, or refunded. */
         public boolean isUnfulfilled() {
@@ -79,19 +90,30 @@ public class EtsyApiClient {
         if (key.isEmpty()) {
             throw new IllegalStateException("Etsy client id / shared secret is not configured.");
         }
-        final HttpRequest request = HttpRequest.newBuilder(URI.create(BASE + path))
-                .timeout(config.etsy().timeout())
-                .header("x-api-key", key.get())
-                .header("Authorization", "Bearer " + token.get())
-                .GET()
-                .build();
-        final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(path, key.get(), token.get());
+        if (response.statusCode() == 401) {
+            // The server says the token is dead while our clock says it is not - believe the server, once.
+            final Optional<String> fresh = oauth.refreshAfterRejection(token.get());
+            if (fresh.isPresent()) {
+                Log.infof("EtsyApiClient: GET %s -> HTTP 401, token refreshed - retrying once", path);
+                response = send(path, key.get(), fresh.get());
+            }
+        }
         if (response.statusCode() >= 300) {
             Log.errorf("EtsyApiClient: GET %s -> HTTP %d: %s", path, response.statusCode(), response.body());
             throw new IllegalStateException("Etsy API returned HTTP %d for %s: %s"
                     .formatted(response.statusCode(), path, truncate(response.body())));
         }
         return mapper.readTree(response.body());
+    }
+
+    private HttpResponse<String> send(final String path, final String key, final String token) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create(BASE + path))
+                .timeout(config.etsy().timeout())
+                .header("x-api-key", key)
+                .header("Authorization", "Bearer " + token)
+                .GET()
+                .build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static String truncate(final String s) {
@@ -152,7 +174,8 @@ public class EtsyApiClient {
                 Math.max(1, t.path("quantity").asInt(1)),
                 parseVariations(t),
                 parsePersonalization(t),
-                Optional.empty());
+                Optional.empty(),
+                money(t.path("price")));
     }
 
     private Receipt parseReceipt(final JsonNode r) {
@@ -166,8 +189,60 @@ public class EtsyApiClient {
                 r.path("is_shipped").asBoolean(false),
                 r.path("is_paid").asBoolean(true),
                 r.path("status").asText(""),
-                Instant.ofEpochSecond(r.path("create_timestamp").asLong(0)),
-                transactions);
+                Instant.ofEpochSecond(r.path("create_timestamp").asLong(r.path("created_timestamp").asLong(0))),
+                transactions,
+                r.path("message_from_buyer").asText("").strip(),
+                money(r.path("total_shipping_cost")),
+                // What the buyer paid for the items after shop discounts, before shipping and tax.
+                money(r.path("subtotal")));
+    }
+
+    /** Etsy money is {@code {amount, divisor}}: 1999 / 100 = 19.99. Anything else reads as 0. */
+    private static double money(final JsonNode m) {
+        final double divisor = m.path("divisor").asDouble(0);
+        return divisor <= 0 ? 0 : m.path("amount").asDouble(0) / divisor;
+    }
+
+    /**
+     * One receipt by id, whatever state it is in - how the app finds out WHY an order left the open list
+     * (shipped, or cancelled). Empty when Etsy no longer knows the receipt.
+     */
+    public Optional<Receipt> getReceipt(final long receiptId) throws Exception {
+        final Optional<String> shopId = config.etsy().shopId();
+        if (shopId.isEmpty()) {
+            throw new IllegalStateException("bambu.etsy.shop-id is not configured.");
+        }
+        try {
+            return Optional.of(parseReceipt(getOrThrow("/shops/%s/receipts/%d".formatted(shopId.get(), receiptId))));
+        } catch (IllegalStateException ex) {
+            if (ex.getMessage() != null && ex.getMessage().contains("HTTP 404")) {
+                return Optional.empty();
+            }
+            throw ex;
+        }
+    }
+
+    /** Every paid receipt created since {@code since}, shipped or not - the sales history behind the Profit page. */
+    public List<Receipt> getReceiptsSince(final Instant since) throws Exception {
+        final Optional<String> shopId = config.etsy().shopId();
+        if (shopId.isEmpty()) {
+            throw new IllegalStateException("bambu.etsy.shop-id is not configured.");
+        }
+        final List<Receipt> result = new ArrayList<>();
+        final int pageSize = 100;
+        for (int offset = 0; offset < 3000; offset += pageSize) {
+            final JsonNode root = getOrThrow("/shops/%s/receipts?was_paid=true&min_created=%d&limit=%d&offset=%d"
+                    .formatted(shopId.get(), since.getEpochSecond(), pageSize, offset));
+            int pageCount = 0;
+            for (final JsonNode r : root.path("results")) {
+                pageCount++;
+                result.add(parseReceipt(r));
+            }
+            if (pageCount < pageSize) {
+                break;
+            }
+        }
+        return result;
     }
 
     /**

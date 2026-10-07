@@ -56,8 +56,15 @@ public class DispatchQueueService {
     private static final Duration JOB_RETRY_BACKOFF = Duration.ofMinutes(10);
     /** Consecutive queue failures after which a job is parked (stops retrying) and reported. */
     private static final int MAX_JOB_FAILURES = 3;
-    /** Minimum gap between two {@code dispatch_blocked} notifications for the same reason. */
-    private static final Duration BLOCKED_NOTIFY_INTERVAL = Duration.ofMinutes(30);
+    /**
+     * Minimum gap between two {@code dispatch_blocked} notifications for the same reason.
+     * <p>
+     * Was 30 minutes, and the per-reason memory was wiped by every successful dispatch anywhere on the farm, so
+     * in practice it was less: 108 alerts in six days, 46 in one day, nearly all of them the same "bed is not
+     * clear" / "master switch is OFF" line again. A finished part sits on a bed for hours; the first alert says
+     * so and the daily digest lists it. A reminder every three hours is enough to not be forgotten.
+     */
+    private static final Duration BLOCKED_NOTIFY_INTERVAL = Duration.ofHours(3);
     /** How long after a dispatch to confirm the printer actually began printing (not just accepted the command). */
     private static final Duration START_VERIFY_AFTER = Duration.ofSeconds(90);
     /** How long to skip a printer that accepted a job but never started it - routes the retry elsewhere. */
@@ -122,6 +129,15 @@ public class DispatchQueueService {
     private volatile BlockKind blockedKind = BlockKind.ATTENTION;
     /** When the dispatcher last ran, so the UI can count down to the next pass. */
     private volatile Instant lastTick;
+    @Inject
+    BedClearService bedClear;
+    /**
+     * Nothing is dispatched or reported for this long after boot. Printers connect one after another over the
+     * first ~15 s and only then report what is in their AMS; a pass before that sees no filament anywhere and
+     * sent "no printer has the required filament loaded (PETG)" within a second of every restart.
+     */
+    private static final Duration STARTUP_GRACE = Duration.ofSeconds(90);
+    private final long bootNanos = System.nanoTime();
 
     private Path getPath() {
         final Path parent = Path.of(config.maintenanceFile()).getParent();
@@ -231,6 +247,7 @@ public class DispatchQueueService {
         jobFailures.remove(id);
         jobBackoff.remove(id);
         jobParked.remove(id);
+        blockedNotifiedAt.remove("job-parked|" + id);
     }
 
     // -------------------------------------------------------------------------
@@ -247,6 +264,9 @@ public class DispatchQueueService {
         observeFinishes();
         if (pool.isEmpty()) {
             clearBlocked();
+            return;
+        }
+        if (System.nanoTime() - bootNanos < STARTUP_GRACE.toNanos()) {
             return;
         }
         if (!autoStartService.isGloballyEnabled()) {
@@ -320,7 +340,10 @@ public class DispatchQueueService {
         final long printing = optedIn.stream().filter(pd -> pd.printer().getGCodeState().isPrinting()).count();
         final long ownQueue = optedIn.stream()
                 .filter(pd -> pd.printer().getGCodeState().isReady() && queueService.size(pd.name()) > 0).count();
+        // Ready printers only: one that is printing is already counted above, and counting it twice produced
+        // "all 4 printers busy (4 printing, 3 waiting out a bed-not-clear backoff)".
         final long backedOff = optedIn.stream()
+                .filter(pd -> pd.printer().getGCodeState().isReady() && queueService.size(pd.name()) == 0)
                 .filter(pd -> dirtyUntil.getOrDefault(pd.name(), Instant.MIN).isAfter(now)).count();
         final List<String> why = new ArrayList<>();
         if (printing > 0) {
@@ -382,6 +405,8 @@ public class DispatchQueueService {
         final Map<String, Instant> lastEnd = new java.util.HashMap<>();
         historyService.getJobs().stream()
                 .filter(j -> j.printer() != null && j.ended() != null)
+                // "Offline" is the app losing sight of the printer, not a part landing on the bed.
+                .filter(j -> !"Offline".equals(j.result()))
                 .forEach(j -> lastEnd.merge(j.printer(), j.ended().toInstant(), (a, b) -> a.isAfter(b) ? a : b));
         lastEnd.forEach((printer, ended) -> {
             final Instant until = ended.plus(cooldown);
@@ -422,6 +447,11 @@ public class DispatchQueueService {
             final String name = pd.name();
             final BambuConst.GCodeState state = pd.printer().getGCodeState();
             final BambuConst.GCodeState previous = lastStates.put(name, state);
+            if (state.isPrinting()) {
+                // The bed was cleared and something started: whatever was said about this printer is history,
+                // so the next dirty bed / failed start on it is a new occurrence and alerts straight away.
+                blockedNotifiedAt.keySet().removeIf(k -> k.endsWith("|" + name));
+            }
             // First sighting (fresh start, or a printer that just connected): we never saw it printing, so there
             // is no finish to cool down from. Inventing one would stall dispatch for 5 minutes after every restart.
             //
@@ -458,8 +488,18 @@ public class DispatchQueueService {
                 .filter(pd -> !inFlight.contains(pd.name()))
                 .filter(pd -> pd.printer().getGCodeState().isReady() && !pd.printer().isBlocked())
                 .filter(pd -> queueService.size(pd.name()) == 0)
-                .filter(pd -> dirtyUntil.getOrDefault(pd.name(), Instant.MIN).isBefore(now))
+                // A bed a person has just cleared by hand is not waiting out anything.
+                .filter(pd -> bedClear.hasPass(pd.name())
+                        || dirtyUntil.getOrDefault(pd.name(), Instant.MIN).isBefore(now))
                 .toList();
+    }
+
+    /**
+     * Runs a dispatch pass now instead of at the next minute tick - for the "Bed cleared" button, where the
+     * whole point is not to wait.
+     */
+    public void passNow() {
+        tick();
     }
 
     /**
@@ -605,6 +645,20 @@ public class DispatchQueueService {
         }
         final Match match = matchOpt.get();
         final PendingJob job = match.job();
+        if (bedClear.usePass(pd.name())) {
+            // Someone pressed "Bed cleared" for this printer. That is a better answer to "is the bed clear"
+            // than the camera can give, so the check is skipped - once; the pass is spent here.
+            Log.infof("DispatchQueueService: %s: bed was marked clear by hand - dispatching without a camera check",
+                    pd.name());
+            inFlight.add(pd.name());
+            try {
+                completeDispatch(pd, match, Optional.of(new OllamaService.AiResult(true, OllamaService.Severity.OK,
+                        "Bed marked clear by hand - camera check skipped")), null);
+            } finally {
+                inFlight.remove(pd.name());
+            }
+            return true;
+        }
         inFlight.add(pd.name());
         boolean handedOff = false;
         try {
@@ -893,6 +947,10 @@ public class DispatchQueueService {
         blockedStatus = null;
         blockedKey = null;
         blockedKind = BlockKind.ATTENTION;
-        blockedNotifiedAt.clear();
+        // Only the farm-wide reasons are forgotten here. The per-printer and per-job ones ("bed-dirty|P1S",
+        // "job-parked|<id>") describe something that is still true after another printer takes a job - the part
+        // is still on that bed - and forgetting them is what made the same alert repeat after every dispatch.
+        // They are dropped when that printer next prints (observeFinishes) or the job leaves (forget).
+        blockedNotifiedAt.keySet().removeIf(k -> k.indexOf('|') < 0);
     }
 }

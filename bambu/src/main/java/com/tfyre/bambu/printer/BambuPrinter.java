@@ -50,6 +50,12 @@ public interface BambuPrinter {
 
     void commandClearPrinterError();
 
+    /**
+     * {@code ams_control} - what Bambu Studio's "Retry" button sends on an AMS filament error (assist motor
+     * overloaded, failed to feed, ...). {@code action} is one of {@code resume}, {@code reset}, {@code pause}.
+     */
+    void commandAmsControl(String action);
+
     /** Drives both chamber lights on dual-nozzle printers; a single-light printer ignores the second node. */
     void commandLight(BambuConst.LightMode lightMode);
 

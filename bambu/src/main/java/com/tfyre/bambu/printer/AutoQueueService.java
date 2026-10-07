@@ -53,7 +53,24 @@ public class AutoQueueService {
      * personalization text (custom items must never be auto-printed from the generic mapping), and the mapped
      * parts (empty = unmapped).
      */
-    public record AutoQueueItem(String listingKey, String label, int quantity, boolean personalized, List<MappingPart> parts) {
+    public record AutoQueueItem(String listingKey, String label, int quantity, boolean personalized, List<MappingPart> parts,
+            List<Integer> fromStock) {
+
+        public AutoQueueItem(final String listingKey, final String label, final int quantity, final boolean personalized,
+                final List<MappingPart> parts) {
+            this(listingKey, label, quantity, personalized, parts, null);
+        }
+
+        /**
+         * Copies of part {@code index} that still have to be printed: what the order needs, less the pieces
+         * on-hand stock is supplying ({@code fromStock}, aligned with {@code parts}; null = none).
+         */
+        public int toPrint(final int index) {
+            final int need = Math.max(1, quantity) * parts.get(index).copiesPerUnit();
+            final int stocked = fromStock != null && index < fromStock.size() && fromStock.get(index) != null
+                    ? fromStock.get(index) : 0;
+            return Math.max(0, need - stocked);
+        }
     }
 
     @Inject
@@ -193,7 +210,11 @@ public class AutoQueueService {
                 problems.add("'%s' is not mapped to a print job yet".formatted(item.label()));
                 continue;
             }
-            for (final MappingPart part : item.parts()) {
+            for (int p = 0; p < item.parts().size(); p++) {
+                final MappingPart part = item.parts().get(p);
+                if (item.toPrint(p) == 0) {
+                    continue; // every piece of this part is coming off the shelf - no printer needs to be able to make it
+                }
                 if (part.source() == GcodeSource.LIBRARY
                         && !Files.isRegularFile(Path.of(config.batchPrint().library()).resolve(part.path()))) {
                     problems.add("'%s': %s is not in the library".formatted(item.label(), part.path()));
@@ -221,8 +242,9 @@ public class AutoQueueService {
         final OrderRef orderRef = new OrderRef(market, orderId, orderLabel);
         int total = 0;
         for (final AutoQueueItem item : relevant) {
-            for (final MappingPart part : item.parts()) {
-                final int copies = Math.max(1, item.quantity()) * part.copiesPerUnit();
+            for (int p = 0; p < item.parts().size(); p++) {
+                final MappingPart part = item.parts().get(p);
+                final int copies = item.toPrint(p);
                 for (int i = 0; i < copies; i++) {
                     dispatchInstance.get().enqueue(part, orderRef);
                     total++;
@@ -322,6 +344,11 @@ public class AutoQueueService {
      * Empty = printer doesn't qualify (mapped filament type isn't loaded where it needs to be).
      */
     public Optional<Candidate> resolveSlot(final BambuPrinters.PrinterDetail detail, final MappingPart part) {
+        // A printer whose family has no file for this part is never a candidate, whatever it has loaded: the
+        // library is sliced for the P1s, and the H2D only joins in for parts with an H2D file mapped.
+        if (part.pathFor(detail.config().model()).isEmpty()) {
+            return Optional.empty();
+        }
         final BambuPrinter printer = detail.printer();
         final boolean ready = printer.getGCodeState().isReady() && !printer.isBlocked();
         if (part.filamentType() == null) {

@@ -2,6 +2,12 @@ version: '3'
 
 services:
     liveview:
+        # PIN THIS. It was `linuxserver/ffmpeg` (implicitly :latest) and that is how moving to a new machine
+        # broke the camera: the old host had a cached ffmpeg 8.1 image, the new one pulled 9.0, and 9.0
+        # changed a default (see -tls_verify below). Copying the folder reproduced the config exactly and
+        # still produced a different environment, which is the worst kind of migration failure to diagnose.
+        # Replace with the digest of a build you have actually run:
+        #   docker inspect --format '{{index .RepoDigests 0}}' linuxserver/ffmpeg
         image: linuxserver/ffmpeg
         restart: always
         environment:
@@ -12,12 +18,20 @@ services:
             PRINTER_PORT: 322
             PRINTER_URL: /streaming/live/1
             RTSP_SERVER: mediamtx:8554
+        # -tls_verify 0: Bambu printers present a SELF-SIGNED certificate on their RTSPS camera port.
+        # ffmpeg 9.0 (released 2026-08-04) changed tls_verify from 0 to 1, so from that version on the
+        # handshake completes and then fails verification - "certificate verify failed", which reads like a
+        # broken printer rather than a changed default. This is not a security downgrade in context: the app
+        # already talks to these printers over a no-op trust manager for FTPS, and the alternative is pinning
+        # each printer's cert with -ca_file, which they regenerate. The flag is accepted by 8.x too, so this
+        # stays correct whichever image gets pulled.
         entrypoint:
             - "bash"
             - "-c"
             - >
               /usr/local/bin/ffmpeg
               -timeout 30000000
+              -tls_verify 0
               -re -stream_loop -1
               -i rtsps://$${PRINTER_USER}:$${PRINTER_ACCESS_CODE}@$${PRINTER_HOST}:$${PRINTER_PORT}$${PRINTER_URL}
               -c:v copy -f rtsp -rtsp_transport tcp

@@ -333,36 +333,12 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
 
     private void doStartNext(final BambuPrinters.PrinterDetail detail, final Runnable refresh) {
         final String printerName = detail.name();
-        queueService.peek(printerName).ifPresentOrElse(entry -> {
-            if (aiService.isEnabled()) {
-                showNotification("%s: checking bed…".formatted(printerName));
-                final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-                aiService.checkBedClear(printerName, "start-next").thenAccept(result ->
-                        ui.ifPresent(u -> u.access(() -> {
-                            if (result.isEmpty()) {
-                                // no snapshot yet or Ollama error - fall through to manual confirmation
-                                confirmAndStartNext(detail, entry, "", refresh);
-                                return;
-                            }
-                            final OllamaService.AiResult aiResult = result.get();
-                            if (aiResult.positive()) {
-                                confirmAndStartNext(detail, entry,
-                                        "\n\n✓ AI: bed appears clear — " + truncateAi(aiResult.description()), refresh);
-                            } else {
-                                YesNoCancelDialog.show(
-                                        "%s — AI detected: bed may not be clear\n\n%s\n\nOverride and start anyway?"
-                                                .formatted(printerName, truncateAi(aiResult.description())),
-                                        ync -> {
-                                            if (ync.isConfirmed()) {
-                                                performStartNext(detail, refresh);
-                                            }
-                                        });
-                            }
-                        })));
-            } else {
-                confirmAndStartNext(detail, entry, "", refresh);
-            }
-        }, () -> showError("%s: queue is empty".formatted(printerName)));
+        // No AI bed check here, deliberately (2026-10-04). This button is a person saying "I have looked, start
+        // it" - running the model first cost 20-40 s and then asked the same question anyway. The one confirm
+        // below stays as the guard against a stray click. The AI gate still applies to everything automatic
+        // (auto-start, dispatch), which is where nobody is looking.
+        queueService.peek(printerName).ifPresentOrElse(entry -> confirmAndStartNext(detail, entry, "", refresh),
+                () -> showError("%s: queue is empty".formatted(printerName)));
     }
 
     private void confirmAndStartNext(final BambuPrinters.PrinterDetail detail, final PrintQueueService.QueueEntry entry,

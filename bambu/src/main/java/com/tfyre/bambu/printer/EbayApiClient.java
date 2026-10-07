@@ -29,7 +29,7 @@ public class EbayApiClient {
 
     public record LineItem(
             String lineItemId, String sku, String legacyItemId, String title, int quantity,
-            List<Variation> variationAspects, Optional<String> personalization) {
+            List<Variation> variationAspects, Optional<String> personalization, double lineTotal) {
 
         /** Stable identity for a listing when mapping to a gcode file: SKU if present, else the item id. */
         public String listingKey() {
@@ -37,7 +37,18 @@ public class EbayApiClient {
         }
     }
 
-    public record Order(String orderId, String buyerUsername, Instant creationDate, String fulfillmentStatus, List<LineItem> lineItems) {
+    /**
+     * @param buyerNote       what the buyer typed at checkout, or blank
+     * @param cancelled       eBay has cancelled the order or refunded it in full
+     * @param marketplaceFee  eBay's fee for the whole order as eBay reports it (0 until eBay has assessed it)
+     * @param shippingCharged what the buyer paid for delivery
+     */
+    public record Order(String orderId, String buyerUsername, Instant creationDate, String fulfillmentStatus,
+            List<LineItem> lineItems, String buyerNote, boolean cancelled, double marketplaceFee, double shippingCharged) {
+
+        public boolean isShipped() {
+            return "FULFILLED".equalsIgnoreCase(fulfillmentStatus);
+        }
     }
 
     @Inject
@@ -65,19 +76,30 @@ public class EbayApiClient {
         if (token.isEmpty()) {
             throw new IllegalStateException("Not connected to eBay, or the connection has expired - reconnect on the eBay Sales Orders page.");
         }
-        final HttpRequest request = HttpRequest.newBuilder(URI.create(apiBase() + path))
-                .timeout(config.ebay().timeout())
-                .header("Authorization", "Bearer " + token.get())
-                .header("X-EBAY-C-MARKETPLACE-ID", config.ebay().marketplaceId())
-                .GET()
-                .build();
-        final HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(path, token.get());
+        if (response.statusCode() == 401) {
+            // The server says the token is dead while our clock says it is not - believe the server, once.
+            final Optional<String> fresh = oauth.refreshAfterRejection(token.get());
+            if (fresh.isPresent()) {
+                Log.infof("EbayApiClient: GET %s -> HTTP 401, token refreshed - retrying once", path);
+                response = send(path, fresh.get());
+            }
+        }
         if (response.statusCode() >= 300) {
             Log.errorf("EbayApiClient: GET %s -> HTTP %d: %s", path, response.statusCode(), response.body());
             throw new IllegalStateException("eBay API returned HTTP %d for %s: %s"
                     .formatted(response.statusCode(), path, truncate(response.body())));
         }
         return mapper.readTree(response.body());
+    }
+
+    private HttpResponse<String> send(final String path, final String token) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create(apiBase() + path))
+                .timeout(config.ebay().timeout())
+                .header("Authorization", "Bearer " + token)
+                .header("X-EBAY-C-MARKETPLACE-ID", config.ebay().marketplaceId())
+                .GET()
+                .build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static String truncate(final String s) {
@@ -333,7 +355,9 @@ public class EbayApiClient {
                 li.path("title").asText(""),
                 Math.max(1, li.path("quantity").asInt(1)),
                 parseVariations(li),
-                parsePersonalization(li));
+                parsePersonalization(li),
+                // What the buyer paid for the line (all units) after seller discounts, before shipping and tax.
+                li.path("discountedLineItemCost").path("value").asDouble(li.path("lineItemCost").path("value").asDouble(0)));
     }
 
     private Order parseOrder(final JsonNode o) {
@@ -346,7 +370,12 @@ public class EbayApiClient {
                 o.path("buyer").path("username").asText("(unknown buyer)"),
                 parseInstant(o.path("creationDate").asText("")),
                 o.path("orderFulfillmentStatus").asText("NOT_STARTED"),
-                lineItems);
+                lineItems,
+                o.path("buyerCheckoutNotes").asText("").strip(),
+                "CANCELED".equalsIgnoreCase(o.path("cancelStatus").path("cancelState").asText(""))
+                        || "FULLY_REFUNDED".equalsIgnoreCase(o.path("orderPaymentStatus").asText("")),
+                o.path("totalMarketplaceFee").path("value").asDouble(0),
+                o.path("pricingSummary").path("deliveryCost").path("value").asDouble(0));
     }
 
     private static Instant parseInstant(final String text) {
@@ -367,9 +396,52 @@ public class EbayApiClient {
         final JsonNode root = getOrThrow(path);
         final List<Order> result = new ArrayList<>();
         for (final JsonNode o : root.path("orders")) {
-            result.add(parseOrder(o));
+            final Order order = parseOrder(o);
+            // A cancelled order keeps its NOT_STARTED fulfilment status, so eBay goes on listing it here. It is
+            // not open: leaving it in would queue prints for a sale that no longer exists.
+            if (!order.cancelled()) {
+                result.add(order);
+            }
         }
         result.sort((a, b) -> b.creationDate().compareTo(a.creationDate()));
+        return result;
+    }
+
+    /**
+     * One order by id, whatever state it is in - how the app finds out WHY an order left the open list
+     * (shipped, or cancelled). Empty when eBay no longer knows the order.
+     */
+    public Optional<Order> getOrder(final String orderId) throws Exception {
+        try {
+            return Optional.of(parseOrder(getOrThrow("/sell/fulfillment/v1/order/"
+                    + java.net.URLEncoder.encode(orderId, java.nio.charset.StandardCharsets.UTF_8))));
+        } catch (IllegalStateException ex) {
+            if (ex.getMessage() != null && ex.getMessage().contains("HTTP 404")) {
+                return Optional.empty();
+            }
+            throw ex;
+        }
+    }
+
+    /** Every order created since {@code since}, in any state - the sales history behind the Profit page. */
+    public List<Order> getOrdersSince(final Instant since) throws Exception {
+        final String from = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                .withZone(java.time.ZoneOffset.UTC).format(since);
+        final String filter = java.net.URLEncoder.encode("creationdate:[" + from + "..]", java.nio.charset.StandardCharsets.UTF_8);
+        final List<Order> result = new ArrayList<>();
+        final int pageSize = 200;
+        for (int offset = 0; offset < 4000; offset += pageSize) {
+            final JsonNode root = getOrThrow("/sell/fulfillment/v1/order?filter=%s&limit=%d&offset=%d"
+                    .formatted(filter, pageSize, offset));
+            int pageCount = 0;
+            for (final JsonNode o : root.path("orders")) {
+                pageCount++;
+                result.add(parseOrder(o));
+            }
+            if (pageCount < pageSize) {
+                break;
+            }
+        }
         return result;
     }
 

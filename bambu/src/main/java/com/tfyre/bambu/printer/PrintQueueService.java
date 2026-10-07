@@ -180,6 +180,31 @@ public class PrintQueueService {
         }
     }
 
+    /**
+     * Takes every not-yet-started job for one order off every printer's queue, for good - they are NOT handed
+     * back to the dispatch pool. For a cancelled order only.
+     *
+     * @return what was removed
+     */
+    public synchronized List<QueueEntry> removeOrderEntries(final String market, final String orderId) {
+        final List<QueueEntry> removed = new ArrayList<>();
+        for (final List<QueueEntry> queue : data.values()) {
+            final java.util.Iterator<QueueEntry> it = queue.iterator();
+            while (it.hasNext()) {
+                final QueueEntry e = it.next();
+                if (e.orderRef() != null && market.equals(e.orderRef().market()) && orderId.equals(e.orderRef().orderId())) {
+                    it.remove();
+                    removed.add(e);
+                }
+            }
+        }
+        if (!removed.isEmpty()) {
+            dirty = true;
+            save();
+        }
+        return removed;
+    }
+
     /** True when removing this entry will hand it back to the dispatch pool instead of discarding it. */
     public static boolean returnsToPool(final QueueEntry entry) {
         return entry.orderRef() != null && entry.part() != null;
@@ -192,6 +217,11 @@ public class PrintQueueService {
         dispatchInstance.get().enqueue(entry.part(), entry.orderRef());
         Log.infof("PrintQueueService: %s returned to the dispatch pool (removed from a printer queue)",
                 entry.command().filename());
+    }
+
+    private static String baseName(final String path) {
+        final int slash = path.lastIndexOf('/');
+        return slash < 0 ? path : path.substring(slash + 1);
     }
 
     /** Puts an entry at the FRONT of a printer's queue (used by auto-requeue so the retry goes next). */
@@ -230,14 +260,27 @@ public class PrintQueueService {
      *         good must release that expectation or the order can never complete.
      */
     public boolean onJobEnded(final PrintHistoryService.PrintJob job) {
+        return onJobEnded(job, true);
+    }
+
+    /**
+     * @param allowRequeue false when a failure must not be retried - the order the job was for has been
+     *                     cancelled. The bookkeeping for the ended job is still cleared.
+     */
+    public boolean onJobEnded(final PrintHistoryService.PrintJob job, final boolean allowRequeue) {
         final StartedJob started = lastStarted.get(job.printer());
-        if (started == null || !started.effectiveFile().equals(job.file())) {
+        // Compare basenames: a job started from an SD subfolder (the dedup path, e.g. "_S2000/x.gcode.3mf") is
+        // reported back by the printer as just "x.gcode.3mf". Comparing the full path never matched those, so
+        // every subfolder start ended "not requeued" and released its order's expected job (8 of 8 in the logs
+        // through 2026-09-16; the only two that did requeue were root-level files).
+        if (started == null || job.file() == null || job.file().isBlank()
+                || !baseName(started.effectiveFile()).equals(baseName(job.file()))) {
             return false;
         }
         lastStarted.remove(job.printer());
         final String key = "%s|%s|%s".formatted(job.printer(), started.original().command().filename(),
                 started.original().orderRef() == null ? "" : started.original().orderRef().orderId());
-        if ("Finished".equals(job.result())) {
+        if ("Finished".equals(job.result()) || !allowRequeue) {
             retryCounts.remove(key);
             return false;
         }

@@ -64,6 +64,8 @@ public class AutoStartService {
     @Inject
     PrintAiService aiService;
     @Inject
+    BedClearService bedClear;
+    @Inject
     NotificationService notificationService;
 
     /** printer name → auto-start enabled. Persisted. */
@@ -190,6 +192,12 @@ public class AutoStartService {
                 lastStatus.put(name, "waiting: queue empty");
                 return;
             }
+            // "Bed cleared" pressed for this printer: skip the hold, the settle wait and the camera check, once.
+            if (bedClear.usePass(name)) {
+                clearHold(name);
+                startHandCleared(name, queueSize);
+                return;
+            }
             // A hold lifts when: the queue changed (job added/removed), or RETRY_INTERVAL passed (silent
             // recheck - a cleared bed produces no state change, this is what picks it up)
             final Instant heldAt = holdUntilStateChange.get(name);
@@ -215,6 +223,22 @@ public class AutoStartService {
             }
             attempt(printer, name, queueSize);
         });
+    }
+
+    /** Starts the next queued job on a printer whose bed a person has just marked clear - no camera check. */
+    private void startHandCleared(final String name, final int queueSize) {
+        lastStatus.put(name, "bed marked clear, starting…");
+        Log.infof("AutoStartService: %s: bed was marked clear by hand - starting without a camera check (%d queued)",
+                name, queueSize);
+        queueService.startNext(name, "auto-start",
+                () -> {
+                    lastStatus.put(name, "auto-started at %s".formatted(HHMM.format(LocalTime.now())));
+                    final int left = queueService.size(name);
+                    notificationService.notifyEvent("auto_start", name,
+                            "Auto-started next queued print - bed marked clear by hand (%d job(s) left in queue)".formatted(left));
+                },
+                error -> hold(name, queueSize, "paused: start failed",
+                        "Auto-start failed to start the job: %s".formatted(error), null));
     }
 
     private void attempt(final BambuPrinter printer, final String name, final int queueSize) {

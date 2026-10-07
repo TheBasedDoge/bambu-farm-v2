@@ -2,6 +2,7 @@ package com.tfyre.bambu.view;
 
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.printer.AmsRetryService;
 import com.tfyre.bambu.printer.AutoQueueService;
 import com.tfyre.bambu.printer.SimulationService;
 import com.tfyre.bambu.printer.AutoStartService;
@@ -89,6 +90,8 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     AutoStartService autoStartService;
     @Inject
     AutoQueueService autoQueueService;
+    @Inject
+    AmsRetryService amsRetry;
     @Inject
     SimulationService simulation;
     @Inject
@@ -404,6 +407,18 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification("Auto-requeue " + (autoQueueService.isAutoRequeueEnabled() ? "enabled" : "disabled"));
             forceRefresh();
         });
+        final boolean amsRetryOn = amsRetry.isEnabled();
+        key.append(amsRetryOn).append('|');
+        final Button arBtn = bigToggle("AMS Retry", amsRetryOn,
+                amsRetryOn ? ("A print paused by an AMS feed error (7008010 assist motor overloaded / 7008005 failed to "
+                        + "feed) gets an automatic Retry - up to %d per error and %d per printer per hour - then alerts. "
+                        + "Click to turn OFF.").formatted(AmsRetryService.MAX_ATTEMPTS_PER_ERROR, AmsRetryService.MAX_ATTEMPTS_PER_HOUR)
+                        : "AMS feed errors stay paused until you press Retry. Click to retry them automatically.");
+        arBtn.addClickListener(e -> {
+            amsRetry.setEnabled(!amsRetry.isEnabled());
+            showNotification("AMS auto-retry " + (amsRetry.isEnabled() ? "enabled" : "disabled"));
+            forceRefresh();
+        });
         // Rehearsal switch. Placed with the other master toggles because its effect is farm-wide, and shown with
         // its remaining minutes so it can't sit on unnoticed - while it's on, real orders are deliberately NOT
         // queued, which looks exactly like a farm that has quietly stopped working.
@@ -439,7 +454,7 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification(dispatchQueue.dispatchNow());
             forceRefresh();
         });
-        controls.add(aqBtn, aiBtn, asBtn, rqBtn, simBtn, dispatchBtn);
+        controls.add(aqBtn, aiBtn, asBtn, rqBtn, arBtn, simBtn, dispatchBtn);
         strip.add(controls);
 
         // Headline numbers: the four things worth knowing before reading anything else on the page.
@@ -1023,32 +1038,12 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
      */
     private void doStartNext(final BambuPrinters.PrinterDetail detail) {
         final String name = detail.name();
-        queueService.peek(name).ifPresentOrElse(entry -> {
-            if (!aiService.isEnabled()) {
-                confirmAndStart(detail, entry, "");
-                return;
-            }
-            showNotification("%s: checking bed…".formatted(name));
-            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-            aiService.checkBedClear(name, "start-next").thenAccept(result -> ui.ifPresent(u -> u.access(() -> {
-                if (result.isEmpty()) {
-                    confirmAndStart(detail, entry, "");
-                    return;
-                }
-                final OllamaService.AiResult ai = result.get();
-                if (ai.positive()) {
-                    confirmAndStart(detail, entry, "\n\n\u2713 AI: bed appears clear \u2014 " + truncate(ai.description(), 150));
-                    return;
-                }
-                YesNoCancelDialog.show("%s \u2014 AI detected: bed may not be clear\n\n%s\n\nOverride and start anyway?"
-                        .formatted(name, truncate(ai.description(), 150)),
-                        ync -> {
-                            if (ync.isConfirmed()) {
-                                performStart(detail);
-                            }
-                        });
-            })));
-        }, () -> showError("%s: queue is empty".formatted(name)));
+        // No AI bed check here, deliberately (2026-10-04). This button is a person saying "I have looked, start
+        // it" - running the model first cost 20-40 s and then asked the same question anyway. The one confirm
+        // below stays as the guard against a stray click. The AI gate still applies to everything automatic
+        // (auto-start, dispatch), which is where nobody is looking.
+        queueService.peek(name).ifPresentOrElse(entry -> confirmAndStart(detail, entry, ""),
+                () -> showError("%s: queue is empty".formatted(name)));
     }
 
     private void confirmAndStart(final BambuPrinters.PrinterDetail detail,

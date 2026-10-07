@@ -1858,7 +1858,10 @@ img:fullscreen {
    binary question - is there colour, or isn't there.
    ========================================================================= */
 .wall-view {
-    --wall-u: 1vw;
+    /* One unit for the whole board. Width-derived on a 16:9 screen (where 1vw and 1.78vh are the same thing),
+       but capped by the height so an ultrawide doesn't get text sized for a screen twice as tall as it is,
+       and a portrait panel doesn't get text sized for a screen twice as wide. */
+    --wall-u: min(1vw, 1.78vh);
     width: 100%;
     height: 100%;
     /* Containing block for the exit toggle. Without it that button positions itself against whatever ancestor
@@ -1876,29 +1879,42 @@ img:fullscreen {
     opacity: 0.32;
 }
 
+/* Second layout (2026-10-05): the cameras are the page. One status line, then a stage that is all camera
+   grid, with a "needs you" rail beside it (below it on a portrait screen, gone when there is nothing to say).
+   The old stack of banner + headline tiles + caption strips + two panels left 175 px per camera on a 2000 px
+   screen. */
 .wall {
+    /* Explicit, and it is the whole fix for "doesn't scale": the parent is a Vaadin VerticalLayout, whose
+       children are aligned to the start and therefore SHRINK TO THEIR CONTENT unless told otherwise. Without
+       this the board was exactly as wide as its widest line of text - 965 px in the first layout, 1436 px in
+       the second - on a 2000 px screen, with black to the right of it. */
+    width: 100%;
+    align-self: stretch;
     height: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: calc(var(--wall-u) * 0.75);
-    padding: calc(var(--wall-u) * 0.9);
+    gap: calc(var(--wall-u) * 0.7);
+    padding: calc(var(--wall-u) * 0.7) calc(var(--wall-u) * 0.9);
 }
 
-/* --- top bar --- */
+/* --- status line --- */
 .wall-bar {
+    flex: none;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: calc(var(--wall-u) * 1.4);
+    min-width: 0;
 }
 
 .wall-brand {
     display: flex;
     align-items: center;
     gap: calc(var(--wall-u) * 0.6);
+    flex: none;
 }
 
-/* The app mark doubles as the way back to the menu - see OverviewView.buildBar. It sits in the layout rather
-   than floating in a corner, so it cannot land on top of the clock the way the old pill did. */
+/* The app mark doubles as the way back to the menu - see OverviewView.buildBrand. */
 .wall-mark {
     width: calc(var(--wall-u) * 2.2);
     height: calc(var(--wall-u) * 2.2);
@@ -1919,54 +1935,73 @@ img:fullscreen {
     font-weight: 500;
 }
 
-.wall-meta {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--wall-u) * 1.4);
-    font-size: calc(var(--wall-u) * 0.95);
-    color: var(--lumo-tertiary-text-color);
+.wall-stats-slot {
+    flex: 1;
+    min-width: 0;
 }
 
-/* Ticked by the browser, never by the server. A frozen clock is the clearest
-   possible signal that what you are looking at is no longer true. */
-.wall-clock {
-    font-size: calc(var(--wall-u) * 1.5);
-    font-weight: 500;
+.wall-stats {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: calc(var(--wall-u) * 0.15) calc(var(--wall-u) * 1.3);
+    font-size: calc(var(--wall-u) * 1);
     color: var(--lumo-secondary-text-color);
-    font-variant-numeric: tabular-nums;
-    /* Wide enough for "12:47 pm" at its longest. Fixed rather than shrink-to-fit so the bar doesn't twitch
-       every time the hour rolls from 9 to 10, which on a screen in your peripheral vision reads as movement. */
-    min-width: calc(var(--wall-u) * 6.5);
-    text-align: right;
 }
 
-/* --- the banner ---
-   A persistent slot, so the banner appearing or disappearing never disturbs the printer row below it - which
-   holds a live stream that must not be re-parented. contents rather than block: the slot itself takes no space
-   and adds no gap, so the flex column reads exactly as if the banner were a direct child. */
-.wall-alert-slot {
-    display: contents;
-}
-
-.wall-alert {
+.wall-stat {
     display: flex;
-    align-items: center;
-    gap: calc(var(--wall-u) * 1.2);
-    border-radius: calc(var(--wall-u) * 0.8);
-    padding: calc(var(--wall-u) * 1) calc(var(--wall-u) * 1.3);
+    align-items: baseline;
+    gap: calc(var(--wall-u) * 0.4);
+    white-space: nowrap;
 }
 
-.wall-alert.crit {
-    background: var(--lumo-error-color-10pct);
-    color: var(--lumo-error-text-color);
-    /* Only the critical banner breathes, and slowly. A warning that blinks is a
-       warning you cover with a sticky note. */
-    animation: wall-breathe 2.6s ease-in-out infinite;
+.wall-stat-v {
+    font-size: calc(var(--wall-u) * 1.6);
+    font-weight: 600;
+    color: var(--lumo-body-text-color);
+    font-variant-numeric: tabular-nums;
 }
 
-.wall-alert.warn {
-    background: var(--lumo-warning-color-10pct, rgba(232, 163, 61, 0.12));
+.wall-stat-v.small {
+    font-size: calc(var(--wall-u) * 1.2);
+}
+
+.wall-stat.tone-ok .wall-stat-v { color: var(--lumo-success-text-color); }
+.wall-stat.tone-warn .wall-stat-v { color: var(--lumo-warning-text-color, #e8a33d); }
+.wall-stat.tone-bad .wall-stat-v { color: var(--lumo-error-text-color); }
+
+.wall-stat-sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--lumo-contrast-20pct);
+}
+
+/* What used to be a full-width banner. */
+.wall-chip {
+    align-self: center;
+    font-size: calc(var(--wall-u) * 0.9);
+    line-height: 1.7;
+    padding: 0 calc(var(--wall-u) * 0.8);
+    border-radius: 99px;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wall-chip.warn {
     color: var(--lumo-warning-text-color, #e8a33d);
+    box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.wall-chip.crit {
+    background: var(--lumo-error-color);
+    color: #fff;
+    font-weight: 600;
+    /* Only the critical chip breathes, and slowly. A warning that blinks is a warning you cover with a
+       sticky note. */
+    animation: wall-breathe 2.6s ease-in-out infinite;
 }
 
 @keyframes wall-breathe {
@@ -1974,153 +2009,95 @@ img:fullscreen {
     50% { opacity: 0.72; }
 }
 
-.wall-alert-glyph {
-    font-size: calc(var(--wall-u) * 3);
-    line-height: 1;
-}
-
-.wall-alert-text {
-    flex: 1;
-    min-width: 0;
-}
-
-.wall-alert-head {
-    font-size: calc(var(--wall-u) * 2);
-    font-weight: 500;
-    line-height: 1.15;
-}
-
-.wall-alert-sub {
-    font-size: calc(var(--wall-u) * 1);
-    opacity: 0.8;
-    margin-top: calc(var(--wall-u) * 0.2);
-}
-
-.wall-alert-aside {
-    text-align: right;
-    font-size: calc(var(--wall-u) * 1);
-    opacity: 0.9;
-    line-height: 1.5;
+/* Ticked by the browser, never by the server. A frozen clock is the clearest possible signal that what you
+   are looking at is no longer true. */
+.wall-clock {
     flex: none;
-}
-
-/* --- headline numbers --- */
-.wall-kpis {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: calc(var(--wall-u) * 0.75);
-}
-
-.wall-kpi {
-    background: var(--lumo-contrast-5pct);
-    border-radius: calc(var(--wall-u) * 0.8);
-    padding: calc(var(--wall-u) * 0.8) calc(var(--wall-u) * 1);
-}
-
-.wall-kpi-label {
-    font-size: calc(var(--wall-u) * 0.95);
-    color: var(--lumo-secondary-text-color);
-}
-
-.wall-kpi-value {
-    font-size: calc(var(--wall-u) * 3.2);
-    font-weight: 500;
-    line-height: 1.05;
+    margin-left: auto;
+    font-size: calc(var(--wall-u) * 1.7);
+    font-weight: 300;
     font-variant-numeric: tabular-nums;
+    /* Wide enough for "12:47 pm". Fixed so the bar doesn't twitch when the hour rolls from 9 to 10. */
+    min-width: calc(var(--wall-u) * 7);
+    text-align: right;
 }
 
-.wall-kpi-unit {
-    font-size: calc(var(--wall-u) * 1.3);
-    color: var(--lumo-tertiary-text-color);
-    font-weight: 400;
-}
-
-.wall-kpi-sub {
-    font-size: calc(var(--wall-u) * 0.95);
-    color: var(--lumo-secondary-text-color);
-}
-
-/* One tone vocabulary for the whole board, so the same colour never means two
-   things on one screen. */
+/* One tone vocabulary for the whole board, so the same colour never means two things on one screen. */
 .tone-ok { color: var(--lumo-success-text-color); }
 .tone-warn { color: var(--lumo-warning-text-color, #e8a33d); }
 .tone-bad { color: var(--lumo-error-text-color); }
 
-/* --- printer tiles --- */
-.wall-printers {
-    display: grid;
-    gap: calc(var(--wall-u) * 0.75);
+/* --- stage: cameras + rail --- */
+.wall-stage-area {
     flex: 1;
-    /* Without this the camera tiles refuse to shrink and the row pushes the page
-       taller than the screen, which on a display nobody scrolls means the bottom
-       panels simply never appear. */
+    /* Without this the stage refuses to shrink and pushes the page taller than the screen. */
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(240px, calc(var(--wall-u) * 22), 480px);
+    gap: calc(var(--wall-u) * 0.7);
+}
+
+.wall-stage-area.no-rail {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.wall-stage-area.no-rail .wall-rail {
+    display: none;
+}
+
+/* The tiles are positioned by the layout script (OverviewView.installDisplayScripts), absolutely, so that
+   enlarging one never moves it in the DOM - the H2D tile holds a live stream that reloads if re-parented. */
+.wall-printers {
+    position: relative;
+    min-width: 0;
     min-height: 0;
 }
 
 .wall-p {
-    background: var(--lumo-contrast-5pct);
-    border-radius: calc(var(--wall-u) * 0.8);
+    position: absolute;
+    left: 0;
+    top: 0;
+    /* Fallback for the instant before the layout script runs; the script overrides it inline. */
+    width: calc(var(--wall-u) * 30);
+    aspect-ratio: 16 / 9;
+    border-radius: calc(var(--wall-u) * 0.7);
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    outline: 2px solid transparent;
-    outline-offset: -2px;
-    transition: outline-color 400ms ease, background 400ms ease;
-}
-
-.wall-p.bad {
-    background: var(--lumo-error-color-10pct);
-    outline-color: var(--lumo-error-color);
-}
-
-.wall-p.warn {
-    background: var(--lumo-warning-color-10pct, rgba(232, 163, 61, 0.12));
-    outline-color: var(--lumo-warning-text-color, #e8a33d);
-}
-
-/* A still frame refreshed in place, never a live stream - five feeds running
-   permanently would hold the CPU forever, and a still answers the only question
-   this screen asks of a camera: is there a part on that plate. */
-.wall-cam {
-    flex: 1;
-    min-height: 0;
     background: var(--lumo-shade-20pct);
-    position: relative;
-    /* Does the cropping for the live stream, which is deliberately sized larger than this box. Also stops a
-       tall camera image from ever pushing the tile's text off the bottom of the screen. */
-    overflow: hidden;
+    cursor: pointer;
+    /* Everything drawn over the camera is sized in cqw, i.e. from the tile's own width, so the text on a
+       tile that is 400 px wide and one that is 1400 px wide is the same fraction of the picture. */
+    container-type: inline-size;
+    outline: 3px solid transparent;
+    outline-offset: -3px;
+    transition: left 350ms ease, top 350ms ease, width 350ms ease, outline-color 400ms ease;
+}
+
+/* An outline means "walk over there": red for a fault or a failed print, green for a finished part waiting
+   to come off the bed. A printer that is simply printing has none. */
+.wall-p.bad { outline-color: var(--lumo-error-color); }
+.wall-p.done { outline-color: var(--lumo-success-color); }
+.wall-p.warn { outline-color: var(--lumo-warning-text-color, #e8a33d); }
+
+.wall-cam {
+    position: absolute;
+    inset: 0;
+    background: var(--lumo-shade-20pct);
 }
 
 /* The live WebRTC player, for printers with stream.url configured (the H2D here). pointer-events:none is
-   deliberate: the mediamtx page has its own controls, and a wall display must not be pausable by anyone who
-   rests a hand on the desk.
-
-   Sized to CROP rather than fit. At 100% x 100% the player letterboxes a 16:9 stream inside a much taller
-   tile, which spent about a third of the tile on black bars - the one tile with a live picture was the one
-   showing the least of it. Instead the iframe is given the stream's own aspect ratio and sized from the
-   tile's HEIGHT, so it overflows sideways and the tile clips it: same behaviour as object-fit:cover on the
-   thumbnail tiles, and no magic zoom factor to re-tune when the tile geometry changes.
-
-   --wall-stream-aspect is the camera's ratio, not the tile's. Bambu chamber cams are 1920x1080; change it
-   here if a future model isn't. */
+   deliberate: the mediamtx page has its own controls, and the click belongs to the tile (enlarge). */
 .wall-cam-stream {
-    --wall-stream-aspect: 16 / 9;
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    inset: 0;
+    width: 100%;
     height: 100%;
-    width: auto;
-    aspect-ratio: var(--wall-stream-aspect);
-    /* For the rare tile that is WIDER than the stream - few printers on an ultrawide - fall back to filling
-       the width, which letterboxes top and bottom rather than leaving the sides bare. */
-    min-width: 100%;
     border: 0;
     display: block;
     pointer-events: none;
     background: var(--lumo-shade-20pct);
 }
 
+/* The tile is the camera's shape (Bambu chamber cams are 16:9), so cover is neither a crop nor a letterbox. */
 .wall-cam img {
     width: 100%;
     height: 100%;
@@ -2128,33 +2105,76 @@ img:fullscreen {
     display: block;
 }
 
-/* Age of the frame, top-right of the camera tile. Not decoration: everything else on this screen is current by
-   construction, so a picture that silently isn't would be the one element quietly lying to you. Only ever
-   present on FALLBACK frames - the live JPEG stream is refreshed in place and needs no badge. */
+/* Darkens the lower part of the picture so white text is readable over a bright plate. */
+.wall-scrim {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 60%;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.78) 60%, rgba(0, 0, 0, 0.9));
+    pointer-events: none;
+}
+
+.wall-pill {
+    position: absolute;
+    top: calc(var(--wall-u) * 0.6);
+    left: calc(var(--wall-u) * 0.6);
+    top: 3cqw;
+    left: 3cqw;
+    display: flex;
+    align-items: center;
+    gap: 0.45em;
+    font-size: calc(var(--wall-u) * 0.9);
+    font-size: max(11px, 2.9cqw);
+    font-weight: 600;
+    line-height: 1.6;
+    padding: 0 0.7em;
+    border-radius: 99px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+    pointer-events: none;
+}
+
+.wall-pill-dot {
+    width: 0.6em;
+    height: 0.6em;
+    border-radius: 50%;
+    flex: none;
+    background: var(--lumo-success-color);
+}
+
+.wall-p.off .wall-pill-dot { background: var(--lumo-contrast-40pct); }
+.wall-p.warn .wall-pill-dot { background: var(--lumo-warning-text-color, #e8a33d); }
+.wall-p.bad .wall-pill { background: var(--lumo-error-color); }
+.wall-p.bad .wall-pill-dot { background: #fff; }
+.wall-p.done .wall-pill { background: var(--lumo-success-color); color: #00210f; }
+.wall-p.done .wall-pill-dot { background: #00210f; }
+
+/* Age of the frame, top-right. Only ever present on FALLBACK frames - a picture that silently isn't current
+   would be the one element on this screen quietly lying to you. */
 .wall-cam-age {
     position: absolute;
-    top: calc(var(--wall-u) * 0.25);
-    right: calc(var(--wall-u) * 0.3);
-    font-size: calc(var(--wall-u) * 0.7);
-    line-height: 1.4;
-    padding: 0 calc(var(--wall-u) * 0.3);
+    top: calc(var(--wall-u) * 0.6);
+    right: calc(var(--wall-u) * 0.6);
+    top: 3cqw;
+    right: 3cqw;
+    font-size: calc(var(--wall-u) * 0.8);
+    font-size: max(10px, 2.5cqw);
+    line-height: 1.6;
+    padding: 0 0.6em;
     border-radius: 99px;
-    background: var(--lumo-shade-50pct);
-    color: var(--lumo-tertiary-text-color);
+    background: rgba(0, 0, 0, 0.62);
+    color: rgba(255, 255, 255, 0.8);
     font-variant-numeric: tabular-nums;
     pointer-events: none;
 }
 
-/* Past ten minutes this stopped being "the current view of the plate" and became a photograph. */
 .wall-cam-age.stale {
     color: var(--lumo-warning-text-color, #e8a33d);
 }
 
-/* Past a day it is history. An H2D was showing a bed reference from ten days earlier, framed exactly like a
-   live thumbnail from twenty seconds ago - loud enough to notice is the whole point. */
 .wall-cam-age.ancient {
-    color: var(--lumo-error-text-color);
-    background: var(--lumo-error-color-50pct);
+    color: #fff;
+    background: var(--lumo-error-color);
 }
 
 .wall-cam-none {
@@ -2163,25 +2183,126 @@ img:fullscreen {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: calc(var(--wall-u) * 0.85);
+    font-size: calc(var(--wall-u) * 1);
     color: var(--lumo-tertiary-text-color);
 }
 
-.wall-p-body {
-    padding: calc(var(--wall-u) * 0.55) calc(var(--wall-u) * 0.8) calc(var(--wall-u) * 0.7);
+.wall-p-info {
+    position: absolute;
+    left: 3.2cqw;
+    right: 3.2cqw;
+    bottom: 4.4cqw;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    column-gap: 3cqw;
+    color: #fff;
+    pointer-events: none;
 }
 
 .wall-p-name {
+    font-size: calc(var(--wall-u) * 1.5);
+    font-size: max(15px, 6cqw);
+    font-weight: 650;
+    line-height: 1;
+}
+
+.wall-p-job {
+    font-size: calc(var(--wall-u) * 0.9);
+    font-size: max(11px, 3cqw);
+    color: rgba(255, 255, 255, 0.75);
+    margin-top: 0.45em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* A fault message is the one text here worth two lines. */
+.wall-p.bad .wall-p-job {
+    color: #ffd6d6;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.wall-p-r {
+    text-align: right;
+}
+
+.wall-p-pct {
+    display: block;
+    font-size: calc(var(--wall-u) * 2.2);
+    font-size: max(18px, 9cqw);
+    font-weight: 300;
+    line-height: 0.9;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-p-left {
+    display: block;
+    font-size: calc(var(--wall-u) * 0.9);
+    font-size: max(11px, 3cqw);
+    color: rgba(255, 255, 255, 0.75);
+    margin-top: 0.35em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-p.bad .wall-p-left {
+    color: #ffd6d6;
+    font-weight: 600;
+}
+
+.wall-track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 4px;
+    height: max(4px, 1.5cqw);
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.wall-fill {
+    height: 100%;
+    background: var(--lumo-success-color);
+    transition: width 600ms ease;
+}
+
+.wall-fill.bad {
+    background: var(--lumo-error-color);
+}
+
+/* --- rail --- */
+.wall-rail {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     display: flex;
-    align-items: center;
-    gap: calc(var(--wall-u) * 0.4);
-    font-size: calc(var(--wall-u) * 1.35);
-    font-weight: 500;
+    flex-direction: column;
+    gap: calc(var(--wall-u) * 0.7);
+}
+
+.wall-panel {
+    background: var(--lumo-contrast-5pct);
+    border-radius: calc(var(--wall-u) * 0.7);
+    padding: calc(var(--wall-u) * 0.8) calc(var(--wall-u) * 1);
+    min-width: 0;
+}
+
+.wall-panel-h {
+    font-size: calc(var(--wall-u) * 0.8);
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--lumo-secondary-text-color);
+    margin-bottom: calc(var(--wall-u) * 0.6);
 }
 
 .wall-dot {
-    width: calc(var(--wall-u) * 0.6);
-    height: calc(var(--wall-u) * 0.6);
+    width: calc(var(--wall-u) * 0.65);
+    height: calc(var(--wall-u) * 0.65);
     border-radius: 50%;
     flex: none;
     background: var(--lumo-contrast-30pct);
@@ -2190,68 +2311,35 @@ img:fullscreen {
 .wall-dot.ok { background: var(--lumo-success-color); }
 .wall-dot.warn { background: var(--lumo-warning-text-color, #e8a33d); }
 .wall-dot.bad { background: var(--lumo-error-color); }
-.wall-dot.off { background: var(--lumo-contrast-30pct); }
 
-.wall-p-job {
-    font-size: calc(var(--wall-u) * 0.95);
-    color: var(--lumo-secondary-text-color);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-top: calc(var(--wall-u) * 0.15);
-}
-
-.wall-track {
-    height: calc(var(--wall-u) * 0.45);
-    background: var(--lumo-contrast-20pct);
-    border-radius: 99px;
-    margin: calc(var(--wall-u) * 0.45) 0 calc(var(--wall-u) * 0.3);
-    overflow: hidden;
-}
-
-.wall-fill {
-    height: 100%;
-    background: var(--lumo-success-color);
-    border-radius: 99px;
-    transition: width 600ms ease;
-}
-
-.wall-fill.bad {
-    background: var(--lumo-error-color);
-}
-
-.wall-p-foot {
-    display: flex;
-    justify-content: space-between;
-    font-size: calc(var(--wall-u) * 0.9);
-    color: var(--lumo-secondary-text-color);
-    font-variant-numeric: tabular-nums;
-}
-
-/* --- bottom panels --- */
-.wall-bottom {
+.wall-att {
     display: grid;
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-    gap: calc(var(--wall-u) * 0.75);
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: calc(var(--wall-u) * 0.6);
+    padding: calc(var(--wall-u) * 0.3) 0;
+    font-size: calc(var(--wall-u) * 1);
 }
 
-.wall-panel {
-    background: var(--lumo-contrast-5pct);
-    border-radius: calc(var(--wall-u) * 0.8);
-    padding: calc(var(--wall-u) * 0.7) calc(var(--wall-u) * 1);
-    min-width: 0;
+.wall-att .wall-dot {
+    margin-top: calc(var(--wall-u) * 0.45);
 }
 
-.wall-panel-h {
-    font-size: calc(var(--wall-u) * 0.95);
+.wall-att-l {
+    display: block;
+    font-weight: 600;
+}
+
+.wall-att-sub {
+    display: block;
+    font-size: calc(var(--wall-u) * 0.85);
     color: var(--lumo-secondary-text-color);
-    margin-bottom: calc(var(--wall-u) * 0.55);
+    overflow-wrap: anywhere;
 }
 
 .wall-stages {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: calc(var(--wall-u) * 0.5);
+    gap: calc(var(--wall-u) * 0.45);
 }
 
 .wall-stage {
@@ -2261,8 +2349,8 @@ img:fullscreen {
     text-align: center;
 }
 
-/* Tinted only when the count is above zero - a green "0 ready to ship" is a
-   cheerful way of saying nothing happened. */
+/* Tinted only when the count is above zero - a green "0 to ship" is a cheerful way of saying nothing
+   happened. */
 .wall-stage.ship {
     background: var(--lumo-success-color-10pct);
 }
@@ -2273,14 +2361,14 @@ img:fullscreen {
 }
 
 .wall-stage-n {
-    font-size: calc(var(--wall-u) * 2);
+    font-size: calc(var(--wall-u) * 1.8);
     font-weight: 500;
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
 }
 
 .wall-stage-l {
-    font-size: calc(var(--wall-u) * 0.85);
+    font-size: calc(var(--wall-u) * 0.75);
     color: var(--lumo-secondary-text-color);
 }
 
@@ -2288,7 +2376,7 @@ img:fullscreen {
     display: flex;
     justify-content: space-between;
     gap: calc(var(--wall-u) * 0.8);
-    font-size: calc(var(--wall-u) * 0.95);
+    font-size: calc(var(--wall-u) * 0.9);
     padding: calc(var(--wall-u) * 0.22) 0;
 }
 
@@ -2308,33 +2396,12 @@ img:fullscreen {
 .wall-row.tone-ok .wall-row-l { color: var(--lumo-success-text-color); }
 .wall-row.tone-bad .wall-row-l,
 .wall-row.tone-bad .wall-row-r { color: var(--lumo-error-text-color); }
+.wall-row.tone-warn { color: inherit; }
 .wall-row.tone-warn .wall-row-r { color: var(--lumo-warning-text-color, #e8a33d); }
 
 .wall-sep {
     border-top: 1px solid var(--lumo-contrast-10pct);
-    margin: calc(var(--wall-u) * 0.45) 0;
-}
-
-.wall-att {
-    display: flex;
-    align-items: baseline;
-    gap: calc(var(--wall-u) * 0.5);
-    font-size: calc(var(--wall-u) * 0.95);
-    padding: calc(var(--wall-u) * 0.2) 0;
-}
-
-.wall-att-l {
-    flex: 1;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.wall-att-when {
-    color: var(--lumo-tertiary-text-color);
-    font-variant-numeric: tabular-nums;
-    flex: none;
+    margin: calc(var(--wall-u) * 0.5) 0;
 }
 
 .wall-clear {
@@ -2344,33 +2411,60 @@ img:fullscreen {
 }
 
 .wall-quiet {
-    font-size: calc(var(--wall-u) * 0.9);
+    font-size: calc(var(--wall-u) * 0.85);
     color: var(--lumo-tertiary-text-color);
     padding: calc(var(--wall-u) * 0.25) 0;
 }
 
-/* On a phone or a laptop this stops being a wall display and becomes a page: the
-   viewport-derived unit would produce 4px text, and five camera tiles in a row
-   would be thumbnails of thumbnails. Pinned to a readable size and stacked. */
+/* A portrait panel: the rail goes under the cameras, its two panels side by side. */
+@media screen and (orientation: portrait) and (min-width: 901px) {
+    .wall-stage-area {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    .wall-rail {
+        flex-direction: row;
+    }
+
+    .wall-rail > .wall-panel {
+        flex: 1 1 0;
+    }
+}
+
+/* On a phone or a small laptop window this stops being a wall display and becomes a page: the
+   viewport-derived unit would produce 4px text. Pinned to a readable size, stacked, and scrollable; the
+   layout script stands down below this width and the !important rules undo anything it set while wider. */
 @media screen and (max-width: 900px) {
     .wall-view {
-        --wall-u: 9px;
+        --wall-u: 10px;
+        height: auto;
     }
+
     .wall {
         height: auto;
     }
+
+    .wall-bar {
+        flex-wrap: wrap;
+    }
+
+    .wall-stage-area {
+        display: flex;
+        flex-direction: column;
+    }
+
     .wall-printers {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
     }
-    .wall-kpis {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .wall-bottom {
-        grid-template-columns: minmax(0, 1fr);
-    }
-    .wall-cam {
-        height: calc(var(--wall-u) * 8);
-        flex: none;
+
+    .wall-p {
+        position: relative;
+        left: auto !important;
+        top: auto !important;
+        width: 100% !important;
     }
 }
 

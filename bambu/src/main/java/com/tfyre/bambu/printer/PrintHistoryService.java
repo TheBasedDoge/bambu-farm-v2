@@ -110,12 +110,36 @@ public class PrintHistoryService {
     /** Lazy to avoid an eager circular reference (PrintQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<PrintQueueService> queueServiceInstance;
+    /** Lazy to avoid an eager circular reference (OrderCancellationService injects this service). */
+    @Inject
+    jakarta.enterprise.inject.Instance<OrderCancellationService> cancellationInstance;
 
     private final List<PrintJob> jobs = new ArrayList<>();
     private final Map<String, BambuConst.GCodeState> lastState = new HashMap<>();
+    /**
+     * How long a printer that was mid-print must stay unreachable before the job is closed as "Offline".
+     * A dropped MQTT session, a router reboot or a printer firmware hiccup reads OFFLINE for a minute or two
+     * while the print carries on; closing the job on the first such reading threw away its order link and
+     * queued a duplicate of a part that was still being made.
+     */
+    private static final Duration OFFLINE_GRACE = Duration.ofMinutes(5);
+    /** {@link System#nanoTime()} when a mid-print printer was first seen OFFLINE; cleared when it is seen again. */
+    private final Map<String, Long> offlineSince = new HashMap<>();
     private final Map<String, RunningJob> running = new HashMap<>();
     private final Map<String, Pending> pending = new HashMap<>();
     private boolean dirty;
+
+    /** Files of the prints under way, or commanded and about to start, for one order. */
+    public synchronized List<String> inFlightFiles(final String market, final String orderId) {
+        final List<String> out = new ArrayList<>();
+        running.values().stream()
+                .filter(j -> j.orderRef() != null && market.equals(j.orderRef().market()) && orderId.equals(j.orderRef().orderId()))
+                .forEach(j -> out.add(j.file()));
+        pending.values().stream()
+                .filter(j -> j.orderRef() != null && market.equals(j.orderRef().market()) && orderId.equals(j.orderRef().orderId()))
+                .forEach(j -> out.add(j.file()));
+        return out;
+    }
 
     /**
      * Registers the expected filament weight for the next print started on a printer (e.g. from batch print / queue, where the plate weight is known).
@@ -253,6 +277,20 @@ public class PrintHistoryService {
         printers.getPrinters().forEach(printer -> {
             final String name = printer.getName();
             final BambuConst.GCodeState current = printer.getGCodeState();
+            if (current == BambuConst.GCodeState.OFFLINE) {
+                final BambuConst.GCodeState before = lastState.get(name);
+                if (before != null && isInJob(before)) {
+                    final long since = offlineSince.computeIfAbsent(name, k -> System.nanoTime());
+                    if (System.nanoTime() - since < OFFLINE_GRACE.toNanos()) {
+                        // Not recorded as a state at all: if the printer comes back still printing nothing
+                        // happened, and if it comes back finished or failed that is what gets recorded.
+                        return;
+                    }
+                }
+            } else if (offlineSince.remove(name) != null) {
+                Log.infof("PrintHistoryService: %s: reachable again (%s) - the job in progress was kept", name,
+                        current.getDescription());
+            }
             final BambuConst.GCodeState previous = lastState.put(name, current);
             if (previous == null || previous == current) {
                 // First observation. A restored running job (we restarted mid-print) is kept as-is - that's the
@@ -343,8 +381,13 @@ public class PrintHistoryService {
                 "Print %s: %s (%dh %dm)".formatted(job.result().toLowerCase(), jobLabel(job), h, m),
                 aiService.getSnapshot(job.printer()).orElse(null));
 
+        // A print for an order that was cancelled while it ran: it is not progress towards anything, a failure
+        // must not be retried, and a finished piece goes on the shelf instead (OrderCancellationService).
+        final boolean cancelledOrder = job.orderRef() != null
+                && cancellationInstance.get().isCancelled(job.orderRef().market(), job.orderRef().orderId());
+
         // Ready-to-ship: count this finish towards its order; fires exactly once per completed order
-        if (job.orderRef() != null && "Finished".equals(job.result())
+        if (!cancelledOrder && job.orderRef() != null && "Finished".equals(job.result())
                 && orderTracking.recordJobPrinted(job.orderRef().market(), job.orderRef().orderId())) {
             Log.infof("PrintHistoryService: %s fully printed", job.orderRef().label());
             notificationService.notifyEvent("order_printed", job.orderRef().market(),
@@ -362,13 +405,16 @@ public class PrintHistoryService {
         }
 
         // Give the queue a chance to auto-requeue a failed queue-started job (opt-in, single retry)
-        final boolean requeued = queueServiceInstance.get().onJobEnded(job);
+        final boolean requeued = queueServiceInstance.get().onJobEnded(job, !cancelledOrder);
+        if (cancelledOrder) {
+            cancellationInstance.get().onJobEnded(job);
+        }
 
         // A print that ended without producing a part must release the expectation it was covering, unless it was
         // auto-requeued (the retry still owes that part). Otherwise the expectation stays outstanding AND any
         // re-queue registers a second one for the same part, so the order over-counts and can never reach
         // "ready to ship": a stopped cupholder left Etsy #4130857746 reading 0/2 for a single-item order.
-        if (job.orderRef() != null && !"Finished".equals(job.result()) && !requeued) {
+        if (!cancelledOrder && job.orderRef() != null && !"Finished".equals(job.result()) && !requeued) {
             orderTracking.removeExpectedJobs(job.orderRef().market(), job.orderRef().orderId(), 1, true);
             Log.infof("PrintHistoryService: %s ended %s and was not requeued - released one expected job from %s,"
                     + " which now needs a re-queue before it can be ready to ship",

@@ -37,3 +37,9 @@ bambu/src/main/bundles/
 /bambu/tsconfig.json
 /bambu/types.d.ts
 /bambu/.vaadin-node-tasks.lock
+
+# machine-specific: where the prod compose folder is (read by bambufarm-common.ps1)
+prod-path.txt
+
+# build.ps1 output (jar staged for copying to the prod box)
+dist/

@@ -38,6 +38,8 @@ public class EtsyOrderPollingService {
     StockService stockService;
     @Inject
     PollFailureReporter pollFailures;
+    @Inject
+    OrderCancellationService cancellations;
 
     private final AtomicReference<List<EtsyApiClient.Receipt>> lastReceipts = new AtomicReference<>(List.of());
     private final AtomicReference<Instant> lastPolled = new AtomicReference<>();
@@ -55,13 +57,19 @@ public class EtsyOrderPollingService {
         }
         try {
             final List<EtsyApiClient.Receipt> receipts = client.getUnfulfilledReceipts();
+            final java.util.Set<String> open = receipts.stream().map(r -> String.valueOf(r.receiptId()))
+                    .collect(java.util.stream.Collectors.toCollection(java.util.HashSet::new));
+            // Before the new list replaces the old one: the difference between them is what just closed.
+            final java.util.Set<String> undecided = checkCancelled(open);
             lastReceipts.set(receipts);
             lastPolled.set(Instant.now());
             lastError.set(null);
             Log.infof("EtsyOrderPollingService: %d unfulfilled receipt(s)", receipts.size());
             pollFailures.recordSuccess("Etsy");
             // Orders that have left the open list are done with, however their print progress ended up
-            tracking.pruneClosed(MARKET, receipts.stream().map(r -> String.valueOf(r.receiptId())).collect(java.util.stream.Collectors.toSet()));
+            // ...except the ones whose reason for closing could not be looked up this time: keep those for the next poll.
+            open.addAll(undecided);
+            tracking.pruneClosed(MARKET, open);
             notifyNewOrders(receipts);
         } catch (Exception ex) {
             lastError.set(ex.getMessage());
@@ -69,6 +77,47 @@ public class EtsyOrderPollingService {
             // A failing poll means orders silently stop arriving - notify rather than only logging.
             pollFailures.recordFailure("Etsy", ex.getMessage());
         }
+    }
+
+    /**
+     * Finds out why orders left the open list. Shipped is the usual reason and needs nothing; cancelled (or
+     * refunded in full) before shipping means the print work for it has to be unwound.
+     * <p>
+     * Looks at orders that were open on the previous poll, plus any with unfinished print progress - the second
+     * catches a cancellation that happened while the app was down.
+     *
+     * @return orders whose lookup failed, so the caller can keep their progress and try again next poll
+     */
+    private java.util.Set<String> checkCancelled(final java.util.Set<String> open) {
+        final java.util.Set<String> gone = new java.util.LinkedHashSet<>();
+        lastReceipts.get().forEach(r -> gone.add(String.valueOf(r.receiptId())));
+        tracking.progress(MARKET).stream().filter(p -> !p.complete()).forEach(p -> gone.add(p.orderId()));
+        gone.removeAll(open);
+        final java.util.Set<String> undecided = new java.util.HashSet<>();
+        for (final String id : gone) {
+            if (cancellations.isCancelled(MARKET, id)) {
+                continue;
+            }
+            try {
+                final java.util.Optional<EtsyApiClient.Receipt> found = client.getReceipt(Long.parseLong(id));
+                if (found.isEmpty() || !found.get().isCancelled() || found.get().isShipped()) {
+                    continue;
+                }
+                final EtsyApiClient.Receipt r = found.get();
+                final List<OrderCancellationService.OrderLine> lines = r.transactions().stream()
+                        .map(t -> new OrderCancellationService.OrderLine(t.quantity(), t.personalization().isPresent(),
+                                mappingService.find(t.listingId(), t.variations())
+                                        .map(EtsyMappingService.MappingEntry::parts).orElse(List.of())))
+                        .toList();
+                cancellations.cancel(MARKET, id, "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName()), lines);
+            } catch (NumberFormatException ex) {
+                // not an Etsy receipt id - nothing to look up
+            } catch (Exception ex) {
+                Log.warnf("EtsyOrderPollingService: could not check why order %s closed: %s", id, ex.getMessage());
+                undecided.add(id);
+            }
+        }
+        return undecided;
     }
 
     /** Fires a "new_order" notification for receipts never seen before (tracked persistently, so no repeats after restart). */
@@ -89,33 +138,39 @@ public class EtsyOrderPollingService {
                                 return "%dx %s%s".formatted(t.quantity(), t.title(), vars.isBlank() ? "" : " (" + vars + ")");
                             })
                             .collect(Collectors.joining("; "));
+                    final String note = r.buyerNote() == null || r.buyerNote().isBlank() ? ""
+                            : " - buyer note: " + (r.buyerNote().length() > 200 ? r.buyerNote().substring(0, 200) + "…" : r.buyerNote());
                     notificationService.notifyEvent("new_order", "Etsy",
-                            "New order #%d from %s: %s".formatted(r.receiptId(), r.buyerName(),
-                                    items.length() > 200 ? items.substring(0, 200) + "…" : items));
+                            "New order #%d from %s: %s%s".formatted(r.receiptId(), r.buyerName(),
+                                    items.length() > 200 ? items.substring(0, 200) + "…" : items, note));
                     // Work out what on-hand stock would cover and auto-queue only the remainder. The stock is NOT
                     // consumed yet: processOrder can decline the order for five different reasons, and consuming
                     // up front deducted the units anyway - so they were spent on something never printed.
                     final String orderLabel = "Etsy order #%d (%s)".formatted(r.receiptId(), r.buyerName());
                     final java.util.List<AutoQueueService.AutoQueueItem> queueItems = new java.util.ArrayList<>();
                     final java.util.List<StockService.PlannedCoverage> planned = new java.util.ArrayList<>();
+                    // Pieces already promised to an earlier line of this same order.
+                    final java.util.Map<String, Integer> reserved = new java.util.HashMap<>();
                     for (final EtsyApiClient.Transaction t : r.transactions()) {
-                        final java.util.Optional<String> key = mappingService.findKey(t.listingId(), t.variations());
-                        final int covered = stockService.coverageFor(MARKET, key, t.quantity());
-                        if (covered > 0) {
-                            planned.add(new StockService.PlannedCoverage(key.get(), covered, t.title()));
-                        }
-                        final int toPrint = t.quantity() - covered;
-                        if (key.isPresent() && toPrint <= 0) {
+                        final java.util.List<MappingPart> parts = mappingService.find(t.listingId(), t.variations())
+                                .map(EtsyMappingService.MappingEntry::parts)
+                                .orElse(java.util.List.of());
+                        // Stock is counted per printed part, so cover is decided part by part: a set of two with
+                        // one piece on the shelf prints one. A personalized line is never covered from stock -
+                        // what is on the shelf is the generic part.
+                        final java.util.List<Integer> fromStock = t.personalization().isPresent()
+                                ? java.util.List.of()
+                                : stockService.planCoverage(parts, t.quantity(), t.title(), reserved, planned);
+                        if (StockService.fullyCovered(parts, t.quantity(), fromStock)) {
                             continue; // whole line covered from stock - nothing to print
                         }
                         queueItems.add(new AutoQueueService.AutoQueueItem(
                                 String.valueOf(t.listingId()),
-                                "%dx %s".formatted(toPrint, t.title()),
-                                toPrint,
+                                "%dx %s".formatted(t.quantity(), t.title()),
+                                t.quantity(),
                                 t.personalization().isPresent(),
-                                mappingService.find(t.listingId(), t.variations())
-                                        .map(EtsyMappingService.MappingEntry::parts)
-                                        .orElse(java.util.List.of())));
+                                parts,
+                                fromStock.isEmpty() ? null : fromStock));
                     }
                     final String orderId = String.valueOf(r.receiptId());
                     // Nothing left to print means stock covered the whole order - there's no queueing step to

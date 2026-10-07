@@ -36,6 +36,8 @@ public class GcodeMappingQueuer {
     OrderTrackingService tracking;
     @Inject
     Instance<ProjectFile> projectFileInstance;
+    @Inject
+    BambuPrinters printers;
 
     /** Weight + filament-slot-count of a LIBRARY part's plate, read once and reused for both queueing decisions. */
     private record PlateInfo(double weight, int filamentCount) {
@@ -43,19 +45,34 @@ public class GcodeMappingQueuer {
 
     private static final PlateInfo UNKNOWN_PLATE = new PlateInfo(0.0, 1);
 
-    private PlateInfo loadPlateInfo(final MappingPart part) {
+    /**
+     * The file {@code part} prints from on {@code printerName} - the P1 file or the family variant - or empty when
+     * that printer's family has no file mapped. An unknown printer resolves like a P1, as it always did.
+     */
+    public Optional<String> pathFor(final MappingPart part, final String printerName) {
+        final BambuConst.PrinterModel model = printers.getPrinterDetail(printerName)
+                .map(d -> d.config().model()).orElse(BambuConst.PrinterModel.UNKNOWN);
+        return part.pathFor(model);
+    }
+
+    private static String familyOf(final BambuPrinters.PrinterDetail d) {
+        return d.config().model().gcodeFamily().toUpperCase();
+    }
+
+    /** Reads weight and filament count for the plate from the given file (the variant actually being sent). */
+    private PlateInfo loadPlateInfo(final MappingPart part, final String path) {
         if (part.source() != GcodeSource.LIBRARY) {
             // No local project file to read for SD-card-resident files - weight stays untracked and the AMS
             // mapping (if any) falls back to a single-entry list, since we can't inspect the plate's filament count.
             return UNKNOWN_PLATE;
         }
-        final Path file = Path.of(config.batchPrint().library()).resolve(part.path());
+        final Path file = Path.of(config.batchPrint().library()).resolve(path);
         if (!Files.isRegularFile(file)) {
             return UNKNOWN_PLATE;
         }
         final ProjectFile projectFile = projectFileInstance.get();
         try {
-            projectFile.setup(part.path(), file.toFile());
+            projectFile.setup(path, file.toFile());
             final Optional<Plate> plate = projectFile.getPlates().stream()
                     .filter(p -> p.plateId() == part.plateId())
                     .findFirst();
@@ -160,18 +177,24 @@ public class GcodeMappingQueuer {
      * printer isn't necessarily the same index on another). Returns an error message, or empty on success.
      */
     public Optional<String> queuePart(final MappingPart part, final String printerName, final Integer amsSlotOverride, final OrderRef orderRef) {
+        final Optional<String> resolved = pathFor(part, printerName);
+        if (resolved.isEmpty()) {
+            return Optional.of("%s has no %s file mapped for %s - add one on the Mappings tab".formatted(printerName,
+                    printers.getPrinterDetail(printerName).map(GcodeMappingQueuer::familyOf).orElse("?"), part.path()));
+        }
+        final String path = resolved.get();
         if (part.source() == GcodeSource.LIBRARY) {
-            final Path file = Path.of(config.batchPrint().library()).resolve(part.path());
+            final Path file = Path.of(config.batchPrint().library()).resolve(path);
             if (!Files.isRegularFile(file)) {
-                return Optional.of("Not in library: %s".formatted(part.path()));
+                return Optional.of("Not in library: %s".formatted(path));
             }
         }
         final Integer slot = amsSlotOverride != null ? amsSlotOverride : part.amsSlot();
-        final PlateInfo plateInfo = loadPlateInfo(part);
+        final PlateInfo plateInfo = loadPlateInfo(part, path);
         final List<Integer> amsMapping = buildAmsMapping(slot, plateInfo.filamentCount());
         final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
         final BambuPrinter.CommandPPF command = new BambuPrinter.CommandPPF(
-                part.path(), part.plateId(), useAms,
+                path, part.plateId(), useAms,
                 config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
                 config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
         // Carry the part itself so the job can be returned to the dispatch pool intact if it's later removed
@@ -205,28 +228,45 @@ public class GcodeMappingQueuer {
         int totalQueued = 0;
         int printerIndex = 0;
         for (final MappingPart part : parts) {
+            // Only printers whose family has a file for this part take a share of the round-robin. A selected
+            // H2D with no H2D file is skipped for this part (and said so), never handed the P1 file.
+            final List<String> eligible = printerNames.stream().filter(n -> pathFor(part, n).isPresent()).toList();
+            printerNames.stream().filter(n -> !eligible.contains(n)).forEach(n ->
+                    errors.add("%s: no %s file mapped for %s - skipped on that printer".formatted(n,
+                            printers.getPrinterDetail(n).map(GcodeMappingQueuer::familyOf).orElse("?"), part.path())));
+            if (eligible.isEmpty()) {
+                continue;
+            }
             if (part.source() == GcodeSource.LIBRARY) {
-                final Path file = Path.of(config.batchPrint().library()).resolve(part.path());
-                if (!Files.isRegularFile(file)) {
-                    errors.add("Not in library: %s - skipped".formatted(part.path()));
+                final Optional<String> missing = eligible.stream().map(n -> pathFor(part, n).get()).distinct()
+                        .filter(p -> !Files.isRegularFile(Path.of(config.batchPrint().library()).resolve(p))).findFirst();
+                if (missing.isPresent()) {
+                    errors.add("Not in library: %s - skipped".formatted(missing.get()));
                     continue;
                 }
             }
-            final PlateInfo plateInfo = loadPlateInfo(part);
-            final List<Integer> amsMapping = buildAmsMapping(part.amsSlot(), plateInfo.filamentCount());
-            // Mirrors PrinterMapping's rule: only turn on AMS routing when every mapped slot is a real AMS tray -
-            // BambuConst.AMS_TRAY_VIRTUAL (external spool) means "feed from the spool holder", not the AMS unit.
-            final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
-            final BambuPrinter.CommandPPF command = new BambuPrinter.CommandPPF(
-                    part.path(), part.plateId(), useAms,
-                    config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
-                    config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
+            // One command per distinct file (the P1 file and, say, the H2D one), built lazily.
+            final java.util.Map<String, BambuPrinter.CommandPPF> commands = new java.util.HashMap<>();
+            final java.util.Map<String, Double> weights = new java.util.HashMap<>();
             final int copies = Math.max(1, orderedQuantity) * part.copiesPerUnit();
             for (int i = 0; i < copies; i++) {
-                final String printerName = printerNames.get(printerIndex % printerNames.size());
+                final String printerName = eligible.get(printerIndex % eligible.size());
                 printerIndex++;
+                final String path = pathFor(part, printerName).get();
+                final BambuPrinter.CommandPPF command = commands.computeIfAbsent(path, p -> {
+                    final PlateInfo plateInfo = loadPlateInfo(part, p);
+                    weights.put(p, plateInfo.weight());
+                    final List<Integer> amsMapping = buildAmsMapping(part.amsSlot(), plateInfo.filamentCount());
+                    // Mirrors PrinterMapping's rule: only turn on AMS routing when every mapped slot is a real AMS
+                    // tray - BambuConst.AMS_TRAY_VIRTUAL (external spool) means "feed from the spool holder".
+                    final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(s -> s == BambuConst.AMS_TRAY_VIRTUAL);
+                    return new BambuPrinter.CommandPPF(
+                            p, part.plateId(), useAms,
+                            config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),
+                            config.batchPrint().flowCalibration(), config.batchPrint().vibrationCalibration(), amsMapping);
+                });
                 queueService.add(printerName, new PrintQueueService.QueueEntry(
-                        command, plateInfo.weight(), part.source(), orderRef, part));
+                        command, weights.get(path), part.source(), orderRef, part));
                 totalQueued++;
             }
         }

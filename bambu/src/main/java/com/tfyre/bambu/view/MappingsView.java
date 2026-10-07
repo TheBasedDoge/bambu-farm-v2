@@ -198,7 +198,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             etsyGrid.addColumn(EtsyRow::listingId).setHeader("ID").setAutoWidth(true);
             etsyGrid.addColumn(EtsyRow::quantity).setHeader("Listed qty").setAutoWidth(true);
             etsyGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
-            etsyGrid.addComponentColumn(row -> stockField("etsy", row.listingId() + "|")).setHeader("On-hand").setAutoWidth(true);
+            etsyGrid.addComponentColumn(row -> stockSummary("etsy", row.listingId() + "|")).setHeader("On-hand").setAutoWidth(true);
             etsyGrid.addComponentColumn(row -> {
                 final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
                         new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
@@ -210,9 +210,18 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for listing %d".formatted(row.listingId()));
                             renderAll();
                         }));
-                return new Div(edit, testButton(row.mappedState(),
+                final Div actions = new Div(edit);
+                if ("—".equals(row.mappedState())) {
+                    suggestButton("Etsy: " + row.title(), row.title(), parts -> {
+                        etsyMapping.set(row.listingId(), List.of(), new EtsyMappingService.MappingEntry(parts));
+                        showNotification("Mapping saved for listing %d".formatted(row.listingId()));
+                        renderAll();
+                    }).ifPresent(actions::add);
+                }
+                actions.add(testButton(row.mappedState(),
                         () -> etsyMapping.find(row.listingId(), List.of()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
                         row.title()), etsyVariationsButton(row), hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
+                return actions;
             }).setHeader("").setAutoWidth(true);
             etsyGrid.setWidth("100%");
             etsyGrid.setAllRowsVisible(true);
@@ -289,7 +298,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             ebayGrid.addColumn(EbayRow::listingKey).setHeader("SKU / item id").setAutoWidth(true);
             ebayGrid.addColumn(EbayRow::title).setHeader("Title").setFlexGrow(1);
             ebayGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
-            ebayGrid.addComponentColumn(row -> stockField("ebay", row.listingKey() + "|")).setHeader("On-hand").setAutoWidth(true);
+            ebayGrid.addComponentColumn(row -> stockSummary("ebay", row.listingKey() + "|")).setHeader("On-hand").setAutoWidth(true);
             ebayGrid.addComponentColumn(row -> {
                 final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
                         new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
@@ -301,9 +310,18 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                             showNotification("Mapping saved for %s".formatted(row.listingKey()));
                             renderAll();
                         }));
-                return new Div(edit, testButton(row.mappedState(),
+                final Div actions = new Div(edit);
+                if ("—".equals(row.mappedState())) {
+                    suggestButton("eBay: " + row.listingKey(), row.title(), parts -> {
+                        ebayMapping.set(row.listingKey(), List.of(), new EbayMappingService.MappingEntry(parts));
+                        showNotification("Mapping saved for %s".formatted(row.listingKey()));
+                        renderAll();
+                    }).ifPresent(actions::add);
+                }
+                actions.add(testButton(row.mappedState(),
                         () -> ebayMapping.find(row.listingKey(), List.of()).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
                         row.listingKey()), ebayVariationsButton(row), hideButton("ebay", row.listingKey(), row.hidden()));
+                return actions;
             }).setHeader("").setAutoWidth(true);
             ebayGrid.setWidth("100%");
             ebayGrid.setAllRowsVisible(true);
@@ -368,8 +386,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             savedGrid.addColumn(SavedRow::listing).setHeader("Listing").setAutoWidth(true);
             savedGrid.addColumn(SavedRow::variations).setHeader("Variation").setAutoWidth(true);
             savedGrid.addColumn(SavedRow::summary).setHeader("Print jobs").setFlexGrow(1);
-            savedGrid.addComponentColumn(row -> stockField(row.market(), row.storageKey())).setHeader("On-hand").setAutoWidth(true);
-            savedGrid.addComponentColumn(this::productCodeField).setHeader("Product code").setAutoWidth(true);
+            savedGrid.addComponentColumn(row -> stockSummary(row.market(), row.storageKey())).setHeader("On-hand").setAutoWidth(true);
             savedGrid.addComponentColumn(row -> {
                 final Button edit = new Button(new Icon(VaadinIcon.EDIT));
                 edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
@@ -378,14 +395,11 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                     final List<MappingPart> initial = "etsy".equals(row.market())
                             ? etsyMapping.entries().getOrDefault(row.storageKey(), new EtsyMappingService.MappingEntry(List.of())).parts()
                             : ebayMapping.entries().getOrDefault(row.storageKey(), new EbayMappingService.MappingEntry(List.of())).parts();
-                    // Carry the product code through. Rewriting the entry with the parts alone would silently drop
-                    // it and split a shared stock pool back into two, with nothing on screen to show it happened.
-                    final String keepCode = productCodeOf(row);
                     openEditor("%s: %s %s".formatted(row.market(), row.listing(), row.variations()), initial, parts -> {
                         if ("etsy".equals(row.market())) {
-                            etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts, keepCode));
+                            etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts));
                         } else {
-                            ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts, keepCode));
+                            ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts));
                         }
                         showNotification("Mapping updated");
                         renderAll();
@@ -441,9 +455,10 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
             return "(no parts)";
         }
         return parts.stream()
-                .map(p -> "%s plate %d ×%d%s%s".formatted(p.path(), p.plateId(), p.copiesPerUnit(),
+                .map(p -> "%s plate %d ×%d%s%s%s".formatted(p.path(), p.plateId(), p.copiesPerUnit(),
                         p.amsSlot() != null ? " · " + AmsSlotSupport.label(p.amsSlot()) : "",
-                        p.filamentType() != null ? " · " + p.filamentType() : ""))
+                        p.filamentType() != null ? " · " + p.filamentType() : "",
+                        p.h2dPath().map(h -> " · H2D: " + h).orElse("")))
                 .collect(Collectors.joining(";  "));
     }
 
@@ -607,7 +622,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 listing.title() + " — " + label);
         final Span stockLabel = new Span("stock:");
         stockLabel.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
-        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockField("etsy", exactKey));
+        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockSummary("etsy", exactKey));
         rowDiv.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center").set("padding", "4px 0");
         return rowDiv;
     }
@@ -677,76 +692,38 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 label);
         final Span stockLabel = new Span("stock:");
         stockLabel.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "0.85em");
-        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockField("ebay", exactKey));
+        final Div rowDiv = new Div(name, mappedBadge(mapped ? "✓ mapped" : "—"), edit, test, stockLabel, stockSummary("ebay", exactKey));
         rowDiv.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center").set("padding", "4px 0");
         return rowDiv;
     }
 
     /**
-     * A small on-hand stock editor for a mapping storage key. When an order arrives, in-stock units are fulfilled
-     * from here (decremented, not printed) - so bump this when you print extra or take a return. Default 0.
+     * Read-only on-hand count for whatever a mapping prints, linking to the Inventory page - the one place stock
+     * is edited. Stock is counted per printed part (see {@code StockService}), so a mapping with two parts shows
+     * two numbers, in the order of its print jobs.
+     * <p>
+     * This used to be an editable field here, in both listing grids and in both variation dialogs, each writing a
+     * per-listing count. Four places to type the same number is how the Etsy and eBay figures for one product
+     * drifted apart.
      */
-    private com.vaadin.flow.component.textfield.IntegerField stockField(final String market, final String storageKey) {
-        final com.vaadin.flow.component.textfield.IntegerField f = new com.vaadin.flow.component.textfield.IntegerField();
-        f.setValue(stockService.get(market, storageKey));
-        f.setMin(0);
-        f.setStepButtonsVisible(true);
-        f.setWidth("128px");
-        f.setTooltipText("On-hand stock. New orders are filled from this first (decremented, not printed). "
-                + "Increase it when you print spares or take a return.");
-        f.addValueChangeListener(e -> {
-            final int v = e.getValue() == null ? 0 : e.getValue();
-            stockService.set(market, storageKey, v);
-        });
-        return f;
-    }
-
-    /** The product code currently saved against a mapping, or "" when it has none. */
-    private String productCodeOf(final SavedRow row) {
-        final String code = "etsy".equals(row.market())
-                ? Optional.ofNullable(etsyMapping.entries().get(row.storageKey()))
-                        .map(EtsyMappingService.MappingEntry::productCode).orElse(null)
-                : Optional.ofNullable(ebayMapping.entries().get(row.storageKey()))
-                        .map(EbayMappingService.MappingEntry::productCode).orElse(null);
-        return code == null ? "" : code;
-    }
-
-    /**
-     * Editor for a mapping's shared-stock code. Give the Etsy and eBay mappings for one physical product the same
-     * code and their on-hand stock becomes a single pool - without it each marketplace counts separately, so stock
-     * set on the Etsy listing does nothing when the eBay order arrives and the item gets printed anyway.
-     */
-    private com.vaadin.flow.component.textfield.TextField productCodeField(final SavedRow row) {
-        final com.vaadin.flow.component.textfield.TextField f = new com.vaadin.flow.component.textfield.TextField();
-        f.setValue(productCodeOf(row));
-        f.setWidth("150px");
-        f.setPlaceholder("shared code");
-        f.setClearButtonVisible(true);
-        f.setValueChangeMode(com.vaadin.flow.data.value.ValueChangeMode.ON_BLUR);
-        f.setTooltipText("Same code on two listings = one shared stock pool. Blank counts stock per listing.");
-        f.addValueChangeListener(e -> {
-            final String raw = e.getValue();
-            final String code = raw == null || raw.isBlank() ? null : raw.trim();
-            final List<MappingPart> parts = "etsy".equals(row.market())
-                    ? etsyMapping.entries().getOrDefault(row.storageKey(), new EtsyMappingService.MappingEntry(List.of())).parts()
-                    : ebayMapping.entries().getOrDefault(row.storageKey(), new EbayMappingService.MappingEntry(List.of())).parts();
-            if ("etsy".equals(row.market())) {
-                etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts, code));
-            } else {
-                ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts, code));
-            }
-            // Order matters: the mapping has to carry the code before the merge runs, because the merge reads the
-            // per-listing key and the resolver now points reads at the pool.
-            if (code != null) {
-                stockService.mergeIntoProduct(row.market(), row.storageKey(), code);
-            }
-            showNotification(code == null
-                    ? "Product code cleared - this listing counts stock on its own again. Units already in the "
-                            + "shared pool stay there; set the on-hand figure for this listing."
-                    : "Sharing stock as '%s'".formatted(code));
-            renderAll();
-        });
-        return f;
+    private com.vaadin.flow.component.Component stockSummary(final String market, final String storageKey) {
+        final List<MappingPart> parts = "etsy".equals(market)
+                ? Optional.ofNullable(etsyMapping.entries().get(storageKey))
+                        .map(EtsyMappingService.MappingEntry::parts).orElse(List.of())
+                : Optional.ofNullable(ebayMapping.entries().get(storageKey))
+                        .map(EbayMappingService.MappingEntry::parts).orElse(List.of());
+        if (parts.isEmpty()) {
+            final Span none = new Span("—");
+            none.getStyle().setColor("var(--lumo-tertiary-text-color)");
+            return none;
+        }
+        final String counts = parts.stream().map(p -> String.valueOf(stockService.get(p))).collect(Collectors.joining(" / "));
+        final com.vaadin.flow.router.RouterLink link = new com.vaadin.flow.router.RouterLink(counts + " pcs", InventoryView.class);
+        link.getElement().setAttribute("title", parts.stream()
+                .map(p -> "%s: %d".formatted(com.tfyre.bambu.printer.StockService.describe(
+                        com.tfyre.bambu.printer.StockService.partKey(p)).name(), stockService.get(p)))
+                .collect(Collectors.joining(", ")) + " - edit on the Inventory page");
+        return link;
     }
 
     /** Eye-slash to hide a never-printed listing, eye to bring it back (visible via "Show hidden listings"). */
@@ -799,6 +776,48 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         dialog.add(panel);
         dialog.getFooter().add(new Button("Cancel", e -> dialog.close()));
         dialog.open();
+    }
+
+    /** The library listing, read once per render of the page rather than once per unmapped row. */
+    private List<String> suggestLibrary = List.of();
+    private long suggestLibraryAt;
+
+    /**
+     * For an unmapped listing: a button naming the library file its title most resembles. It opens the normal
+     * editor pre-filled with that file - nothing is saved until you press Save there, because the guess is from
+     * the names alone and is sometimes the neighbouring product.
+     * <p>
+     * If the other marketplace already maps that file, its settings (copies per sale, AMS slot, material) are
+     * copied, so the two listings end up printing exactly the same thing and share one row on the Inventory
+     * page. Otherwise: PETG in slot 1, ASA in slot 2 when the file name says ASA, two copies for a "set of 2".
+     */
+    private Optional<Button> suggestButton(final String editorTitle, final String listingTitle,
+            final Consumer<List<MappingPart>> onSave) {
+        if (System.currentTimeMillis() - suggestLibraryAt > 5000) {
+            suggestLibrary = getLibraryFiles();
+            suggestLibraryAt = System.currentTimeMillis();
+        }
+        final Optional<String> file = com.tfyre.bambu.printer.MappingSuggester.suggest(listingTitle, suggestLibrary);
+        if (file.isEmpty()) {
+            return Optional.empty();
+        }
+        final String path = file.get();
+        final MappingPart suggested = java.util.stream.Stream.concat(
+                etsyMapping.entries().values().stream().flatMap(e -> e.parts().stream()),
+                ebayMapping.entries().values().stream().flatMap(e -> e.parts().stream()))
+                .filter(p -> path.equals(p.path()))
+                .findFirst()
+                .orElseGet(() -> {
+                    final boolean asa = path.toUpperCase().contains("ASA");
+                    return new MappingPart(com.tfyre.bambu.printer.GcodeSource.LIBRARY, path, 1,
+                            com.tfyre.bambu.printer.MappingSuggester.copiesFor(listingTitle), asa ? 1 : 0, asa ? "ASA" : "PETG");
+                });
+        final String shortName = path.substring(path.lastIndexOf('/') + 1).replaceAll("(?i)\\.gcode\\.3mf$|\\.3mf$", "");
+        final Button b = new Button(shortName + "?", new Icon(VaadinIcon.MAGIC));
+        b.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
+        b.setTooltipText("Closest library file by name. Opens the editor pre-filled - check it and save.");
+        b.addClickListener(e -> openEditor(editorTitle, List.of(suggested), onSave));
+        return Optional.of(b);
     }
 
     /** Delegates to the queuer so mappings, batch print and auto-queue all see the same library (incl. projects). */

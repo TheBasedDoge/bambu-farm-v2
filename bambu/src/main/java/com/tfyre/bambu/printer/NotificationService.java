@@ -81,6 +81,152 @@ public class NotificationService {
 
     public boolean isEventSuppressed(final String event) { return suppressedEvents.contains(event); }
 
+    // -------------------------------------------------------------------------
+    // Notification log - what the Notifications page shows
+    // -------------------------------------------------------------------------
+
+    private static final String LOG_FILENAME = "bambu-notification-log.json";
+    /** Entries kept and persisted. A busy day is about 40 events, so this is a couple of weeks. */
+    private static final int LOG_MAX = 500;
+    /** Photos stay in memory only, for the newest entries - they are 60-500 KB each and not worth a file. */
+    private static final int LOG_PHOTOS_MAX = 40;
+    public static final String STATUS_PENDING = "sending";
+    public static final String STATUS_SENT = "sent";
+    public static final String STATUS_SUPPRESSED = "suppressed";
+    public static final String STATUS_NO_CHANNEL = "not sent - no channel configured";
+    public static final String STATUS_FAILED_PREFIX = "failed - ";
+
+    /**
+     * One notification as the farm raised it: the same text Discord/ntfy/MQTT got, plus what became of it.
+     * {@code photo} says a camera frame went with it; the frame itself is only held for the newest few
+     * ({@link #getLogPhoto(long)}).
+     */
+    public record LogEntry(long id, String timestamp, String event, String printer, String message, boolean photo,
+            String status) {
+
+        LogEntry withStatus(final String newStatus) {
+            return new LogEntry(id, timestamp, event, printer, message, photo, newStatus);
+        }
+    }
+
+    /** Oldest first. Guarded by itself, as is {@link #logPhotos}. */
+    private final List<LogEntry> eventLog = new ArrayList<>();
+    private final java.util.LinkedHashMap<Long, byte[]> logPhotos = new java.util.LinkedHashMap<Long, byte[]>() {
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<Long, byte[]> eldest) {
+            return size() > LOG_PHOTOS_MAX;
+        }
+    };
+    /** Seeded from the clock so ids stay unique (and ordered) across restarts without persisting a counter. */
+    private final java.util.concurrent.atomic.AtomicLong logSeq
+            = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+    private final List<Runnable> logListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final Object logFileLock = new Object();
+
+    /** Every logged notification, newest first. */
+    public List<LogEntry> getLog() {
+        synchronized (eventLog) {
+            final List<LogEntry> copy = new ArrayList<>(eventLog);
+            java.util.Collections.reverse(copy);
+            return copy;
+        }
+    }
+
+    /** The camera frame sent with an entry, while it is still one of the newest {@value #LOG_PHOTOS_MAX} with a photo. */
+    public Optional<byte[]> getLogPhoto(final long id) {
+        synchronized (eventLog) {
+            return Optional.ofNullable(logPhotos.get(id));
+        }
+    }
+
+    /** Calls {@code listener} (on a worker thread) whenever the log changes. Run the returned handle to stop. */
+    public Runnable addLogListener(final Runnable listener) {
+        logListeners.add(listener);
+        return () -> logListeners.remove(listener);
+    }
+
+    private void fireLogListeners() {
+        for (final Runnable listener : logListeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException ex) {
+                // A closed browser tab must not be able to break delivery of the next alert.
+                Log.debugf("NotificationService: log listener failed: %s", ex.getMessage());
+            }
+        }
+    }
+
+    private Path getLogPath() {
+        final Path parent = Path.of(config.maintenanceFile()).getParent();
+        return parent != null ? parent.resolve(LOG_FILENAME) : Path.of(LOG_FILENAME);
+    }
+
+    private void loadLog() {
+        final Path path = getLogPath();
+        if (!Files.exists(path)) {
+            return;
+        }
+        try {
+            final List<LogEntry> loaded = mapper.readValue(path.toFile(), new TypeReference<List<LogEntry>>() {});
+            synchronized (eventLog) {
+                for (final LogEntry e : loaded) {
+                    // Nothing is mid-send after a restart; an entry saved as such never got its answer.
+                    eventLog.add(STATUS_PENDING.equals(e.status()) ? e.withStatus("unknown - restarted while sending") : e);
+                }
+                while (eventLog.size() > LOG_MAX) {
+                    eventLog.remove(0);
+                }
+            }
+            Log.infof("NotificationService: %d logged notification(s) restored from %s", loaded.size(), path);
+        } catch (IOException | RuntimeException ex) {
+            Log.errorf(ex, "NotificationService: cannot load %s: %s", path, ex.getMessage());
+        }
+    }
+
+    private void saveLog() {
+        final List<LogEntry> copy;
+        synchronized (eventLog) {
+            copy = new ArrayList<>(eventLog);
+        }
+        synchronized (logFileLock) {
+            try {
+                mapper.writeValue(getLogPath().toFile(), copy);
+            } catch (IOException ex) {
+                Log.errorf(ex, "NotificationService: cannot save %s: %s", getLogPath(), ex.getMessage());
+            }
+        }
+    }
+
+    private LogEntry logEvent(final String event, final String printer, final String message, final byte[] imageJpeg,
+            final String status) {
+        final LogEntry entry = new LogEntry(logSeq.incrementAndGet(), OffsetDateTime.now().toString(), event,
+                printer == null ? "" : printer, message == null ? "" : message, imageJpeg != null, status);
+        synchronized (eventLog) {
+            eventLog.add(entry);
+            while (eventLog.size() > LOG_MAX) {
+                logPhotos.remove(eventLog.remove(0).id());
+            }
+            if (imageJpeg != null) {
+                logPhotos.put(entry.id(), imageJpeg);
+            }
+        }
+        return entry;
+    }
+
+    /** Records how delivery ended, then persists and tells any open Notifications page. Worker thread only. */
+    private void finishLogEntry(final long id, final String status) {
+        synchronized (eventLog) {
+            for (int i = eventLog.size() - 1; i >= 0; i--) {
+                if (eventLog.get(i).id() == id) {
+                    eventLog.set(i, eventLog.get(i).withStatus(status));
+                    break;
+                }
+            }
+        }
+        saveLog();
+        fireLogListeners();
+    }
+
     private Path getSuppressedPath() {
         final Path parent = Path.of(config.maintenanceFile()).getParent();
         return parent != null ? parent.resolve(SUPPRESSED_FILENAME) : Path.of(SUPPRESSED_FILENAME);
@@ -89,6 +235,7 @@ public class NotificationService {
     @PostConstruct
     void loadSuppressed() {
         reportLinkButtons();
+        loadLog();
         final Path path = getSuppressedPath();
         if (!Files.exists(path)) {
             return;
@@ -177,6 +324,15 @@ public class NotificationService {
         final boolean aboutAPrinter = printers.getPrinterDetail(printer).isPresent();
         if (aboutAPrinter) {
             links.add(new Link("Open " + printer, "%s/printer/%s".formatted(root, encode(printer))));
+            // The alerts that end with a part (or a failed one) on the plate get the way to say it is off.
+            // It opens a page with one confirm button rather than acting on the link itself, so a link
+            // preview or a mis-tap cannot open the bed gate.
+            switch (event) {
+                case "finish", "fail", "stopped", "auto_start_blocked", "dispatch_blocked", "auto_requeue" ->
+                    links.add(new Link("Bed cleared", "%s/bed-cleared/%s".formatted(root, encode(printer))));
+                default -> {
+                }
+            }
         }
         switch (event) {
             case "failure_detected", "first_layer_issue" ->
@@ -185,7 +341,7 @@ public class NotificationService {
                     "order_from_stock" ->
                 links.add(new Link("%s orders".formatted(printer),
                         "%s/%s-orders".formatted(root, "eBay".equalsIgnoreCase(printer) ? "ebay" : "etsy")));
-            case "dispatch_blocked", "auto_requeue", "simulate_mode", "poll_failed" ->
+            case "dispatch_blocked", "auto_requeue", "ams_retry", "simulate_mode", "poll_failed" ->
                 links.add(new Link("Automation", root + "/automation"));
             case "spool_low" ->
                 links.add(new Link("Spools", root + "/spools"));
@@ -204,27 +360,52 @@ public class NotificationService {
         return List.copyOf(links);
     }
 
+    /** Collapses a multi-line alert (AI observations run to several lines) into one log line, capped. */
+    private static String oneLine(final String message) {
+        if (message == null) {
+            return "";
+        }
+        final String flat = message.replaceAll("\\s+", " ").strip();
+        return flat.length() > 300 ? flat.substring(0, 297) + "..." : flat;
+    }
+
     private static String encode(final String s) {
         return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     public void notifyEvent(final String event, final String printer, final String message, final byte[] imageJpeg) {
-        if (suppressedEvents.contains(event)) {
-            Log.debugf("NotificationService: suppressed event '%s' for %s", event, printer);
+        // One line per event, always, whether or not it goes anywhere. Until 2026-09-16 alerts went to Discord
+        // and nowhere else, so the log could not answer "how often does the AMS jam" or "when did that printer
+        // error" - the only record was a chat channel. Suppressed events are logged too, marked as such.
+        final boolean suppressed = suppressedEvents.contains(event);
+        Log.infof("NotificationService: event %s [%s]%s %s%s", event, printer, imageJpeg != null ? " +photo" : "",
+                oneLine(message), suppressed ? " (suppressed - not sent)" : "");
+        if (suppressed) {
+            final LogEntry skipped = logEvent(event, printer, message, imageJpeg, STATUS_SUPPRESSED);
+            executor.submit(() -> finishLogEntry(skipped.id(), STATUS_SUPPRESSED));
             return;
         }
         final FarmEvent farmEvent = new FarmEvent(OffsetDateTime.now().toString(), event, printer, message);
         final List<Link> links = linksFor(event, printer);
+        final LogEntry entry = logEvent(event, printer, message, imageJpeg, STATUS_PENDING);
         executor.submit(() -> {
-            publishMqtt(farmEvent);
-            publishWebhook(farmEvent, imageJpeg, links);
+            final List<String> problems = new ArrayList<>();
+            try {
+                publishMqtt(farmEvent).ifPresent(problems::add);
+                publishWebhook(farmEvent, imageJpeg, links).ifPresent(problems::add);
+            } catch (RuntimeException ex) {
+                problems.add(String.valueOf(ex.getMessage()));
+            }
+            finishLogEntry(entry.id(), !problems.isEmpty() ? STATUS_FAILED_PREFIX + String.join("; ", problems)
+                    : isEnabled() ? STATUS_SENT : STATUS_NO_CHANNEL);
         });
     }
 
-    private synchronized void publishMqtt(final FarmEvent event) {
+    /** @return what went wrong, or empty when it was published (or MQTT is not configured). */
+    private synchronized Optional<String> publishMqtt(final FarmEvent event) {
         final Optional<String> url = config.notifications().mqtt().url();
         if (url.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         try {
             if (mqtt == null) {
@@ -240,25 +421,26 @@ public class NotificationService {
             }
             final String topic = "%s/%s/%s".formatted(config.notifications().mqtt().topic(), event.printer(), event.event());
             mqtt.publish(topic, mapper.writeValueAsBytes(event), 0, false);
+            return Optional.empty();
         } catch (Exception ex) {
             Log.errorf(ex, "NotificationService: mqtt publish failed: %s", ex.getMessage());
+            return Optional.of("MQTT: " + ex.getMessage());
         }
     }
 
-    private void publishWebhook(final FarmEvent event, final byte[] imageJpeg, final List<Link> links) {
+    /** @return what went wrong, or empty when it was delivered (or no webhook is configured). */
+    private Optional<String> publishWebhook(final FarmEvent event, final byte[] imageJpeg, final List<Link> links) {
         final Optional<String> url = config.notifications().webhookUrl();
         if (url.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         try {
             final String format = config.notifications().webhookFormat();
             if (imageJpeg != null && "discord".equals(format)) {
-                sendDiscordWithImage(withComponents(url.get(), links), event, imageJpeg, links);
-                return;
+                return sendDiscordWithImage(withComponents(url.get(), links), event, imageJpeg, links);
             }
             if (imageJpeg != null && "ntfy".equals(format)) {
-                sendNtfyWithImage(url.get(), event, imageJpeg, links);
-                return;
+                return sendNtfyWithImage(url.get(), event, imageJpeg, links);
             }
             final String body;
             final String contentType;
@@ -277,17 +459,76 @@ public class NotificationService {
                 }
             }
             final String target = "discord".equals(format) ? withComponents(url.get(), links) : url.get();
-            final HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(target))
+            final HttpResponse<String> response = sendWithRetry(HttpRequest.newBuilder(URI.create(target))
                     .timeout(Duration.ofSeconds(10))
                     .header("Content-Type", contentType)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build(), HttpResponse.BodyHandlers.ofString());
+                    .build());
             if (response.statusCode() >= 300) {
                 Log.errorf("NotificationService: webhook HTTP %d: %s", response.statusCode(), response.body());
+                return Optional.of("webhook HTTP %d".formatted(response.statusCode()));
             }
+            return Optional.empty();
         } catch (Exception ex) {
             Log.errorf(ex, "NotificationService: webhook failed: %s", ex.getMessage());
+            return Optional.of("webhook: " + ex.getMessage());
         }
+    }
+
+    /** How many times a rate-limited (HTTP 429) webhook post is retried before it is given up as failed. */
+    private static final int RATE_LIMIT_RETRIES = 3;
+    private static final java.util.regex.Pattern RETRY_AFTER
+            = java.util.regex.Pattern.compile("\"retry_after\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)");
+
+    /**
+     * Sends, and on HTTP 429 waits as long as the server asked and sends again.
+     * <p>
+     * Discord limits a webhook to a handful of posts per couple of seconds. Three printers going offline in the
+     * same second is three photo alerts at once, and until 2026-10-04 the ones that drew a 429 were logged and
+     * dropped - the alert simply never arrived. The 429 body says how long to wait ({@code retry_after}, in
+     * seconds, typically a fraction of one), so waiting is cheap. This runs on the notification worker thread,
+     * never on a caller's.
+     */
+    private HttpResponse<String> sendWithRetry(final HttpRequest request) throws IOException, InterruptedException {
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        for (int attempt = 1; response.statusCode() == 429 && attempt <= RATE_LIMIT_RETRIES; attempt++) {
+            final long waitMs = retryAfterMillis(response.body(), response.headers().firstValue("Retry-After").orElse(null));
+            Log.infof("NotificationService: webhook rate limited (HTTP 429) - retry %d/%d in %d ms",
+                    attempt, RATE_LIMIT_RETRIES, waitMs);
+            Thread.sleep(waitMs);
+            response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+        return response;
+    }
+
+    /**
+     * How long to wait after a 429: Discord's JSON {@code retry_after} (seconds, fractional) if present, else
+     * the standard {@code Retry-After} header (seconds), else one second. Padded by 100 ms and kept between a
+     * quarter of a second and ten seconds so a nonsense value can neither spin nor stall the worker.
+     */
+    static long retryAfterMillis(final String body, final String retryAfterHeader) {
+        double seconds = -1;
+        if (body != null) {
+            final java.util.regex.Matcher m = RETRY_AFTER.matcher(body);
+            if (m.find()) {
+                try {
+                    seconds = Double.parseDouble(m.group(1));
+                } catch (NumberFormatException ex) {
+                    seconds = -1;
+                }
+            }
+        }
+        if (seconds < 0 && retryAfterHeader != null) {
+            try {
+                seconds = Double.parseDouble(retryAfterHeader.strip());
+            } catch (NumberFormatException ex) {
+                seconds = -1;
+            }
+        }
+        if (seconds < 0) {
+            seconds = 1;
+        }
+        return Math.max(250L, Math.min(10_000L, (long) Math.ceil(seconds * 1000) + 100L));
     }
 
     /**
@@ -331,29 +572,31 @@ public class NotificationService {
     }
 
     /** Discord: multipart/form-data with a payload_json part and the snapshot as files[0], per their webhook API. */
-    private void sendDiscordWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
+    private Optional<String> sendDiscordWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
             final List<Link> links) throws Exception {
         final String boundary = "bambufarm" + System.nanoTime();
         final String payloadJson = mapper.writeValueAsString(discordPayload(event, links));
         final String head = "--%s\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n%s\r\n--%s\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"snapshot.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
                 .formatted(boundary, payloadJson, boundary);
         final String tail = "\r\n--%s--\r\n".formatted(boundary);
-        final HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url))
+        final HttpResponse<String> response = sendWithRetry(HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                 .POST(HttpRequest.BodyPublishers.ofByteArrays(List.of(
                         head.getBytes(StandardCharsets.UTF_8), imageJpeg, tail.getBytes(StandardCharsets.UTF_8))))
-                .build(), HttpResponse.BodyHandlers.ofString());
+                .build());
         if (response.statusCode() >= 300) {
             Log.errorf("NotificationService: discord webhook (with image) HTTP %d: %s", response.statusCode(), response.body());
+            return Optional.of("Discord HTTP %d".formatted(response.statusCode()));
         }
+        return Optional.empty();
     }
 
     /**
      * ntfy: binary body = attachment, message/title via headers. Header values must be ISO-8859-1-safe, so the
      * text is reduced to ASCII (the full message still goes out via MQTT/logs regardless).
      */
-    private void sendNtfyWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
+    private Optional<String> sendNtfyWithImage(final String url, final FarmEvent event, final byte[] imageJpeg,
             final List<Link> links) throws Exception {
         final String title = asciiOnly("%s: %s".formatted(event.printer(), event.message()));
         final HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
@@ -362,10 +605,12 @@ public class NotificationService {
                 .header("X-Title", title.substring(0, Math.min(title.length(), 250)))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(imageJpeg));
         ntfyActions(links).ifPresent(a -> request.header("Actions", a));
-        final HttpResponse<String> response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = sendWithRetry(request.build());
         if (response.statusCode() >= 300) {
             Log.errorf("NotificationService: ntfy webhook (with image) HTTP %d: %s", response.statusCode(), response.body());
+            return Optional.of("ntfy HTTP %d".formatted(response.statusCode()));
         }
+        return Optional.empty();
     }
 
     /**

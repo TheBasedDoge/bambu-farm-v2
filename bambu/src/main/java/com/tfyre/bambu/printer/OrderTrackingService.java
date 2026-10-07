@@ -314,6 +314,14 @@ public class OrderTrackingService {
         }
     }
 
+    /** Forgets an order's print progress outright - for an order that was cancelled, complete or not. */
+    public synchronized void dropProgress(final String market, final String orderId) {
+        if (state(market).progress.remove(orderId) != null) {
+            dirty = true;
+            save();
+        }
+    }
+
     /** Progress for all orders of a marketplace that have print jobs registered. */
     public synchronized List<ProgressView> progress(final String market) {
         return state(market).progress.entrySet().stream()

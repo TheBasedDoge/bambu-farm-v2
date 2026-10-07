@@ -57,9 +57,15 @@ import java.util.concurrent.TimeUnit;
  * standing up.
  * <p>
  * Deliberately <b>not</b> a denser version of the Automation overview. That page is for working: it has tabs,
- * expandable rows, buttons, and rewards a close read. This one has no interactions at all - nothing to click,
- * nothing to expand, no saved layout. A display is state that anyone can disturb by leaning on the desk, and the
- * failure mode of a dashboard that has been left in the wrong tab is that you stop trusting it.
+ * expandable rows, buttons, and rewards a close read. This one has exactly one interaction: click a camera to
+ * enlarge it (the others shrink into a column beside it), click it again to go back. Nothing is saved, so a
+ * reload is always the plain wall.
+ * <p>
+ * <b>Second layout, 2026-10-05.</b> The first one stacked a banner, four headline tiles, the printer row and two
+ * panels, and the cameras got what was left - 175 px each on a 2000 px screen, which is why the page went
+ * unused. Now the cameras ARE the page: one status line on top, the camera grid filling everything else, each
+ * printer's name, job and progress drawn over its own picture, and a "needs you" rail down the side (along the
+ * bottom on a portrait screen, absent when there is nothing to say).
  * <p>
  * Three things exist for the "left on for months" case specifically:
  * <ul>
@@ -94,6 +100,8 @@ public class OverviewView extends VerticalLayout {
     @Inject
     BedDiffService bedDiff;
     @Inject
+    com.tfyre.bambu.printer.BedClearService bedClear;
+    @Inject
     BedReferenceService bedReference;
     @Inject
     DispatchQueueService dispatchQueue;
@@ -123,15 +131,14 @@ public class OverviewView extends VerticalLayout {
      * the stream would tear down and renegotiate every time any printer's percentage ticked - roughly once a
      * minute, forever. Slots that never move can hold something that must not be moved.
      */
-    private final Div barSlot = new Div();
-    private final Div alertSlot = new Div();
-    private final Div kpiSlot = new Div();
+    /** The status line. Persistent, because the clock inside it is ticked by the browser and must not be rebuilt. */
+    private final Div bar = new Div();
+    private final Div statsSlot = new Div();
+    private final Div stageArea = new Div();
     private final Div printerGrid = new Div();
-    private final Div bottomSlot = new Div();
-    private String barKey = "";
-    private String alertKey = "";
-    private String kpiKey = "";
-    private String bottomKey = "";
+    private final Div railSlot = new Div();
+    private String statsKey = "";
+    private String railKey = "";
 
     /** One per printer, built once and then UPDATED - never rebuilt. Insertion-ordered to match the grid. */
     private final Map<String, Tile> tiles = new LinkedHashMap<>();
@@ -164,15 +171,23 @@ public class OverviewView extends VerticalLayout {
         addClassName("wall-view");
 
         board.addClassName("wall");
-        alertSlot.addClassName("wall-alert-slot");
-        printerGrid.addClassName("wall-printers");
-        board.add(barSlot, alertSlot, kpiSlot, printerGrid, bottomSlot);
+        bar.setClassName("wall-bar");
+        bar.removeAll();
+        statsSlot.setClassName("wall-stats-slot");
+        // Rendered empty and filled by the client, so a stalled server shows a frozen clock rather than a
+        // plausible-looking wrong time.
+        final Span clock = new Span();
+        clock.addClassName("wall-clock");
+        bar.add(buildBrand(), statsSlot, clock);
+        stageArea.setClassName("wall-stage-area");
+        printerGrid.setClassName("wall-printers");
+        railSlot.setClassName("wall-rail");
+        stageArea.add(printerGrid, railSlot);
+        board.add(bar, stageArea);
         add(board);
 
-        barKey = "";
-        alertKey = "";
-        kpiKey = "";
-        bottomKey = "";
+        statsKey = "";
+        railKey = "";
         tiles.clear();
         printerGrid.removeAll();
         seenFirstPass = false;
@@ -299,6 +314,76 @@ public class OverviewView extends VerticalLayout {
                 night();
                 setInterval(night, 60000);
 
+                // Camera grid. Every tile is a 16:9 box positioned by this script - absolutely, not by flow,
+                // for one reason: enlarging a tile must not MOVE it in the DOM. The H2D tile holds a live
+                // WebRTC iframe, and an iframe that is re-parented is an iframe the browser reloads. Moving a
+                // box by left/top/width costs nothing and animates for free.
+                // Plain wall: try every column count and keep the one that gives the largest tile that still
+                // fits the height; rows are centred, so an odd last row sits in the middle.
+                // One enlarged: that tile takes the left, as big as fits, and the rest stack in a column
+                // exactly as tall as it is.
+                const grid = root.querySelector('.wall-printers');
+                const CAM = 16 / 9;
+                const put = (t, x, y, w) => {
+                    t.style.left = Math.round(x) + 'px';
+                    t.style.top = Math.round(y) + 'px';
+                    t.style.width = Math.floor(w) + 'px';
+                };
+                const layout = () => {
+                    if (!grid) { return; }
+                    const tiles = Array.from(grid.querySelectorAll(':scope > .wall-p'));
+                    const n = tiles.length;
+                    if (!n || window.innerWidth <= 900) { return; }  // narrow screens are laid out by CSS
+                    const W = grid.clientWidth, H = grid.clientHeight;
+                    if (W <= 0 || H <= 0) { return; }
+                    const g = Math.max(8, Math.round(W * 0.008));
+                    const big = root.__wallFocus ? tiles.find(t => t.dataset.name === root.__wallFocus) : null;
+                    tiles.forEach(t => t.classList.toggle('focus', t === big));
+                    if (big && n > 1) {
+                        const m = n - 1;
+                        let bw = (m * (W - g) + (m - 1) * g * CAM) / (m + 1);
+                        if (bw / CAM > H) { bw = H * CAM; }
+                        const bh = bw / CAM;
+                        const sh = (bh - (m - 1) * g) / m, sw = sh * CAM;
+                        const x0 = (W - (bw + g + sw)) / 2, y0 = (H - bh) / 2;
+                        put(big, x0, y0, bw);
+                        tiles.filter(t => t !== big).forEach((t, i) => put(t, x0 + bw + g, y0 + i * (sh + g), sw));
+                        return;
+                    }
+                    let best = { c: 1, w: 0 };
+                    for (let c = 1; c <= n; c++) {
+                        const r = Math.ceil(n / c);
+                        const w = Math.min((W - g * (c - 1)) / c, ((H - g * (r - 1)) / r) * CAM);
+                        // On a near-tie take the wider grid: 3+2 reads better than 2+2+1 and the tiles are
+                        // the same size to within a couple of percent.
+                        if (w >= best.w * 0.98) { best = { c: c, w: w }; }
+                    }
+                    const c = best.c, w = best.w, h = w / CAM, r = Math.ceil(n / c);
+                    const y0 = (H - (r * h + (r - 1) * g)) / 2;
+                    tiles.forEach((t, i) => {
+                        const row = Math.floor(i / c);
+                        const inRow = row === r - 1 ? n - c * (r - 1) : c;
+                        const x0 = (W - (inRow * w + (inRow - 1) * g)) / 2;
+                        put(t, x0 + (i % c) * (w + g), y0 + row * (h + g), w);
+                    });
+                };
+                root.__wallLayout = layout;
+                if (grid) {
+                    new ResizeObserver(layout).observe(grid);
+                    // Click a camera to enlarge it, click it again for the plain wall. Kept in the browser:
+                    // it is a property of this screen, and a server refresh must not undo it.
+                    grid.addEventListener('click', (e) => {
+                        // The "Bed cleared" button sits on the tile; pressing it must not also enlarge it.
+                        if (e.target.closest('.wall-clear-btn')) { return; }
+                        const t = e.target.closest('.wall-p');
+                        if (!t) { return; }
+                        root.__wallFocus = root.__wallFocus === t.dataset.name ? null : t.dataset.name;
+                        layout();
+                    });
+                }
+                window.addEventListener('resize', layout);
+                layout();
+
                 // The clock is client-side on purpose. If the server stops pushing, a frozen clock is the
                 // clearest possible signal that what you are looking at is no longer true.
                 const tick = () => {
@@ -380,12 +465,20 @@ public class OverviewView extends VerticalLayout {
                 .toList();
 
         final Alert alert = worstProblem(states);
+        final List<OrderSummary> orders = openOrders();
+        final List<Item> items = attentionItems(states, orders);
 
-        barKey = fill(barSlot, barKey, () -> buildBar(states), keyOf(states.size(), onlineCount()));
-        alertKey = fillAlert(alert);
-        kpiKey = fill(kpiSlot, kpiKey, () -> buildKpis(states), kpiKey(states));
+        statsKey = fill(statsSlot, statsKey, () -> buildStats(states, orders, alert), statsKey(states, orders, alert));
         syncPrinters(states);
-        bottomKey = fill(bottomSlot, bottomKey, () -> buildBottom(states), bottomKey(states));
+        final String newRailKey = railKey(items, orders);
+        if (!railKey.equals(newRailKey)) {
+            railKey = newRailKey;
+            railSlot.removeAll();
+            railSlot.add(buildAttention(items), buildOrders(orders));
+        }
+        // With nothing to say the rail goes away and the cameras take its width. A class on the parent, not a
+        // remove/add of the grid: the camera grid must never be re-parented (live stream inside).
+        stageArea.setClassName("wall-stage-area" + (items.isEmpty() && orders.isEmpty() ? " no-rail" : ""));
 
         updateCameras();
 
@@ -405,22 +498,6 @@ public class OverviewView extends VerticalLayout {
         }
         slot.removeAll();
         slot.add(build.get());
-        return newKey;
-    }
-
-    private String fillAlert(final Alert alert) {
-        final String newKey = alert == null ? "-"
-                : alert.critical() + alert.headline() + alert.detail() + alert.aside();
-        if (alertKey.equals(newKey)) {
-            return alertKey;
-        }
-        alertSlot.removeAll();
-        // No setVisible needed: the slot is display:contents, so when it holds nothing it contributes nothing -
-        // no box, no flex gap. It exists purely so the banner coming and going never re-parents the printer row
-        // below it, which holds a live stream that must not be moved.
-        if (alert != null) {
-            alertSlot.add(buildAlert(alert));
-        }
         return newKey;
     }
 
@@ -455,7 +532,7 @@ public class OverviewView extends VerticalLayout {
     /** Everything this screen needs about one printer, read once so the layout can't ask twice and disagree. */
     private record PrinterState(String name, BambuConst.GCodeState state, Optional<String> fault, Optional<String> job,
             int percent, int remainingMinutes, Optional<PrintAiService.AiCheckResult> ai, boolean aiStale,
-            boolean bedUnprotected, int queued) {
+            boolean bedUnprotected, int queued, boolean bedCleared) {
 
         boolean printing() {
             return state.isPrinting();
@@ -474,7 +551,7 @@ public class OverviewView extends VerticalLayout {
                 printer.getSubtaskName().filter(s -> !s.isBlank()),
                 Math.max(printer.getProgressPercent(), 0), Math.max(printer.getRemainingMinutes(), 0),
                 ai, ai.isPresent() && isStale(ai.get(), printer), bedUnprotected(name),
-                queueService.size(name));
+                queueService.size(name), bedClear.isCleared(name));
     }
 
     private Optional<String> fault(final BambuPrinter printer) {
@@ -574,42 +651,12 @@ public class OverviewView extends VerticalLayout {
         return null;
     }
 
-    private Div buildAlert(final Alert alert) {
-        final Div box = new Div();
-        box.addClassName("wall-alert");
-        box.addClassName(alert.critical() ? "crit" : "warn");
-
-        final Span glyph = new Span("⚠");
-        glyph.addClassName("wall-alert-glyph");
-
-        final Div head = new Div(new Span(alert.headline()));
-        head.addClassName("wall-alert-head");
-        final Div sub = new Div(new Span(alert.detail()));
-        sub.addClassName("wall-alert-sub");
-        final Div text = new Div(head, sub);
-        text.addClassName("wall-alert-text");
-        box.add(glyph, text);
-
-        if (!alert.aside().isBlank()) {
-            final Div aside = new Div(new Span("also waiting"), new Div(new Span(alert.aside())));
-            aside.addClassName("wall-alert-aside");
-            box.add(aside);
-        }
-        return box;
-    }
-
     // -------------------------------------------------------------------------
-    // sections
+    // the status line
     // -------------------------------------------------------------------------
-    private Div buildBar(final List<PrinterState> states) {
-        final long online = onlineCount();
-        final Div bar = new Div();
-        bar.addClassName("wall-bar");
-
-        // The app mark IS the way back. It used to be a separate pill floating in the top-right corner, which
-        // put it straight on top of the clock - and a wall display has room for exactly one thing in each
-        // corner. Clicking the logo to get the menu back is the ordinary web idiom anyway, it needs no space of
-        // its own, and it cannot collide with anything because it is laid out rather than positioned.
+    private Div buildBrand() {
+        // The app mark IS the way back to the menu: clicking the logo is the ordinary web idiom, it needs no
+        // space of its own, and it cannot collide with anything because it is laid out rather than positioned.
         final Image mark = new Image("favicon.svg", "Show or hide the app menu");
         mark.addClassName("wall-mark");
         mark.getElement().setAttribute("title", "Show or hide the app menu (or press Esc)");
@@ -620,30 +667,7 @@ public class OverviewView extends VerticalLayout {
         title.addClassName("wall-title");
         final Div brand = new Div(mark, title);
         brand.addClassName("wall-brand");
-
-        final Span conn = new Span("%d of %d printers online".formatted(online, states.size()));
-        if (online < states.size()) {
-            conn.getStyle().setColor("var(--lumo-warning-text-color, #e8a33d)");
-        }
-        // Rendered empty and filled by the client, so a stalled server shows a frozen clock rather than a
-        // plausible-looking wrong time.
-        final Span clock = new Span();
-        clock.addClassName("wall-clock");
-        final Div meta = new Div(conn, clock);
-        meta.addClassName("wall-meta");
-
-        bar.add(brand, meta);
-        return bar;
-    }
-
-    /** Everything the headline row displays, so a tick that changes none of it doesn't touch the DOM. */
-    private String kpiKey(final List<PrinterState> states) {
-        final PrintHistoryService.TodayStats today = historyService.getTodayStats();
-        final List<OrderSummary> orders = openOrders();
-        return keyOf(states.stream().filter(PrinterState::printing).count(), readyCount(states), states.size(),
-                orders.size(), orders.stream().filter(OrderSummary::readyToShip).count(),
-                dispatchQueue.size(), dispatchQueue.parkedCount(),
-                today.finished(), today.failed(), (long) today.grams());
+        return brand;
     }
 
     /** Printers that could take work now: idle AND not reporting a fault. */
@@ -651,73 +675,99 @@ public class OverviewView extends VerticalLayout {
         return states.stream().filter(s -> s.fault().isEmpty() && s.state().isReady()).count();
     }
 
-    private Div buildKpis(final List<PrinterState> states) {
-        final long printing = states.stream().filter(PrinterState::printing).count();
-        // Ready means "could take work now". Total minus printing would count a paused or errored machine as
-        // available, which is the one thing this number must never do.
+    /** "P1S-2 in 1h 34m", or how many are free right now. The one line that replaced the "beds free next" list. */
+    private String[] nextFree(final List<PrinterState> states) {
         final long ready = readyCount(states);
-        final List<OrderSummary> orders = openOrders();
+        if (ready > 0) {
+            return new String[]{String.valueOf(ready), "free now", "ok"};
+        }
+        final Optional<PrinterState> soonest = states.stream()
+                .filter(PrinterState::printing)
+                .min(Comparator.comparingInt(PrinterState::remainingMinutes));
+        if (soonest.isPresent()) {
+            return new String[]{"%s in %s".formatted(soonest.get().name(), eta(soonest.get().remainingMinutes())),
+                "next free", null};
+        }
+        // Nothing printing and nothing ready: every machine is paused, faulted or offline.
+        return new String[]{"0", "ready", "warn"};
+    }
+
+    /** Everything the status line displays, so a tick that changes none of it doesn't touch the DOM. */
+    private String statsKey(final List<PrinterState> states, final List<OrderSummary> orders, final Alert alert) {
+        final PrintHistoryService.TodayStats today = historyService.getTodayStats();
+        return keyOf(states.stream().filter(PrinterState::printing).count(), states.size(), onlineCount(),
+                String.join("/", nextFree(states)[0], nextFree(states)[1]),
+                orders.size(), orders.stream().filter(OrderSummary::readyToShip).count(),
+                dispatchQueue.size(), dispatchQueue.parkedCount(), today.finished(), today.failed(),
+                alert == null ? "-" : alert.critical() + alert.headline() + alert.aside());
+    }
+
+    private Div buildStats(final List<PrinterState> states, final List<OrderSummary> orders, final Alert alert) {
+        final long printing = states.stream().filter(PrinterState::printing).count();
+        final long online = onlineCount();
         final long readyToShip = orders.stream().filter(OrderSummary::readyToShip).count();
         final int pool = dispatchQueue.size();
         final int parked = dispatchQueue.parkedCount();
         final PrintHistoryService.TodayStats today = historyService.getTodayStats();
 
         final Div row = new Div();
-        row.addClassName("wall-kpis");
-
-        // getNextFree() answers "when does the first BUSY printer finish", so it is empty when nothing is
-        // printing - the opposite of "all busy". It's only worth asking once there is genuinely nothing free.
-        final String printingSub;
-        if (ready > 0) {
-            printingSub = "%d ready".formatted(ready);
-        } else if (printing == states.size() && printing > 0) {
-            printingSub = dispatchQueue.getNextFree().map(s -> "next free " + s).orElse("all busy");
-        } else {
-            // Nothing printing and nothing ready: every machine is paused, faulted or offline. Saying "0 ready"
-            // rather than inventing a cheerier phrasing - this is a farm that has stopped.
-            printingSub = "none ready";
+        row.addClassName("wall-stats");
+        row.add(stat("%d/%d".formatted(printing, states.size()), "printing", null));
+        final String[] free = nextFree(states);
+        // "next free" reads label-first ("next free P1S-2 in 1h 34m"); the counts read number-first.
+        row.add("next free".equals(free[1]) ? statLabelFirst(free[1], free[0]) : stat(free[0], free[1], free[2]));
+        if (online < states.size()) {
+            row.add(stat("%d of %d".formatted(online, states.size()), "online", "warn"));
         }
-        row.add(kpi("Printing", "%d".formatted(printing), " / %d".formatted(states.size()),
-                printingSub, null, ready == 0 && printing < states.size() ? "warn" : null));
-        row.add(kpi("Open orders", String.valueOf(orders.size()), "",
-                readyToShip > 0 ? "%d ready to ship".formatted(readyToShip) : "%d in progress".formatted(orders.size()),
-                readyToShip > 0 ? "ok" : null, readyToShip > 0 ? "ok" : null));
-        row.add(kpi("Waiting to dispatch", String.valueOf(pool), "",
-                parked > 0 ? "%d parked".formatted(parked) : "in the pool",
-                parked > 0 ? "bad" : null, parked > 0 ? "bad" : null));
-        row.add(kpi("Today", String.valueOf(today.finished()), "",
-                today.failed() > 0
-                        ? "%d failed · %.0f g".formatted(today.failed(), today.grams())
-                        : "%.0f g filament".formatted(today.grams()),
-                null, today.failed() > 0 ? "warn" : null));
+        row.add(statSep());
+        row.add(stat(String.valueOf(orders.size()), "open orders", null));
+        row.add(stat(String.valueOf(readyToShip), "ready to ship", readyToShip > 0 ? "ok" : null));
+        row.add(stat(String.valueOf(pool), "waiting for a bed", null));
+        if (parked > 0) {
+            row.add(stat(String.valueOf(parked), "parked", "bad"));
+        }
+        row.add(statSep());
+        row.add(stat(String.valueOf(today.finished()), "done today", null));
+        if (today.failed() > 0) {
+            row.add(stat(String.valueOf(today.failed()), "failed", "bad"));
+        }
+        if (alert != null) {
+            // What used to be a full-width banner. One chip: red and breathing when something is failing right
+            // now, amber for "worth knowing". The detail is on the tile and in the rail, where there is room.
+            final String text = alert.aside().isBlank() ? alert.headline() : alert.headline() + " · " + alert.aside();
+            final Span chip = new Span(truncate(text, 70));
+            chip.addClassName("wall-chip");
+            chip.addClassName(alert.critical() ? "crit" : "warn");
+            chip.getElement().setAttribute("title", alert.headline() + " - " + alert.detail());
+            row.add(chip);
+        }
         return row;
     }
 
-    private static Div kpi(final String label, final String value, final String unit, final String sub,
-            final String valueTone, final String subTone) {
-        final Div box = new Div();
-        box.addClassName("wall-kpi");
-
-        final Div l = new Div(new Span(label));
-        l.addClassName("wall-kpi-label");
-
+    private static Div stat(final String value, final String label, final String tone) {
         final Span v = new Span(value);
-        final Span u = new Span(unit);
-        u.addClassName("wall-kpi-unit");
-        final Div val = new Div(v, u);
-        val.addClassName("wall-kpi-value");
-        if (valueTone != null) {
-            val.addClassName("tone-" + valueTone);
+        v.addClassName("wall-stat-v");
+        final Div box = new Div(v, new Span(label));
+        box.addClassName("wall-stat");
+        if (tone != null) {
+            box.addClassName("tone-" + tone);
         }
-
-        final Div s = new Div(new Span(sub));
-        s.addClassName("wall-kpi-sub");
-        if (subTone != null) {
-            s.addClassName("tone-" + subTone);
-        }
-
-        box.add(l, val, s);
         return box;
+    }
+
+    private static Div statLabelFirst(final String label, final String value) {
+        final Span v = new Span(value);
+        v.addClassName("wall-stat-v");
+        v.addClassName("small");
+        final Div box = new Div(new Span(label), v);
+        box.addClassName("wall-stat");
+        return box;
+    }
+
+    private static Div statSep() {
+        final Div d = new Div();
+        d.addClassName("wall-stat-sep");
+        return d;
     }
 
     /**
@@ -731,37 +781,64 @@ public class OverviewView extends VerticalLayout {
 
         private final Div root = new Div();
         private final Div cam = new Div();
-        private final Span dot = new Span();
+        private final Div pill = new Div();
+        private final Span pillText = new Span();
         private final Span jobText = new Span();
-        private final Div jobBox = new Div();
+        private final Span pct = new Span();
+        private final Span left = new Span();
         private final Div fill = new Div();
-        private final Span footLeft = new Span();
-        private final Span footRight = new Span();
-        private final Div foot = new Div();
+        /** Shown only while a finished or failed part is (as far as the printer knows) still on the plate. */
+        private final com.vaadin.flow.component.button.Button clearBtn
+                = new com.vaadin.flow.component.button.Button("Bed cleared");
         /** What is currently inside {@link #cam}, so it is only replaced when it genuinely has to be. */
         private String camKind = "";
 
+        /**
+         * The camera fills the tile and everything else is drawn over it: a state pill top-left, name and job
+         * bottom-left, percentage and time bottom-right, the progress bar along the bottom edge. A caption
+         * strip under the picture was costing a fifth of every tile's height.
+         */
         Tile(final String name) {
             root.addClassName("wall-p");
+            // The layout script finds the enlarged tile by this.
+            root.getElement().setAttribute("data-name", name);
             cam.addClassName("wall-cam");
 
-            dot.addClassName("wall-dot");
-            final Div nameRow = new Div(dot, new Span(name));
-            nameRow.addClassName("wall-p-name");
+            final Div scrim = new Div();
+            scrim.addClassName("wall-scrim");
 
+            final Span dot = new Span();
+            dot.addClassName("wall-pill-dot");
+            pill.addClassName("wall-pill");
+            pill.add(dot, pillText);
+
+            final Div nameBox = new Div(new Span(name));
+            nameBox.addClassName("wall-p-name");
+            final Div jobBox = new Div(jobText);
             jobBox.addClassName("wall-p-job");
-            jobBox.add(jobText);
+            final Div l = new Div(nameBox, jobBox);
+            l.addClassName("wall-p-l");
+
+            pct.addClassName("wall-p-pct");
+            left.addClassName("wall-p-left");
+            clearBtn.addClassName("wall-clear-btn");
+            clearBtn.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_PRIMARY,
+                    com.vaadin.flow.component.button.ButtonVariant.LUMO_SMALL);
+            // The overlay it sits in ignores the pointer (so a click anywhere on the picture enlarges the
+            // tile); the button has to opt back in. Inline so this needs no theme rebuild.
+            clearBtn.getStyle().set("pointer-events", "auto").set("cursor", "pointer");
+            clearBtn.setVisible(false);
+            final Div r = new Div(pct, left, clearBtn);
+            r.addClassName("wall-p-r");
+
+            final Div info = new Div(l, r);
+            info.addClassName("wall-p-info");
 
             fill.addClassName("wall-fill");
             final Div track = new Div(fill);
             track.addClassName("wall-track");
 
-            foot.addClassName("wall-p-foot");
-            foot.add(footLeft, footRight);
-
-            final Div body = new Div(nameRow, jobBox, track, foot);
-            body.addClassName("wall-p-body");
-            root.add(cam, body);
+            root.add(cam, scrim, pill, info, track);
         }
     }
 
@@ -778,52 +855,106 @@ public class OverviewView extends VerticalLayout {
             printerGrid.removeAll();
             liveCams.clear();
             camIds.clear();
-            names.forEach(n -> tiles.put(n, new Tile(n)));
+            names.forEach(n -> {
+                final Tile tile = new Tile(n);
+                tile.clearBtn.addClickListener(e -> onBedCleared(n));
+                tiles.put(n, tile);
+            });
             tiles.values().forEach(t -> printerGrid.add(t.root));
-            // One track per printer, set here rather than in CSS: the count is a property of your farm, and a
-            // fixed five-column rule would leave a hole the day a printer is added or taken offline.
-            printerGrid.getStyle().set("grid-template-columns",
-                    "repeat(%d, minmax(0, 1fr))".formatted(Math.max(1, names.size())));
+            // The column count is worked out on the client from the printer count and the screen (see
+            // installDisplayScripts) - a fixed rule would either crop the cameras or leave a hole the day a
+            // printer is added. Re-run it now that the set of tiles has changed.
+            getElement().executeJs("if (this.__wallLayout) { this.__wallLayout(); }");
         }
         states.forEach(s -> updateTile(tiles.get(s.name()), s));
     }
 
     private void updateTile(final Tile t, final PrinterState s) {
-        final boolean bad = s.failedCheck() || s.fault().isPresent();
-        final boolean warn = !bad && s.bedUnprotected();
+        final BambuConst.GCodeState state = s.state();
+        final boolean paused = state == BambuConst.GCodeState.PAUSE;
+        final boolean inJob = s.printing() || paused;
+        // A FINISH or FAILED printer whose bed someone has marked clear is just an idle printer: the state only
+        // lingers because nothing has been started on it since.
+        final boolean failedPrint = state == BambuConst.GCodeState.FAILED && !s.bedCleared();
+        final boolean bad = s.failedCheck() || s.fault().isPresent() || failedPrint;
+        final boolean done = !bad && state == BambuConst.GCodeState.FINISH && !s.bedCleared();
+        t.clearBtn.setVisible((failedPrint || done) && s.fault().isEmpty());
+        final boolean off = !bad && !inJob && !state.isReady();
 
         // setClassName replaces the whole attribute - the tone has to be cleared as well as set, or a printer
-        // that recovers keeps its red outline until the page is reloaded.
-        t.root.setClassName("wall-p" + (bad ? " bad" : warn ? " warn" : ""));
-        t.dot.setClassName("wall-dot " + (bad ? "bad" : warn ? "warn"
-                : s.printing() || s.state().isReady() ? "ok" : "off"));
+        // that recovers keeps its red outline until the page is reloaded. An outline means "walk over there":
+        // red for a fault or a failed print, green for a finished part waiting to come off the bed.
+        t.root.setClassName("wall-p" + (bad ? " bad" : done ? " done" : paused ? " warn" : off ? " off" : ""));
+
+        final String pill;
+        if (s.fault().isPresent()) {
+            pill = "Fault";
+        } else if (s.failedCheck()) {
+            pill = "Failed %s check".formatted(shortCheck(s.ai().orElseThrow().checkType()));
+        } else if (failedPrint) {
+            pill = "Print failed";
+        } else if (done) {
+            pill = "Finished · clear bed";
+        } else if (paused) {
+            pill = "Paused";
+        } else if (s.printing()) {
+            pill = state == BambuConst.GCodeState.RUNNING ? "Printing" : state.getDescription();
+        } else if (state.isReady()) {
+            pill = s.queued() > 0 ? "Idle · %d queued".formatted(s.queued())
+                    : s.bedCleared() ? "Idle · bed cleared" : "Idle";
+        } else {
+            pill = state.getDescription();
+        }
+        t.pillText.setText(pill);
 
         final String jobText;
         if (s.fault().isPresent()) {
-            jobText = truncate(s.fault().orElseThrow(), 40);
+            jobText = truncate(s.fault().orElseThrow(), 90);
         } else if (s.failedCheck()) {
-            jobText = truncate(s.ai().orElseThrow().description(), 40);
-        } else if (s.printing()) {
-            jobText = s.job().orElse("(unknown file)");
-        } else if (s.bedUnprotected()) {
-            jobText = "%s · bed unverified".formatted(s.state().getDescription().toLowerCase());
+            jobText = truncate(s.ai().orElseThrow().description(), 90);
+        } else if (inJob || failedPrint || done) {
+            jobText = s.job().orElse(inJob ? "(unknown file)" : "");
+        } else if (s.bedCleared()) {
+            jobText = s.queued() == 0 ? "queue empty" : "";
         } else {
-            jobText = s.state().getDescription().toLowerCase();
+            jobText = state.isReady() && s.queued() == 0 ? "queue empty" : "";
         }
         t.jobText.setText(jobText);
-        t.jobBox.setClassName("wall-p-job" + (bad ? " tone-bad" : warn ? " tone-warn" : ""));
+
+        t.pct.setText(inJob ? s.percent() + "%" : "");
+        final String left;
+        if (s.fault().isPresent() || s.failedCheck()) {
+            left = "needs you";
+        } else if (s.printing()) {
+            left = s.remainingMinutes() <= 0 ? "finishing"
+                    : "%s left · done %s".formatted(eta(s.remainingMinutes()), clockIn(s.remainingMinutes()));
+        } else {
+            left = "";
+        }
+        t.left.setText(left);
 
         t.fill.setClassName("wall-fill" + (bad ? " bad" : ""));
-        t.fill.getStyle().set("width", (s.printing() ? s.percent() : 0) + "%");
-
-        t.footLeft.setText(s.printing() ? s.percent() + "%"
-                : s.state().isReady() ? "ready" : s.state().getDescription().toLowerCase());
-        t.footRight.setText(bad ? "needs you"
-                : s.printing() ? eta(s.remainingMinutes())
-                : s.queued() > 0 ? "%d queued".formatted(s.queued()) : "queue empty");
-        t.foot.setClassName("wall-p-foot" + (bad ? " tone-bad" : ""));
+        t.fill.getStyle().set("width", (inJob || failedPrint ? s.percent() : done ? 100 : 0) + "%");
 
         updateCam(t, s);
+    }
+
+    /**
+     * "Bed cleared" on a tile: take the person's word for it, drop the outline, and let the next job go to this
+     * printer now rather than at the next minute tick. See {@link com.tfyre.bambu.printer.BedClearService}.
+     */
+    private void onBedCleared(final String name) {
+        if (bedClear.markCleared(name, "Overview")) {
+            dispatchQueue.passNow();
+        }
+        refresh();
+    }
+
+    /** Wall-clock time {@code minutes} from now, as "9:41 am" - when to walk over, not how long to wait. */
+    private static String clockIn(final int minutes) {
+        return java.time.LocalTime.now().plusMinutes(minutes)
+                .format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.ENGLISH))
+                .toLowerCase(java.util.Locale.ENGLISH);
     }
 
     /**
@@ -957,120 +1088,115 @@ public class OverviewView extends VerticalLayout {
         t.cam.add(badge);
     }
 
-    /** Everything the two bottom panels display, flattened. */
-    private String bottomKey(final List<PrinterState> states) {
+    // -------------------------------------------------------------------------
+    // the rail: what needs you, and the orders
+    // -------------------------------------------------------------------------
+    /** One line in "Needs you": a tone ({@code bad}/{@code warn}/{@code ok}), what to do, and why. */
+    private record Item(String tone, String title, String sub) {
+
+    }
+
+    /** Everything the rail displays, flattened. */
+    private String railKey(final List<Item> items, final List<OrderSummary> orders) {
         final StringBuilder k = new StringBuilder();
-        openOrders().forEach(o -> k.append(o.orderId()).append(o.printed()).append(o.expected())
-                .append(o.abandoned()).append(','));
-        k.append('|').append(dispatchQueue.size()).append('|');
-        attentionItems(states).forEach(it -> k.append(it[0]).append(it[1]).append(it[2]).append(','));
+        items.forEach(it -> k.append(it.tone()).append(it.title()).append(it.sub()).append(','));
         k.append('|');
+        orders.forEach(o -> k.append(o.orderId()).append(o.printed()).append('/').append(o.expected())
+                .append(o.abandoned()).append(o.title()).append(','));
+        k.append('|').append(dispatchQueue.size()).append('|');
         lowestSpool().ifPresent(sp -> k.append(sp.id()).append((long) sp.remainingGrams()));
         return k.toString();
     }
 
-    private Div buildBottom(final List<PrinterState> states) {
-        final Div row = new Div();
-        row.addClassName("wall-bottom");
-        row.add(buildPipeline(), buildAttention(states));
-        return row;
-    }
-
-    private Div buildPipeline() {
-        final List<OrderSummary> orders = openOrders();
-        final long notQueued = orders.stream().filter(o -> o.expected() == 0).count();
-        final long printingNow = orders.stream().filter(o -> o.expected() > 0 && !o.readyToShip()).count();
-        final long ready = orders.stream().filter(OrderSummary::readyToShip).count();
-        final int pool = dispatchQueue.size();
-
-        final Div panel = panel("Order pipeline");
-        final Div stages = new Div();
-        stages.addClassName("wall-stages");
-        stages.add(stage(notQueued, "not queued", false));
-        stages.add(stage(pool, "in the pool", false));
-        stages.add(stage(printingNow, "printing", false));
-        stages.add(stage(ready, "ready to ship", true));
-        panel.add(stages);
-
-        // The named lines below the counts: ready-to-ship first, because those are the ones that turn into money
-        // the moment you walk over and print a label.
-        final List<OrderSummary> lines = new ArrayList<>(orders.stream()
-                .filter(o -> o.readyToShip() || o.needsAttention())
-                .toList());
-        lines.sort(Comparator.comparing(OrderSummary::needsAttention).reversed());
-        if (lines.isEmpty()) {
-            panel.add(quiet("Nothing waiting to ship"));
-        } else {
-            panel.add(sep());
-            lines.stream().limit(4).forEach(o -> {
-                final Span l = new Span("%s · %s".formatted(marketLabel(o.market()), o.title()));
-                l.addClassName("wall-row-l");
-                final Span r = new Span(o.needsAttention()
-                        ? "%d part%s failed".formatted(o.abandoned(), o.abandoned() == 1 ? "" : "s")
-                        : "%d/%d printed".formatted(o.printed(), o.expected()));
-                r.addClassName("wall-row-r");
-                final Div line = new Div(l, r);
-                line.addClassName("wall-row");
-                line.addClassName(o.needsAttention() ? "tone-bad" : "tone-ok");
-                panel.add(line);
-            });
-        }
-        return panel;
-    }
-
     /**
-     * Everything that needs a human, worst first, as {@code [tone, text, when]}.
+     * Everything that needs a human, worst first, phrased as the thing to DO.
      * <p>
-     * Extracted so the change key and the rendered panel are computed from one list. Keeping them as two parallel
-     * expressions is how a panel ends up not repainting when the thing it shows has changed.
+     * The first version listed conditions ("P1P bed unverified", four times over). A condition makes you work
+     * out what it wants from you; "Clear P1S-3" does not. Things that are the same action on several printers
+     * are one line, so four beds without a reference cannot push a failed print off the bottom.
      */
-    private List<String[]> attentionItems(final List<PrinterState> states) {
-        final List<String[]> items = new ArrayList<>();
+    private List<Item> attentionItems(final List<PrinterState> states, final List<OrderSummary> orders) {
+        final List<Item> items = new ArrayList<>();
+        final int pool = dispatchQueue.size();
+        final String waiting = pool > 0
+                ? " %d order job%s waiting for a bed.".formatted(pool, pool == 1 ? " is" : "s are") : "";
+
         states.stream().filter(p -> p.fault().isPresent()).forEach(p ->
-                items.add(new String[]{"bad", p.name() + " — " + truncate(p.fault().orElseThrow(), 44), ""}));
-        states.stream().filter(PrinterState::failedCheck).forEach(p ->
-                items.add(new String[]{"bad", p.name() + " failed its " + shortCheck(p.ai().orElseThrow().checkType())
-                        + " check", ago(p.ai().orElseThrow().checkedAt())}));
-        states.stream().filter(PrinterState::bedUnprotected).forEach(p ->
-                items.add(new String[]{"warn", p.name() + " bed unverified", ""}));
+                items.add(new Item("bad", "Check " + p.name(), truncate(p.fault().orElseThrow(), 110))));
+        states.stream().filter(p -> p.fault().isEmpty() && p.failedCheck()).forEach(p ->
+                items.add(new Item("bad", "Check " + p.name(), "Failed its %s check %s: %s".formatted(
+                        shortCheck(p.ai().orElseThrow().checkType()), ago(p.ai().orElseThrow().checkedAt()),
+                        truncate(p.ai().orElseThrow().description(), 80)))));
+        states.stream()
+                .filter(p -> p.fault().isEmpty() && !p.failedCheck() && !p.bedCleared()
+                        && p.state() == BambuConst.GCodeState.FAILED)
+                .forEach(p -> items.add(new Item("bad", "Clear " + p.name(),
+                        "Print failed%s.%s".formatted(p.job().map(j -> " (" + truncate(j, 40) + ")").orElse(""), waiting))));
+        orders.stream().filter(OrderSummary::needsAttention).forEach(o ->
+                items.add(new Item("bad", "Re-queue %s order".formatted(marketLabel(o.market())),
+                        "%s is short %d part%s that failed.".formatted(o.title(), o.abandoned(), o.abandoned() == 1 ? "" : "s"))));
+        states.stream()
+                .filter(p -> p.fault().isEmpty() && !p.failedCheck() && !p.bedCleared()
+                        && p.state() == BambuConst.GCodeState.FINISH)
+                .forEach(p -> items.add(new Item("ok", "Clear " + p.name(),
+                        "Finished%s.%s".formatted(p.job().map(j -> " " + truncate(j, 40)).orElse(""), waiting))));
+
+        final long ship = orders.stream().filter(OrderSummary::readyToShip).count();
+        if (ship > 0) {
+            items.add(new Item("ok", "Ship %d order%s".formatted(ship, ship == 1 ? "" : "s"), "All parts printed."));
+        }
+        final List<OrderSummary> notQueued = orders.stream().filter(o -> o.expected() == 0).toList();
+        if (!notQueued.isEmpty()) {
+            items.add(new Item("warn", "Queue %d order%s".formatted(notQueued.size(), notQueued.size() == 1 ? "" : "s"),
+                    "Nothing is queued for %s%s.".formatted(notQueued.get(0).title(),
+                            notQueued.size() > 1 ? " and %d more".formatted(notQueued.size() - 1) : "")));
+        }
         dispatchQueue.getBlockedStatus()
                 .filter(b -> dispatchQueue.getBlockedKind() == DispatchQueueService.BlockKind.ATTENTION)
-                .ifPresent(b -> items.add(new String[]{"warn", "Dispatch held — " + truncate(b, 44), ""}));
+                .ifPresent(b -> items.add(new Item("warn", "Dispatch is held", truncate(b, 120))));
+        // One line per TASK, not per printer: the same nozzle clean overdue on four machines is one errand, and
+        // as four lines it pushed the orders off the bottom of the rail.
+        final Map<String, List<String>> overdue = new LinkedHashMap<>();
         states.forEach(p -> maintenance.getTaskStatus(p.name()).stream()
                 .filter(MaintenanceService.TaskStatus::overdue)
-                .forEach(t -> items.add(new String[]{"warn",
-                    "%s %s overdue".formatted(p.name(), t.task().name().toLowerCase()), ""})));
+                .forEach(ts -> overdue.computeIfAbsent(ts.task().name(), k -> new ArrayList<>()).add(p.name())));
+        overdue.forEach((task, who) -> items.add(new Item("warn", "%s overdue".formatted(task),
+                String.join(", ", who))));
+        final List<String> unverified = states.stream().filter(PrinterState::bedUnprotected)
+                .map(PrinterState::name).toList();
+        if (!unverified.isEmpty()) {
+            items.add(new Item("warn", "%d bed%s without a reference".formatted(unverified.size(),
+                    unverified.size() == 1 ? "" : "s"),
+                    "%s - auto-start is gated on the AI check alone.".formatted(String.join(", ", unverified))));
+        }
         return items;
     }
 
     /**
-     * Everything that needs a human, in one list, worst first.
-     * <p>
-     * Capped at five lines. A panel that scrolls on a wall display shows you its first five items and hides the
-     * rest forever, so it says how many it isn't showing rather than pretending five is all there is.
+     * Capped. A panel that scrolls on a wall display shows you its first lines and hides the rest forever, so
+     * it says how many it isn't showing rather than pretending that is all there is.
      */
-    private Div buildAttention(final List<PrinterState> states) {
-        final List<String[]> items = attentionItems(states);
-        final Div panel = panel("Attention");
+    private Div buildAttention(final List<Item> items) {
+        final Div panel = panel("Needs you");
         if (items.isEmpty()) {
-            final Div ok = new Div(new Span("All clear — nothing needs you"));
+            final Div ok = new Div(new Span("All clear - nothing needs you"));
             ok.addClassName("wall-clear");
             panel.add(ok);
         } else {
-            items.stream().limit(5).forEach(it -> {
+            items.stream().limit(7).forEach(it -> {
                 final Span dot = new Span();
                 dot.addClassName("wall-dot");
-                dot.addClassName(it[0]);
-                final Span text = new Span(it[1]);
-                text.addClassName("wall-att-l");
-                final Span when = new Span(it[2]);
-                when.addClassName("wall-att-when");
-                final Div line = new Div(dot, text, when);
+                dot.addClassName(it.tone());
+                final Span title = new Span(it.title());
+                title.addClassName("wall-att-l");
+                final Span sub = new Span(it.sub());
+                sub.addClassName("wall-att-sub");
+                final Div line = new Div(dot, new Div(title, sub));
                 line.addClassName("wall-att");
                 panel.add(line);
             });
-            if (items.size() > 5) {
-                panel.add(quiet("and %d more".formatted(items.size() - 5)));
+            if (items.size() > 7) {
+                panel.add(quiet("and %d more".formatted(items.size() - 7)));
             }
         }
 
@@ -1080,7 +1206,7 @@ public class OverviewView extends VerticalLayout {
             panel.add(sep());
             final Span l = new Span("Filament runway");
             l.addClassName("wall-row-l");
-            final Span r = new Span("%s — %.0f g left".formatted(sp.name(), sp.remainingGrams()));
+            final Span r = new Span("%s - %.0f g left".formatted(sp.name(), sp.remainingGrams()));
             r.addClassName("wall-row-r");
             final Div line = new Div(l, r);
             line.addClassName("wall-row");
@@ -1090,6 +1216,60 @@ public class OverviewView extends VerticalLayout {
             panel.add(line);
         });
         return panel;
+    }
+
+    private Div buildOrders(final List<OrderSummary> orders) {
+        final long notQueued = orders.stream().filter(o -> o.expected() == 0).count();
+        final long printingNow = orders.stream().filter(o -> o.expected() > 0 && !o.readyToShip()).count();
+        final long ready = orders.stream().filter(OrderSummary::readyToShip).count();
+
+        final Div panel = panel("Orders");
+        final Div stages = new Div();
+        stages.addClassName("wall-stages");
+        stages.add(stage(notQueued, "not queued", false));
+        stages.add(stage(dispatchQueue.size(), "waiting", false));
+        stages.add(stage(printingNow, "printing", false));
+        stages.add(stage(ready, "to ship", true));
+        panel.add(stages);
+
+        if (orders.isEmpty()) {
+            panel.add(quiet("No open orders"));
+            return panel;
+        }
+        // Every open order, in the order you would deal with them: short a part, ready to ship (those turn
+        // into money the moment a label is printed), in progress, then not queued.
+        final List<OrderSummary> lines = new ArrayList<>(orders);
+        lines.sort(Comparator.comparingInt(OverviewView::orderRank));
+        panel.add(sep());
+        lines.stream().limit(9).forEach(o -> {
+            // A pencil in front of an order whose buyer left a note or personalization: read it before packing.
+            final Span l = new Span("%s%s · %s".formatted(hasBuyerText(o.market(), o.orderId()) ? "✎ " : "",
+                    marketLabel(o.market()), o.title()));
+            l.addClassName("wall-row-l");
+            final Span r = new Span(o.needsAttention()
+                    ? "%d part%s failed".formatted(o.abandoned(), o.abandoned() == 1 ? "" : "s")
+                    : o.expected() == 0 ? "not queued"
+                    : "%d/%d printed".formatted(o.printed(), o.expected()));
+            r.addClassName("wall-row-r");
+            final Div line = new Div(l, r);
+            line.addClassName("wall-row");
+            if (o.needsAttention()) {
+                line.addClassName("tone-bad");
+            } else if (o.readyToShip()) {
+                line.addClassName("tone-ok");
+            } else if (o.expected() == 0) {
+                line.addClassName("tone-warn");
+            }
+            panel.add(line);
+        });
+        if (lines.size() > 9) {
+            panel.add(quiet("and %d more".formatted(lines.size() - 9)));
+        }
+        return panel;
+    }
+
+    private static int orderRank(final OrderSummary o) {
+        return o.needsAttention() ? 0 : o.readyToShip() ? 1 : o.expected() > 0 ? 2 : 3;
     }
 
     /** The spool closest to running out, ignoring ones with no threshold set (they're not being tracked). */
@@ -1128,6 +1308,19 @@ public class OverviewView extends VerticalLayout {
                             p.printed(), p.expected(), p.abandoned())));
         }
         return out;
+    }
+
+    /** True when the buyer left a checkout note or personalization on this open order. */
+    private boolean hasBuyerText(final String market, final String orderId) {
+        return "etsy".equals(market)
+                ? etsyPolling.getReceipts().stream()
+                        .filter(r -> String.valueOf(r.receiptId()).equals(orderId))
+                        .anyMatch(r -> (r.buyerNote() != null && !r.buyerNote().isBlank())
+                                || r.transactions().stream().anyMatch(t -> t.personalization().isPresent()))
+                : ebayPolling.getOrders().stream()
+                        .filter(o -> orderId.equals(o.orderId()))
+                        .anyMatch(o -> (o.buyerNote() != null && !o.buyerNote().isBlank())
+                                || o.lineItems().stream().anyMatch(li -> li.personalization().isPresent()));
     }
 
     private boolean isOpen(final String market, final String orderId) {

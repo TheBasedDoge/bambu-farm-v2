@@ -163,12 +163,29 @@ public class EbayOAuthService {
         if (!current.isExpired()) {
             return Optional.of(current.accessToken());
         }
-        return refresh(current);
+        return refresh(current, null);
     }
 
-    private synchronized Optional<String> refresh(final EbayTokenStore.Tokens current) {
+    /**
+     * For when the API has just answered 401 to {@code rejectedToken}: refresh now, without consulting the
+     * stored expiry.
+     * <p>
+     * The expiry check compares against this machine's clock. On 2026-10-04 the clock was five hours slow, so
+     * the token "had hours left", was never refreshed, and every poll failed with "access token is expired"
+     * until someone noticed. The server saying the token is dead outranks a local guess that it is not.
+     * If another thread already replaced that token, the replacement is returned and nothing is sent.
+     */
+    public Optional<String> refreshAfterRejection(final String rejectedToken) {
+        final Optional<EbayTokenStore.Tokens> oTokens = tokenStore.get();
+        if (oTokens.isEmpty() || rejectedToken == null) {
+            return Optional.empty();
+        }
+        return refresh(oTokens.get(), rejectedToken);
+    }
+
+    private synchronized Optional<String> refresh(final EbayTokenStore.Tokens current, final String rejectedToken) {
         final EbayTokenStore.Tokens latest = tokenStore.get().orElse(current);
-        if (!latest.isExpired()) {
+        if (rejectedToken == null ? !latest.isExpired() : !rejectedToken.equals(latest.accessToken())) {
             return Optional.of(latest.accessToken());
         }
         if (latest.isRefreshExpired()) {

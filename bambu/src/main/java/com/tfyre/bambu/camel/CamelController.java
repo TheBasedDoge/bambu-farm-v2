@@ -114,6 +114,27 @@ public class CamelController extends AbstractMqttController implements StartupLi
                 .autoStartup(false)
                 .group(name)
                 .process(detail.processor());
+        // Diagnostic tap on the request topic (see BambuConfig.Printer.Mqtt.captureRequests). Same group, so
+        // it starts and stops with the printer. Logs the raw JSON of anything print-related - which includes
+        // our own commands, which is the point: the two land side by side in the log for comparison.
+        if (config.mqtt().captureRequests()) {
+            Log.warnf("%s: capturing MQTT requests on %s - diagnostic, turn off when done", name, producerTopic);
+            from(getMqttEndpoint(producerTopic, config))
+                    .id("capture-%s".formatted(name))
+                    .autoStartup(false)
+                    .group(name)
+                    .process(exchange -> {
+                        final String body = exchange.getIn().getBody(String.class);
+                        if (body == null) {
+                            return;
+                        }
+                        if (body.contains("\"project_file\"") || body.contains("\"print_option\"")
+                                || body.contains("\"ams_filament_setting\"") || body.contains("\"ams_user_setting\"")
+                                || body.contains("\"ams_change_filament\"") || body.contains("\"resume\"")) {
+                            Log.infof("%s: MQTT request captured: %s", name, body);
+                        }
+                    });
+        }
     }
 
 }

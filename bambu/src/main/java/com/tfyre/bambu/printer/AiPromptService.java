@@ -122,6 +122,43 @@ public class AiPromptService {
      * TWO images - image 1 the empty reference, image 2 the current bed - and asked to compare, which is far more
      * reliable than judging one image alone. Must still answer YES/NO first (YES = current bed is clear).
      */
+    private static final String EXTRUSION_KEY = "extrusion-compare";
+
+    /**
+     * Two frames of the same print, many layers apart: has the part grown? Tokens {from}, {to}, {total} and
+     * {delta} are replaced with layer numbers. Answers in the failure check's shape (a {@code Problems:} field)
+     * on purpose, so {@code OllamaService.parseVerdict} reads it with the same rules: positive = a problem.
+     */
+    private static final String DEFAULT_EXTRUSION =
+            "You are given TWO photos of the SAME 3D printer from the same fixed camera, taken during ONE print job.\n"
+            + "IMAGE 1 is EARLIER, at layer {from}.\n"
+            + "IMAGE 2 is NOW, at layer {to} of {total}.\n\n"
+            + "The printer has run {delta} more layers between them, so in a healthy print the plastic object is "
+            + "CLEARLY TALLER in IMAGE 2 than in IMAGE 1.\n\n"
+            + "Compare the HEIGHT of the printed object above the flat build plate in the two images. IGNORE where "
+            + "the print head is, the build plate sitting higher or lower in the frame, lighting, glare and "
+            + "reflections - none of those tell you anything.\n\n"
+            + "If the object has the same height and the same top surface in both images - nothing new has been "
+            + "added on top - then no plastic is coming out: the nozzle is clogged or the filament has run out, and "
+            + "the machine is moving in the air. A clear empty gap between the nozzle and the top of the object "
+            + "means the same thing.\n\n"
+            + "If the object is taller in IMAGE 2, or you cannot see the object clearly in both images, or you are "
+            + "not sure, there is NO problem to report.\n\n"
+            + "The VERY FIRST word of your reply MUST be YES or NO: YES if extrusion has stopped (the object has "
+            + "NOT grown), NO if the object has grown or you are unsure. Then add, each on its own line:\n"
+            + "Problems: <\"no growth\" if the object has not grown, otherwise \"none\">\n"
+            + "Confidence: <0-100>\n"
+            + "Reason: <one short sentence comparing the object's height in IMAGE 1 and IMAGE 2>";
+
+    /** The growth-comparison prompt with the layer numbers filled in. Override key: {@code extrusion-compare}. */
+    public String getExtrusionPrompt(final int fromLayer, final int toLayer, final int totalLayers) {
+        return overrides.getOrDefault(EXTRUSION_KEY, DEFAULT_EXTRUSION)
+                .replace("{from}", String.valueOf(fromLayer))
+                .replace("{to}", String.valueOf(toLayer))
+                .replace("{total}", totalLayers > 0 ? String.valueOf(totalLayers) : "?")
+                .replace("{delta}", String.valueOf(toLayer - fromLayer));
+    }
+
     private static final String DEFAULT_BED_REFERENCE =
             "You are given TWO images of the SAME 3D printer bed from the same fixed camera.\n"
             + "IMAGE 1 is the REFERENCE: this exact bed when it is EMPTY and clear.\n"

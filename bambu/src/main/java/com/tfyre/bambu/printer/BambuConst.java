@@ -430,6 +430,27 @@ public class BambuConst {
             return dualNozzle;
         }
 
+        /** The family key for the H2D's gcode variant in a mapping part - see {@link #gcodeFamily()}. */
+        public static final String FAMILY_P1 = "p1";
+        public static final String FAMILY_H2D = "h2d";
+        public static final String FAMILY_A1 = "a1";
+
+        /**
+         * Which printers can run the same sliced file. A {@code .gcode.3mf} is sliced for one machine profile:
+         * a P1-profile file runs on any P1/X1 (same bed, same kinematics, same nozzle), but not on an H2D (larger
+         * bed, dual nozzle, different purge/calibration moves) or an A1. A mapping's default file is assumed to
+         * be the P1 family's - that is what this farm's library is - and other families need their own file,
+         * or that printer is simply not eligible for the part. Unknown models are treated as P1 rather than
+         * excluded, so a printer with no model in its config keeps working exactly as it did before this existed.
+         */
+        public String gcodeFamily() {
+            return switch (this) {
+                case H2D -> FAMILY_H2D;
+                case A1, A1MINI -> FAMILY_A1;
+                default -> FAMILY_P1;
+            };
+        }
+
         /**
          * True for printers that can actively HEAT the chamber, as opposed to merely reporting its temperature.
          * <p>

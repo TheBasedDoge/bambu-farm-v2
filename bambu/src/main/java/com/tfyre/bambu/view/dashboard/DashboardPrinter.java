@@ -785,38 +785,12 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     }
 
     private void doStartNext() {
-        queueService.peek(printer.getName()).ifPresentOrElse(entry -> {
-            if (aiService.isEnabled()) {
-                showNotification("%s: checking bed…".formatted(printer.getName()));
-                final Optional<UI> ui = printerName.getUI();
-                aiService.checkBedClear(printer.getName(), "start-next").thenAccept(result ->
-                        ui.ifPresent(u -> u.access(() -> {
-                            if (result.isEmpty()) {
-                                // no snapshot yet or Ollama error - fall through to manual check
-                                confirmAndStartNext(entry, "");
-                                return;
-                            }
-                            final OllamaService.AiResult aiResult = result.get();
-                            if (aiResult.positive()) {
-                                // bed clear - confirm with AI note
-                                confirmAndStartNext(entry,
-                                        "\n\n✓ AI: bed appears clear — " + truncateAi(aiResult.description()));
-                            } else {
-                                // bed not clear - block with override option
-                                YesNoCancelDialog.show(
-                                        "%s — AI detected: bed may not be clear\n\n%s\n\nOverride and start anyway?"
-                                                .formatted(printer.getName(), truncateAi(aiResult.description())),
-                                        ync -> {
-                                            if (ync.isConfirmed()) {
-                                                performStartNext(entry);
-                                            }
-                                        });
-                            }
-                        })));
-            } else {
-                confirmAndStartNext(entry, "");
-            }
-        }, () -> showError("%s: queue is empty".formatted(printer.getName())));
+        // No AI bed check here, deliberately (2026-10-04). This button is a person saying "I have looked, start
+        // it" - running the model first cost 20-40 s and then asked the same question anyway. The one confirm
+        // below stays as the guard against a stray click. The AI gate still applies to everything automatic
+        // (auto-start, dispatch), which is where nobody is looking.
+        queueService.peek(printer.getName()).ifPresentOrElse(entry -> confirmAndStartNext(entry, ""),
+                () -> showError("%s: queue is empty".formatted(printer.getName())));
     }
 
     private void confirmAndStartNext(final PrintQueueService.QueueEntry entry, final String aiNote) {

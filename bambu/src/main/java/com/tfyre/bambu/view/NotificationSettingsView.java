@@ -2,6 +2,7 @@ package com.tfyre.bambu.view;
 
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.printer.DigestService;
 import com.tfyre.bambu.printer.NotificationService;
 import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.UI;
@@ -16,6 +17,7 @@ import com.vaadin.flow.component.icon.Icon;
 import com.vaadin.flow.component.icon.VaadinIcon;
 import com.vaadin.flow.component.orderedlayout.HorizontalLayout;
 import com.vaadin.flow.component.orderedlayout.VerticalLayout;
+import com.vaadin.flow.component.timepicker.TimePicker;
 import com.vaadin.flow.dom.Style;
 import com.vaadin.flow.router.PageTitle;
 import com.vaadin.flow.router.Route;
@@ -53,9 +55,13 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("dispatch_blocked", "Order Dispatch Held",
                     "Order jobs are waiting in the dispatch pool and nothing could start: every printer busy (sent once "
                     + "per occurrence), no printer with the required filament, none opted in, AI checks off, Ollama "
-                    + "unreachable, the Auto-Start master switch off, a dirty bed, or a job parked after repeated failures"),
+                    + "unreachable, the Auto-Start master switch off, a dirty bed, or a job parked after repeated failures. "
+                    + "Sent when it starts, then at most every 3 hours while it lasts"),
             new EventDef("auto_requeue", "Auto-Requeue",
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
+            new EventDef("ams_retry", "AMS Auto-Retry",
+                    "A paused AMS feed error (assist motor overloaded / failed to feed out of the AMS or into the toolhead) was retried automatically, "
+                    + "or the retries ran out and the printer needs a human"),
             new EventDef("order_printed", "Order Fully Printed",
                     "Every print job for a marketplace order has finished - ready to ship"),
             new EventDef("simulate_mode", "Simulate Mode",
@@ -69,7 +75,15 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("spool_low", "Spool Low",
                     "A tracked filament spool dropped to/below its low-grams warning threshold"),
             new EventDef("digest", "Daily Digest",
-                    "Scheduled farm summary (set bambu.digest-cron to enable)"),
+                    "Scheduled farm summary - beds waiting to be cleared, jobs waiting for them, last 24h tallies. "
+                    + "This only allows it through; the time it goes out is set in the Daily digest section below"),
+            new EventDef("order_cancelled", "Order Cancelled",
+                    "A buyer or the marketplace cancelled an order before it shipped - queued jobs were removed, "
+                    + "and anything already printing or printed went into on-hand stock"),
+            new EventDef("backup_failed", "Backup Failed",
+                    "The nightly backup of the app's data files could not be written"),
+            new EventDef("usps_pickup", "USPS Pickup",
+                    "A USPS carrier pickup was booked, changed or cancelled from the USPS Pickup page"),
             new EventDef("tasmota_off", "Plug Auto-Off",
                     "A printer's smart plug was switched off after sitting idle with an empty queue"),
             new EventDef("failure_detected", "AI Failure Detected",
@@ -92,6 +106,8 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     BambuConfig config;
     @Inject
     NotificationService notificationService;
+    @Inject
+    DigestService digestService;
 
     @Override
     protected void onAttach(final AttachEvent attachEvent) {
@@ -103,6 +119,7 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
         add(new H3("Notification Settings"));
         add(buildConfigSection());
         add(buildEventsSection());
+        add(buildDigestSection());
         add(buildTestSection());
     }
 
@@ -187,6 +204,44 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
         }
 
         section.add(list);
+        return section;
+    }
+
+    // -------------------------------------------------------------------------
+    // Daily digest schedule
+    // -------------------------------------------------------------------------
+
+    private Div buildDigestSection() {
+        final Div section = new Div();
+        section.addClassName("ai-settings-section");
+        section.add(new H4("Daily digest"));
+        section.add(new Span("One message a day: which beds have a finished part waiting, what is waiting for "
+                + "them, and the last 24 hours. Pick the time you usually go and clear beds. Clear the field to "
+                + "turn it off."));
+
+        final TimePicker time = new TimePicker();
+        time.setLabel("Send at");
+        time.setStep(java.time.Duration.ofMinutes(15));
+        time.setValue(digestService.getTime().orElse(null));
+        time.setClearButtonVisible(true);
+        time.addValueChangeListener(e -> {
+            digestService.setTime(e.getValue());
+            showNotification(e.getValue() == null ? "Daily digest off" : "Daily digest at " + e.getValue());
+        });
+
+        final Span result = new Span();
+        result.getStyle().setMarginLeft("var(--lumo-space-m)").setFontSize("var(--lumo-font-size-s)");
+        final Button now = new Button("Send now", new Icon(VaadinIcon.PAPERPLANE));
+        now.setTooltipText("Send today's digest right now, to see what it looks like");
+        now.addClickListener(e -> {
+            final String text = digestService.sendNow();
+            result.setText(notificationService.isEventSuppressed("digest") ? "Digest is suppressed in the filters above - nothing sent. Text: " + text : text);
+        });
+
+        final HorizontalLayout row = new HorizontalLayout(time, now);
+        row.setAlignItems(com.vaadin.flow.component.orderedlayout.FlexComponent.Alignment.END);
+        row.getStyle().setMarginTop("var(--lumo-space-s)");
+        section.add(row, result);
         return section;
     }
 

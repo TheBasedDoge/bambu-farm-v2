@@ -177,6 +177,7 @@ public class MappingPartsPanel extends Div {
         final ComboBox<GcodeSource> sourceSelect = new ComboBox<>("Source");
         final ComboBox<String> gcodeSelect = new ComboBox<>("Gcode file");
         final ComboBox<Integer> plateSelect = new ComboBox<>("Plate");
+        final ComboBox<String> h2dSelect = new ComboBox<>("H2D file");
         final TextField sdPathField = new TextField("SD card path");
         final IntegerField sdPlateField = new IntegerField("Plate");
         final IntegerField copiesField = new IntegerField("Copies/unit");
@@ -209,6 +210,15 @@ public class MappingPartsPanel extends Div {
                 plateSelect.setItems(plates);
                 plateSelect.setValue(plates.isEmpty() ? null : plates.get(0));
             });
+
+            h2dSelect.setItems(libraryFilesSupplier.get());
+            h2dSelect.setWidth("220px");
+            h2dSelect.getStyle().set("--vaadin-combo-box-overlay-width", "460px");
+            h2dSelect.setClearButtonVisible(true);
+            h2dSelect.setPlaceholder("None - H2D skipped");
+            h2dSelect.setTooltipText("The same part sliced for the H2D. The main file is the P1/X1 slice and must "
+                    + "never go to the H2D; with this blank the H2D is simply not eligible for this part. "
+                    + "Same plate number as the main file.");
 
             sdPathField.setWidth("220px");
             sdPathField.setPlaceholder("e.g. gcode/adapter.gcode.3mf");
@@ -273,6 +283,7 @@ public class MappingPartsPanel extends Div {
                     sdPathField.setValue(initial.path());
                     sdPlateField.setValue(initial.plateId());
                 }
+                h2dSelect.setValue(initial.h2dPath().orElse(null));
                 copiesField.setValue(initial.copiesPerUnit());
                 amsSlotSelect.setValue(initial.amsSlot());
                 filamentSelect.setValue(initial.filamentType());
@@ -280,7 +291,7 @@ public class MappingPartsPanel extends Div {
             }
             applyVisibility();
 
-            container.add(sourceSelect, gcodeSelect, plateSelect, sdPathField, sdPlateField, copiesField,
+            container.add(sourceSelect, gcodeSelect, plateSelect, h2dSelect, sdPathField, sdPlateField, copiesField,
                     amsSlotSelect, filamentSelect, colorSelect, removeBtn);
         }
 
@@ -288,6 +299,7 @@ public class MappingPartsPanel extends Div {
             final boolean isLibrary = sourceSelect.getValue() == GcodeSource.LIBRARY;
             gcodeSelect.setVisible(isLibrary);
             plateSelect.setVisible(isLibrary);
+            h2dSelect.setVisible(isLibrary);
             sdPathField.setVisible(!isLibrary);
             sdPlateField.setVisible(!isLibrary);
         }
@@ -303,7 +315,8 @@ public class MappingPartsPanel extends Div {
                     return null;
                 }
                 return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies,
-                        amsSlot, filamentType, filamentColor);
+                        amsSlot, filamentType, filamentColor)
+                        .withVariant(com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D, h2dSelect.getValue());
             }
             if (sdPathField.getValue() == null || sdPathField.getValue().isBlank()) {
                 return null;

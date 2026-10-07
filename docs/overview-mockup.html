@@ -9,7 +9,8 @@
 
   Open it fullscreen (F11) on the actual monitor before I build the real thing - the whole point of this
   page is that it's readable from across the room, and that is not a judgement you can make in a browser
-  window on a laptop. Everything here scales off viewport width, so it will size itself to your screen.
+  window on a laptop. Everything here scales off the viewport, so it will size itself to your screen -
+  try it on the TV, an ultrawide and a portrait monitor: the tiles re-flow so every camera stays whole.
 
   Demo-only controls (bottom right, fade out after a few seconds - move the mouse to bring them back):
     * State      - switch between all clear / warning / critical, to see how loud the screen gets
@@ -38,7 +39,7 @@
 
     /* One knob for the whole page. Everything below is a multiple of it, so making the dashboard readable
        from further away is a single number, not forty. */
-    --u: 1vw;
+    --u: min(1vw, 1.78vh); /* width-derived on 16:9, capped by height on an ultrawide, by width on a portrait panel */
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -111,8 +112,12 @@
   .value.ok { color: var(--ok); } .value.warn { color: var(--warn); } .value.bad { color: var(--bad); }
 
   /* --- printer tiles --- */
-  .printers { display: grid; grid-template-columns: repeat(5, 1fr); gap: calc(var(--u) * 0.75); flex: 1; min-height: 0; }
+  /* Column count is chosen by the script below (same algorithm as the real page): the biggest tiles whose
+     16:9 cameras still fit the space. Rows are content-sized and centred, never stretched. */
+  .printers { display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: calc(var(--u) * 0.75); flex: 1; min-height: 0; }
   .p {
+    width: calc(var(--u) * 18); /* fallback; the script sets the real width */
+    flex: none;
     background: var(--surface);
     border-radius: calc(var(--u) * 0.8);
     overflow: hidden;
@@ -128,7 +133,8 @@
   /* Camera thumbnail. In the real page this is a snapshot refreshed every ~25s, not a live stream: five
      WebRTC feeds running forever would sit on the CPU permanently, and the H2D needs an ffmpeg process per
      frame. A still is enough to answer "is there a part on that plate". */
-  .cam { flex: 1; min-height: 0; background: #0d1116; position: relative; }
+  /* The box IS the camera's shape - a 16:9 frame shown whole, never cropped to fill a tall tile. */
+  .cam { flex: none; width: 100%; aspect-ratio: 16 / 9; background: #0d1116; position: relative; overflow: hidden; }
   .cam .plate {
     position: absolute; left: 12%; right: 12%; bottom: 14%; height: 34%;
     background: #2b3542; border-radius: 6% / 22%;
@@ -367,6 +373,39 @@
   };
   tick();
   setInterval(tick, 10000);
+
+  /* ---- printer grid --------------------------------------------------- */
+  /* Mirrors OverviewView.installDisplayScripts: for every possible column count, the tile width that gives,
+     the height that implies (camera + caption), shrunk to the grid's height when the rows wouldn't fit;
+     the largest tile wins. */
+  const grid = document.querySelector('.printers');
+  const CAM = 16 / 9;
+  const layout = () => {
+    if (!grid) { return; }
+    const tiles = grid.querySelectorAll(':scope > .p');
+    if (window.innerWidth <= 900) { tiles.forEach(t => { t.style.width = ''; }); return; }
+    const n = tiles.length;
+    if (!n) { return; }
+    const W = grid.clientWidth, H = grid.clientHeight;
+    const g = parseFloat(getComputedStyle(grid).columnGap) || 0;
+    const body = tiles[0].querySelector('.p-body');
+    const b = body ? body.offsetHeight : 0;
+    let best = null;
+    for (let c = 1; c <= n; c++) {
+      const r = Math.ceil(n / c);
+      let w = (W - g * (c - 1)) / c;
+      let h = w / CAM + b;
+      if (r * h + g * (r - 1) > H) {
+        h = (H - g * (r - 1)) / r;
+        w = Math.max(0, (h - b) * CAM);
+      }
+      if (!best || w > best.w + 0.5) { best = { c: c, w: w }; }
+    }
+    const px = Math.floor(best.w) + 'px';
+    tiles.forEach(t => { t.style.width = px; });
+  };
+  if (grid) { new ResizeObserver(layout).observe(grid); }
+  layout();
 
   /* ---- burn-in protection ----------------------------------------------- */
   /* Walks the page around a small box on a slow cycle. Real cadence is one step a minute with a 4s ease,
