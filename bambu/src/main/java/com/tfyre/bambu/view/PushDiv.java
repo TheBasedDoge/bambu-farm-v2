@@ -32,6 +32,16 @@ public abstract class PushDiv extends Div implements FlexComponent {
         cancelFuture();
     }
 
+    /**
+     * The page's live refresh - see {@link RefreshTicker}: never piles up behind a slow tick, and logs a slow one
+     * with the page's name. Replaces any refresh the page already had.
+     */
+    public ScheduledFuture<?> createRefresh(final com.vaadin.flow.component.UI ui, final Duration interval, final Runnable tick) {
+        cancelFuture();
+        future = Optional.of(RefreshTicker.start(ses, ui, RefreshTicker.pageName(this), interval, tick));
+        return future.get();
+    }
+
     public ScheduledFuture<?> createFuture(final Runnable runnable, final Duration interval) {
         cancelFuture();
         future = Optional.of(ses.scheduleAtFixedRate(runnable, 0, interval.getSeconds(), TimeUnit.SECONDS));

@@ -87,21 +87,35 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     @Inject
     com.tfyre.bambu.printer.AutoQueueService autoQueueService;
 
-    /** One row in the Etsy listings table. */
+    /** One Etsy listing - what the variations dialog works from. */
     public record EtsyRow(long listingId, String title, int quantity, String mappedState, boolean hidden, String imageUrl,
             boolean hasVariations) {
     }
 
-    /** One row in the eBay listing-keys table. */
+    /** One eBay listing key - what the variations dialog works from. */
     public record EbayRow(String listingKey, String title, String mappedState, boolean hidden, String imageUrl,
             String itemId, List<EbayApiClient.EbayVariation> variations) {
     }
 
-    /** Whether hidden (never-printed) listings are shown in the tables. */
-    private boolean showHidden;
+    /**
+     * One row of the page: a listing on one marketplace.
+     *
+     * @param active false for a listing that only exists as a saved mapping (or an open order) - not among the
+     *               fetched active listings
+     */
+    public record ListingRow(String market, String key, String title, String imageUrl, String state, boolean hidden,
+            boolean active, EtsyRow etsy, EbayRow ebay) {
 
-    /** One row in the all-saved-mappings table. */
-    public record SavedRow(String market, String storageKey, String listing, String variations, String summary) {
+        /** needs / variations / mapped / hidden - which filter chip the row counts under. */
+        String category() {
+            if (hidden) {
+                return "hidden";
+            }
+            if ("—".equals(state)) {
+                return "needs";
+            }
+            return state.endsWith(" only") ? "variations" : "mapped";
+        }
     }
 
     @Inject
@@ -109,243 +123,340 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     @Inject
     com.tfyre.bambu.printer.StockService stockService;
 
-    private final Grid<EtsyRow> etsyGrid = new Grid<>();
-    private final Grid<EbayRow> ebayGrid = new Grid<>();
-    private final Grid<SavedRow> savedGrid = new Grid<>();
-    private final Span etsyStatus = new Span();
-    private final Span ebayStatus = new Span();
+    /** Filter chip in use: all / needs / variations / mapped / hidden. */
+    private String filter = "all";
+    private final Map<String, Button> chips = new LinkedHashMap<>();
+    private final com.vaadin.flow.component.textfield.TextField search = new com.vaadin.flow.component.textfield.TextField();
+    private final Div list = new Div();
+    private final Span fetchedStatus = new Span();
+
+    private static final String SORT_ATTENTION = "Needs attention first";
+    private static final String SORT_NAME = "Name";
+    private static final String SORT_MARKET = "Marketplace, then name";
+    private static final String SORT_FILE = "Part file (groups the same product)";
+    private static final String MARKET_ALL = "Etsy + eBay";
+    /** Session attributes, so the choice survives leaving the page and coming back. */
+    private static final String SORT_ATTR = "mappings.sort";
+    private static final String MARKET_ATTR = "mappings.market";
+
+    private final com.vaadin.flow.component.select.Select<String> sortBy = new com.vaadin.flow.component.select.Select<>();
+    private final com.vaadin.flow.component.select.Select<String> marketPick = new com.vaadin.flow.component.select.Select<>();
 
     @Override
     protected void onAttach(final AttachEvent attachEvent) {
         super.onAttach(attachEvent);
         removeAll();
-        addClassName("ai-settings-view");
-        addClassName("ai-settings-wide");
+        chips.clear();
+        addClassName("mappings-view");
         setPadding(true);
         setSpacing(true);
 
-        add(new H3("Listing → GCODE Mappings"));
-        add(new Span("Map listings to print jobs so auto-queue can handle their orders. Saved here applies to "
-                + "every variation; per-variation mappings come from the order pages. Hide listings you never "
-                + "print - they're skipped instead of raising a 'not mapped' alert."));
+        final Button refresh = new Button("Refresh listings", new Icon(VaadinIcon.REFRESH));
+        refresh.addThemeVariants(ButtonVariant.LUMO_SMALL);
+        refresh.setEnabled(etsyOauth.isConnected() || ebayOauth.isConnected());
+        refresh.addClickListener(e -> refreshListings(refresh));
+        fetchedStatus.addClassName("mp-dim");
+        final Div title = new Div(new H3("Mappings"), fetchedStatus, refresh);
+        title.addClassName("mp-title");
+        final Span intro = new Span("Which print jobs each listing makes, so auto-queue can handle its orders. "
+                + "Hide listings you never print - they're skipped instead of raising a 'not mapped' alert. "
+                + "Which parts have an H2D file is on the Files page.");
+        intro.addClassName("mp-dim");
 
-        final com.vaadin.flow.component.checkbox.Checkbox showHiddenToggle
-                = new com.vaadin.flow.component.checkbox.Checkbox("Show hidden listings");
-        showHiddenToggle.setValue(showHidden);
-        showHiddenToggle.addValueChangeListener(e -> {
-            showHidden = Boolean.TRUE.equals(e.getValue());
-            renderAll();
+        final Div filters = new Div();
+        filters.addClassName("mp-filters");
+        for (final String[] c : new String[][]{{"all", "All"}, {"needs", "Needs a mapping"},
+            {"variations", "Variations only"}, {"mapped", "Mapped"}, {"hidden", "Hidden"}}) {
+            final Button chip = new Button(c[1], e -> {
+                filter = c[0];
+                render();
+            });
+            chip.addClassName("mp-filter");
+            chip.getElement().setAttribute("data-f", c[0]);
+            chips.put(c[0], chip);
+            filters.add(chip);
+        }
+        search.setPlaceholder("Search listings or files");
+        search.setClearButtonVisible(true);
+        search.setPrefixComponent(new Icon(VaadinIcon.SEARCH));
+        search.setValueChangeMode(com.vaadin.flow.data.value.ValueChangeMode.LAZY);
+        search.addValueChangeListener(e -> render());
+        search.addClassName("mp-search");
+        final com.vaadin.flow.server.VaadinSession session = com.vaadin.flow.server.VaadinSession.getCurrent();
+        marketPick.setItems(MARKET_ALL, "Etsy", "eBay");
+        marketPick.setValue(Optional.ofNullable((String) session.getAttribute(MARKET_ATTR)).orElse(MARKET_ALL));
+        marketPick.setAriaLabel("Marketplace");
+        marketPick.addClassName("mp-select");
+        marketPick.addValueChangeListener(e -> {
+            session.setAttribute(MARKET_ATTR, e.getValue());
+            render();
         });
-        add(showHiddenToggle);
+        sortBy.setItems(SORT_ATTENTION, SORT_NAME, SORT_MARKET, SORT_FILE);
+        sortBy.setValue(Optional.ofNullable((String) session.getAttribute(SORT_ATTR)).orElse(SORT_ATTENTION));
+        sortBy.setPrefixComponent(new Icon(VaadinIcon.SORT));
+        sortBy.setAriaLabel("Sort");
+        sortBy.addClassName("mp-select");
+        sortBy.addValueChangeListener(e -> {
+            session.setAttribute(SORT_ATTR, e.getValue());
+            render();
+        });
+        filters.add(search, marketPick, sortBy);
 
-        add(buildEtsySection());
-        add(buildEbaySection());
-        add(buildSavedSection());
-        renderAll();
+        list.addClassName("mp-list");
+        add(title, intro, filters, list);
+        if (!etsyOauth.isConnected() || !ebayOauth.isConnected()) {
+            final Span connect = new Span("%s is not connected - connect it on its Sales Orders page to refresh its listings."
+                    .formatted(!etsyOauth.isConnected() && !ebayOauth.isConnected() ? "Etsy and eBay"
+                    : !etsyOauth.isConnected() ? "Etsy" : "eBay"));
+            connect.addClassName("mp-dim");
+            addComponentAtIndex(2, connect);
+        }
+        render();
     }
 
     private void renderAll() {
-        renderEtsy();
-        renderEbay();
-        renderSaved();
+        render();
+    }
+
+    // -------------------------------------------------------------------------
+    // P1 / H2D coverage - every mapped part once, with what each kind of printer has for it
+    // -------------------------------------------------------------------------
+    @Inject
+    com.tfyre.bambu.printer.LibraryFileInfo fileInfo;
+
+    /**
+     * One mapped part.
+     *
+     * @param candidate a library file named like the P1 file plus {@code _H2D} that is not attached yet, or null
+     */
+    public record CoverageRow(String partKey, String file, String material, String p1, String h2dFile, int h2dMakes,
+            int usedBy, String candidate) {
+    }
+
+    private final Grid<CoverageRow> coverageGrid = new Grid<>();
+    private final Span coverageSummary = new Span();
+    private final com.vaadin.flow.component.checkbox.Checkbox coverageMissingOnly
+            = new com.vaadin.flow.component.checkbox.Checkbox("Only parts with no H2D file");
+
+    private Div buildCoverageSection() {
+        final Div sec = new Div();
+        sec.addClassName("ai-settings-section");
+        sec.add(new H4("P1 and H2D files"));
+        final Span help = new Span("Every mapped part once. The first file is the P1 slice; a part with no H2D file is "
+                + "never sent to the H2D. Name an H2D slice like the P1 file plus _H2D (Part_H2D.gcode.3mf), put it in "
+                + "the library, and it is offered here to attach to every mapping that uses the part. Then set how "
+                + "many pieces one H2D print makes in the mapping's editor.");
+        help.getStyle().setColor("var(--lumo-secondary-text-color)").set("font-size", "var(--lumo-font-size-s)");
+        sec.add(new Div(help));
+        coverageSummary.getStyle().set("font-weight", "600");
+        coverageMissingOnly.addValueChangeListener(e -> renderCoverage());
+        final com.vaadin.flow.component.orderedlayout.HorizontalLayout bar
+                = new com.vaadin.flow.component.orderedlayout.HorizontalLayout(coverageSummary, coverageMissingOnly);
+        bar.setAlignItems(com.vaadin.flow.component.orderedlayout.FlexComponent.Alignment.CENTER);
+        bar.getStyle().set("flex-wrap", "wrap");
+        sec.add(bar);
+
+        if (coverageGrid.getColumns().isEmpty()) {
+            coverageGrid.addColumn(r -> r.file() + (r.material().isBlank() ? "" : "  ·  " + r.material()))
+                    .setHeader("Part").setFlexGrow(3).setSortable(true);
+            coverageGrid.addColumn(CoverageRow::p1).setHeader("P1").setAutoWidth(true);
+            coverageGrid.addComponentColumn(r -> {
+                if (r.h2dFile() != null) {
+                    return new Span("%s · makes %d".formatted(r.h2dFile(), r.h2dMakes()));
+                }
+                if (r.candidate() == null) {
+                    final Span none = new Span("none");
+                    none.getStyle().setColor("var(--lumo-secondary-text-color)");
+                    return none;
+                }
+                final Button attach = new Button("Attach " + r.candidate(), e -> attachH2d(r));
+                attach.addThemeVariants(ButtonVariant.LUMO_SMALL);
+                attach.setTooltipText("Use this file as the H2D slice in every mapping that prints " + r.file());
+                return attach;
+            }).setHeader("H2D").setFlexGrow(3);
+            coverageGrid.addColumn(r -> r.usedBy() + (r.usedBy() == 1 ? " mapping" : " mappings")).setHeader("Used by").setAutoWidth(true);
+            coverageGrid.setWidth("100%");
+            coverageGrid.setAllRowsVisible(true);
+            coverageGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
+        }
+        final com.vaadin.flow.component.details.Details details
+                = new com.vaadin.flow.component.details.Details("Show every part", coverageGrid);
+        details.setWidthFull();
+        sec.add(details);
+        return sec;
+    }
+
+    private List<MappingPart> allMappedParts() {
+        final List<MappingPart> all = new ArrayList<>();
+        etsyMapping.entries().values().forEach(e -> all.addAll(e.parts()));
+        ebayMapping.entries().values().forEach(e -> all.addAll(e.parts()));
+        return all;
+    }
+
+    private void renderCoverage() {
+        final List<String> library = queuer.listLibraryFiles();
+        final Map<String, CoverageRow> rows = new LinkedHashMap<>();
+        for (final MappingPart p : allMappedParts()) {
+            if (p.source() != com.tfyre.bambu.printer.GcodeSource.LIBRARY) {
+                continue;
+            }
+            final String key = com.tfyre.bambu.printer.StockService.partKey(p);
+            final CoverageRow before = rows.get(key);
+            // A part can be mapped several times; if any of them has the H2D file, show that one.
+            final String h2d = p.h2dPath().orElse(before == null ? null : before.h2dFile());
+            final int makes = p.h2dPath().isPresent() ? p.h2dYield() : before == null ? 1 : before.h2dMakes();
+            String candidate = null;
+            if (h2d == null) {
+                final String wanted = com.tfyre.bambu.printer.LibraryFileInfo.stem(p.path()) + "_h2d";
+                candidate = library.stream()
+                        .filter(f -> com.tfyre.bambu.printer.LibraryFileInfo.stem(f).equalsIgnoreCase(wanted))
+                        .findFirst().orElse(null);
+            }
+            final com.tfyre.bambu.printer.LibraryFileInfo.Info info = fileInfo.of(p.path());
+            final String p1 = info.family().isEmpty()
+                    ? (info.modelId().isEmpty() ? "no slice information" : "sliced for " + info.modelId())
+                    : com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_P1.equals(info.family()) ? "ready"
+                    : "sliced for " + info.badge() + ", not a P1";
+            final String material = (p.filamentType() == null ? "" : p.filamentType())
+                    + (p.filamentColor() == null ? "" : " " + p.filamentColor());
+            rows.put(key, new CoverageRow(key, p.path(), material.strip(), p1, h2d, makes,
+                    (before == null ? 0 : before.usedBy()) + 1, candidate));
+        }
+        final long ready = rows.values().stream().filter(r -> r.h2dFile() != null).count();
+        coverageSummary.setText("%d part%s mapped · %d with an H2D file · %d without".formatted(rows.size(),
+                rows.size() == 1 ? "" : "s", ready, rows.size() - ready));
+        final boolean missingOnly = Boolean.TRUE.equals(coverageMissingOnly.getValue());
+        coverageGrid.setItems(rows.values().stream().filter(r -> !missingOnly || r.h2dFile() == null)
+                .sorted((a, b) -> a.file().compareToIgnoreCase(b.file())).toList());
+    }
+
+    /** Sets {@code row.candidate()} as the H2D file on every mapping, in both marketplaces, that prints this part. */
+    private void attachH2d(final CoverageRow row) {
+        final String family = com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D;
+        final String problem = fileInfo.mismatch(row.candidate(), com.tfyre.bambu.printer.BambuConst.PrinterModel.H2D);
+        if (problem != null) {
+            showError(problem);
+            return;
+        }
+        int changed = 0;
+        for (final Map.Entry<String, EtsyMappingService.MappingEntry> e : etsyMapping.entries().entrySet()) {
+            final List<MappingPart> updated = withH2d(e.getValue().parts(), row, family);
+            if (updated != null) {
+                etsyMapping.putByKey(e.getKey(), new EtsyMappingService.MappingEntry(updated, e.getValue().productCode()));
+                changed++;
+            }
+        }
+        for (final Map.Entry<String, EbayMappingService.MappingEntry> e : ebayMapping.entries().entrySet()) {
+            final List<MappingPart> updated = withH2d(e.getValue().parts(), row, family);
+            if (updated != null) {
+                ebayMapping.putByKey(e.getKey(), new EbayMappingService.MappingEntry(updated, e.getValue().productCode()));
+                changed++;
+            }
+        }
+        showNotification("%s attached as the H2D file on %d mapping%s. It is set to make 1 piece per print - change that in the mapping if the plate holds more."
+                .formatted(row.candidate(), changed, changed == 1 ? "" : "s"), java.time.Duration.ofSeconds(10));
+        renderAll();
+    }
+
+    /** {@code parts} with the H2D file set on the ones that are this row's part, or null when none of them is. */
+    private static List<MappingPart> withH2d(final List<MappingPart> parts, final CoverageRow row, final String family) {
+        boolean any = false;
+        final List<MappingPart> out = new ArrayList<>();
+        for (final MappingPart p : parts) {
+            if (p.h2dPath().isEmpty() && row.partKey().equals(com.tfyre.bambu.printer.StockService.partKey(p))) {
+                out.add(p.withVariant(family, row.candidate()));
+                any = true;
+            } else {
+                out.add(p);
+            }
+        }
+        return any ? out : null;
     }
 
     // -------------------------------------------------------------------------
     // Etsy - full active-listing pull
     // -------------------------------------------------------------------------
 
-    private Div buildEtsySection() {
-        final Div sec = new Div();
-        sec.addClassName("ai-settings-section");
-        sec.add(new H4("Etsy listings"));
+    // -------------------------------------------------------------------------
+    // The list - every Etsy and eBay listing, one row each, filtered by the chips and the search box
+    // -------------------------------------------------------------------------
 
-        final Button load = new Button("Load active listings from Etsy", new Icon(VaadinIcon.REFRESH));
-        load.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
-        load.setEnabled(etsyOauth.isConnected());
-        if (!etsyOauth.isConnected()) {
-            sec.add(new Span("Connect Etsy on the Etsy Sales Orders page first."));
-        }
-        load.addClickListener(e -> {
-            load.setEnabled(false);
-            etsyStatus.setText("Loading…");
-            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-            new Thread(() -> {
+    private void refreshListings(final Button refresh) {
+        refresh.setEnabled(false);
+        fetchedStatus.setText("Fetching listings…");
+        final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
+        new Thread(() -> {
+            final List<String> errors = new ArrayList<>();
+            List<EtsyApiClient.Listing> etsy = null;
+            List<EbayApiClient.EbayListing> ebay = null;
+            if (etsyOauth.isConnected()) {
                 try {
-                    final List<EtsyApiClient.Listing> listings = etsyClient.getActiveListings();
-                    ui.ifPresent(u -> u.access(() -> {
-                        listingCache.setEtsy(listings);
-                        etsyStatus.setText("%d active listing(s)".formatted(listings.size()));
-                        renderEtsy();
-                        load.setEnabled(true);
-                    }));
+                    etsy = etsyClient.getActiveListings();
                 } catch (Exception ex) {
-                    Log.errorf(ex, "MappingsView: listing fetch failed: %s", ex.getMessage());
-                    ui.ifPresent(u -> u.access(() -> {
-                        etsyStatus.setText("");
-                        showError("Could not load listings: " + ex.getMessage());
-                        load.setEnabled(true);
-                    }));
+                    Log.errorf(ex, "MappingsView: Etsy listing fetch failed: %s", ex.getMessage());
+                    errors.add("Etsy: " + ex.getMessage());
                 }
-            }).start();
-        });
-        final Div bar = new Div(load, etsyStatus);
-        bar.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center");
-        sec.add(bar);
-
-        if (etsyGrid.getColumns().isEmpty()) {
-            etsyGrid.addComponentColumn(row -> thumbnail(row.imageUrl())).setHeader("").setAutoWidth(true).setFlexGrow(0);
-            etsyGrid.addColumn(EtsyRow::title).setHeader("Listing").setFlexGrow(1);
-            etsyGrid.addColumn(EtsyRow::listingId).setHeader("ID").setAutoWidth(true);
-            etsyGrid.addColumn(EtsyRow::quantity).setHeader("Listed qty").setAutoWidth(true);
-            etsyGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
-            etsyGrid.addComponentColumn(row -> stockSummary("etsy", row.listingId() + "|")).setHeader("On-hand").setAutoWidth(true);
-            etsyGrid.addComponentColumn(row -> {
-                final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
-                        new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
-                edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-                edit.addClickListener(e -> openEditor("Etsy: " + row.title(),
-                        etsyMapping.find(row.listingId(), List.of()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
-                        parts -> {
-                            etsyMapping.set(row.listingId(), List.of(), new EtsyMappingService.MappingEntry(parts));
-                            showNotification("Mapping saved for listing %d".formatted(row.listingId()));
-                            renderAll();
-                        }));
-                final Div actions = new Div(edit);
-                if ("—".equals(row.mappedState())) {
-                    suggestButton("Etsy: " + row.title(), row.title(), parts -> {
-                        etsyMapping.set(row.listingId(), List.of(), new EtsyMappingService.MappingEntry(parts));
-                        showNotification("Mapping saved for listing %d".formatted(row.listingId()));
-                        renderAll();
-                    }).ifPresent(actions::add);
-                }
-                actions.add(testButton(row.mappedState(),
-                        () -> etsyMapping.find(row.listingId(), List.of()).map(EtsyMappingService.MappingEntry::parts).orElse(List.of()),
-                        row.title()), etsyVariationsButton(row), hideButton("etsy", String.valueOf(row.listingId()), row.hidden()));
-                return actions;
-            }).setHeader("").setAutoWidth(true);
-            etsyGrid.setWidth("100%");
-            etsyGrid.setAllRowsVisible(true);
-            etsyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
-            etsyGrid.setColumnReorderingAllowed(true);
-            GridLayoutMemory.remember(etsyGrid, "mappings-etsy");
-            etsyGrid.getColumns().forEach(c -> c.setResizable(true));
-        }
-        sec.add(etsyGrid);
-        return sec;
-    }
-
-    private void renderEtsy() {
-        final Map<String, EtsyMappingService.MappingEntry> saved = etsyMapping.entries();
-        etsyGrid.setItems(listingCache.getEtsy().stream()
-                .map(l -> new EtsyRow(l.listingId(), l.title(), l.quantityAvailable(),
-                        mappedState(saved, String.valueOf(l.listingId())),
-                        tracking.isListingHidden("etsy", String.valueOf(l.listingId())),
-                        l.imageUrl(), l.hasVariations()))
-                .filter(r -> showHidden || !r.hidden())
-                .toList());
-        etsyGrid.setVisible(!listingCache.getEtsy().isEmpty());
-        listingCache.etsyLoadedAt().ifPresent(at -> etsyStatus.setText(
-                "%d active listing(s) · cached %s".formatted(listingCache.getEtsy().size(), timeAgo(at))));
-    }
-
-    // -------------------------------------------------------------------------
-    // eBay - saved mappings + listing keys from open orders (scope can't list inventory)
-    // -------------------------------------------------------------------------
-
-    private Div buildEbaySection() {
-        final Div sec = new Div();
-        sec.addClassName("ai-settings-section");
-        sec.add(new H4("eBay listings"));
-
-        final Button load = new Button("Load active listings from eBay", new Icon(VaadinIcon.REFRESH));
-        load.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
-        load.setEnabled(ebayOauth.isConnected());
-        if (!ebayOauth.isConnected()) {
-            sec.add(new Span("Connect eBay on the eBay Sales Orders page first."));
-        }
-        load.addClickListener(e -> {
-            load.setEnabled(false);
-            ebayStatus.setText("Loading…");
-            final Optional<UI> ui = Optional.ofNullable(UI.getCurrent());
-            new Thread(() -> {
+            }
+            if (ebayOauth.isConnected()) {
                 try {
-                    final List<EbayApiClient.EbayListing> listings = ebayClient.getActiveListings();
-                    ui.ifPresent(u -> u.access(() -> {
-                        listingCache.setEbay(listings);
-                        ebayStatus.setText("%d active listing(s)".formatted(listings.size()));
-                        renderEbay();
-                        load.setEnabled(true);
-                    }));
+                    ebay = ebayClient.getActiveListings();
                 } catch (Exception ex) {
                     Log.errorf(ex, "MappingsView: eBay listing fetch failed: %s", ex.getMessage());
-                    ui.ifPresent(u -> u.access(() -> {
-                        ebayStatus.setText("");
-                        showError("Could not load eBay listings: " + ex.getMessage());
-                        load.setEnabled(true);
-                    }));
+                    errors.add("eBay: " + ex.getMessage());
                 }
-            }).start();
-        });
-        final Div bar = new Div(load, ebayStatus);
-        bar.getStyle().set("display", "flex").set("gap", "12px").set("align-items", "center");
-        sec.add(bar);
-        sec.add(new Span("Rows also include every listing key already mapped or appearing in an open order. "
-                + "If loading reports a permissions error, Disconnect and reconnect eBay once - the listing "
-                + "permission was added after your original connection."));
-
-        if (ebayGrid.getColumns().isEmpty()) {
-            ebayGrid.addComponentColumn(row -> thumbnail(row.imageUrl())).setHeader("").setAutoWidth(true).setFlexGrow(0);
-            ebayGrid.addColumn(EbayRow::listingKey).setHeader("SKU / item id").setAutoWidth(true);
-            ebayGrid.addColumn(EbayRow::title).setHeader("Title").setFlexGrow(1);
-            ebayGrid.addComponentColumn(row -> mappedBadge(row.mappedState())).setHeader("Mapping").setAutoWidth(true);
-            ebayGrid.addComponentColumn(row -> stockSummary("ebay", row.listingKey() + "|")).setHeader("On-hand").setAutoWidth(true);
-            ebayGrid.addComponentColumn(row -> {
-                final Button edit = new Button("—".equals(row.mappedState()) ? "Map" : "Edit",
-                        new Icon("—".equals(row.mappedState()) ? VaadinIcon.PLUS : VaadinIcon.EDIT));
-                edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-                edit.addClickListener(e -> openEditor("eBay: " + row.listingKey(),
-                        ebayMapping.find(row.listingKey(), List.of()).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
-                        parts -> {
-                            ebayMapping.set(row.listingKey(), List.of(), new EbayMappingService.MappingEntry(parts));
-                            showNotification("Mapping saved for %s".formatted(row.listingKey()));
-                            renderAll();
-                        }));
-                final Div actions = new Div(edit);
-                if ("—".equals(row.mappedState())) {
-                    suggestButton("eBay: " + row.listingKey(), row.title(), parts -> {
-                        ebayMapping.set(row.listingKey(), List.of(), new EbayMappingService.MappingEntry(parts));
-                        showNotification("Mapping saved for %s".formatted(row.listingKey()));
-                        renderAll();
-                    }).ifPresent(actions::add);
+            }
+            final List<EtsyApiClient.Listing> etsyResult = etsy;
+            final List<EbayApiClient.EbayListing> ebayResult = ebay;
+            ui.ifPresent(u -> u.access(() -> {
+                if (etsyResult != null) {
+                    listingCache.setEtsy(etsyResult);
                 }
-                actions.add(testButton(row.mappedState(),
-                        () -> ebayMapping.find(row.listingKey(), List.of()).map(EbayMappingService.MappingEntry::parts).orElse(List.of()),
-                        row.listingKey()), ebayVariationsButton(row), hideButton("ebay", row.listingKey(), row.hidden()));
-                return actions;
-            }).setHeader("").setAutoWidth(true);
-            ebayGrid.setWidth("100%");
-            ebayGrid.setAllRowsVisible(true);
-            ebayGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
-            ebayGrid.setColumnReorderingAllowed(true);
-            GridLayoutMemory.remember(ebayGrid, "mappings-ebay");
-            ebayGrid.getColumns().forEach(c -> c.setResizable(true));
-        }
-        sec.add(ebayGrid);
-        return sec;
+                if (ebayResult != null) {
+                    listingCache.setEbay(ebayResult);
+                }
+                errors.forEach(err -> showError("Could not load listings - " + err));
+                refresh.setEnabled(true);
+                render();
+            }));
+        }).start();
     }
 
-    private void renderEbay() {
-        final Map<String, EbayMappingService.MappingEntry> saved = ebayMapping.entries();
-        // Known keys: fetched active listings first (best titles + images), then open orders, then bare mapped keys
+    private List<ListingRow> buildRows() {
+        final List<ListingRow> rows = new ArrayList<>();
+
+        // Etsy: the fetched active listings, then any listing that only has a saved mapping
+        final Map<String, EtsyMappingService.MappingEntry> etsySaved = etsyMapping.entries();
+        final java.util.Set<String> etsySeen = new java.util.HashSet<>();
+        listingCache.getEtsy().forEach(l -> {
+            final String key = String.valueOf(l.listingId());
+            etsySeen.add(key);
+            final String state = mappedState(etsySaved, key);
+            final boolean hidden = tracking.isListingHidden("etsy", key);
+            final String title = com.tfyre.bambu.printer.HtmlText.plain(l.title());
+            rows.add(new ListingRow("etsy", key, title, l.imageUrl(), state, hidden, true,
+                    new EtsyRow(l.listingId(), title, l.quantityAvailable(), state, hidden, l.imageUrl(), l.hasVariations()), null));
+        });
+        etsySaved.keySet().stream().map(MappingsView::listingOf).distinct().filter(k -> !etsySeen.contains(k)).forEach(key -> {
+            final long id;
+            try {
+                id = Long.parseLong(key);
+            } catch (NumberFormatException ex) {
+                return;
+            }
+            final String state = mappedState(etsySaved, key);
+            final boolean hidden = tracking.isListingHidden("etsy", key);
+            final String title = "Etsy listing " + key;
+            rows.add(new ListingRow("etsy", key, title, "", state, hidden, false,
+                    new EtsyRow(id, title, 0, state, hidden, "", true), null));
+        });
+
+        // eBay: fetched active listings (best titles + images), then keys from open orders, then bare mapped keys
+        final Map<String, EbayMappingService.MappingEntry> ebaySaved = ebayMapping.entries();
         final Map<String, String> titles = new LinkedHashMap<>();
-        final Map<String, String> images = new LinkedHashMap<>();
         final Map<String, EbayApiClient.EbayListing> byKey = new LinkedHashMap<>();
         listingCache.getEbay().forEach(l -> {
             titles.putIfAbsent(l.listingKey(), l.title());
             byKey.putIfAbsent(l.listingKey(), l);
-            if (l.imageUrl() != null && !l.imageUrl().isBlank()) {
-                images.putIfAbsent(l.listingKey(), l.imageUrl());
-            }
         });
         ebayPolling.getOrders().forEach(o -> o.lineItems().forEach(li -> {
             final String key = li.listingKey();
@@ -353,101 +464,291 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 titles.putIfAbsent(key, li.title());
             }
         }));
-        saved.keySet().stream()
-                .map(k -> k.substring(0, k.indexOf('|') < 0 ? k.length() : k.indexOf('|')))
-                .forEach(k -> titles.putIfAbsent(k, ""));
-        ebayGrid.setItems(titles.entrySet().stream()
-                .map(e -> {
-                    final EbayApiClient.EbayListing l = byKey.get(e.getKey());
-                    return new EbayRow(e.getKey(), e.getValue(), mappedState(saved, e.getKey()),
-                            tracking.isListingHidden("ebay", e.getKey()), images.getOrDefault(e.getKey(), ""),
-                            l == null ? e.getKey() : l.itemId(),
-                            l == null ? List.of() : l.variations());
-                })
-                .filter(r -> showHidden || !r.hidden())
-                .sorted((a, b) -> a.listingKey().compareToIgnoreCase(b.listingKey()))
-                .toList());
-        ebayGrid.setVisible(!titles.isEmpty());
-        listingCache.ebayLoadedAt().ifPresent(at -> ebayStatus.setText(
-                "%d active listing(s) · cached %s".formatted(listingCache.getEbay().size(), timeAgo(at))));
+        ebaySaved.keySet().stream().map(MappingsView::listingOf).forEach(k -> titles.putIfAbsent(k, ""));
+        titles.forEach((key, rawTitle) -> {
+            final EbayApiClient.EbayListing l = byKey.get(key);
+            final String state = mappedState(ebaySaved, key);
+            final boolean hidden = tracking.isListingHidden("ebay", key);
+            final String title = rawTitle == null || rawTitle.isBlank() ? "eBay " + key : com.tfyre.bambu.printer.HtmlText.plain(rawTitle);
+            final String image = l == null || l.imageUrl() == null ? "" : l.imageUrl();
+            rows.add(new ListingRow("ebay", key, title, image, state, hidden, l != null,
+                    null, new EbayRow(key, title, state, hidden, image, l == null ? key : l.itemId(),
+                            l == null ? List.of() : l.variations())));
+        });
+        return rows;
     }
 
-    // -------------------------------------------------------------------------
-    // All saved mappings (both marketplaces, including per-variation entries)
-    // -------------------------------------------------------------------------
-
-    private Div buildSavedSection() {
-        final Div sec = new Div();
-        sec.addClassName("ai-settings-section");
-        sec.add(new H4("All saved mappings"));
-
-        if (savedGrid.getColumns().isEmpty()) {
-            savedGrid.addColumn(SavedRow::market).setHeader("Market").setAutoWidth(true);
-            savedGrid.addColumn(SavedRow::listing).setHeader("Listing").setAutoWidth(true);
-            savedGrid.addColumn(SavedRow::variations).setHeader("Variation").setAutoWidth(true);
-            savedGrid.addColumn(SavedRow::summary).setHeader("Print jobs").setFlexGrow(1);
-            savedGrid.addComponentColumn(row -> stockSummary(row.market(), row.storageKey())).setHeader("On-hand").setAutoWidth(true);
-            savedGrid.addComponentColumn(row -> {
-                final Button edit = new Button(new Icon(VaadinIcon.EDIT));
-                edit.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY);
-                edit.setTooltipText("Edit this mapping");
-                edit.addClickListener(e -> {
-                    final List<MappingPart> initial = "etsy".equals(row.market())
-                            ? etsyMapping.entries().getOrDefault(row.storageKey(), new EtsyMappingService.MappingEntry(List.of())).parts()
-                            : ebayMapping.entries().getOrDefault(row.storageKey(), new EbayMappingService.MappingEntry(List.of())).parts();
-                    openEditor("%s: %s %s".formatted(row.market(), row.listing(), row.variations()), initial, parts -> {
-                        if ("etsy".equals(row.market())) {
-                            etsyMapping.putByKey(row.storageKey(), new EtsyMappingService.MappingEntry(parts));
-                        } else {
-                            ebayMapping.putByKey(row.storageKey(), new EbayMappingService.MappingEntry(parts));
-                        }
-                        showNotification("Mapping updated");
-                        renderAll();
-                    });
-                });
-                final Button del = new Button(new Icon(VaadinIcon.TRASH));
-                del.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
-                del.setTooltipText("Delete this mapping");
-                del.addClickListener(e -> com.tfyre.bambu.YesNoCancelDialog.show(
-                        "Delete the mapping for %s %s?".formatted(row.listing(), row.variations()), ync -> {
-                            if (!ync.isConfirmed()) {
-                                return;
-                            }
-                            if ("etsy".equals(row.market())) {
-                                etsyMapping.removeByKey(row.storageKey());
-                            } else {
-                                ebayMapping.removeByKey(row.storageKey());
-                            }
-                            showNotification("Mapping deleted");
-                            renderAll();
-                        }));
-                final Div actions = new Div(edit, del);
-                return actions;
-            }).setHeader("").setAutoWidth(true);
-            savedGrid.setWidth("100%");
-            savedGrid.setAllRowsVisible(true);
-            savedGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
-            savedGrid.setColumnReorderingAllowed(true);
-            GridLayoutMemory.remember(savedGrid, "mappings-saved");
-            savedGrid.getColumns().forEach(c -> c.setResizable(true));
-        }
-        sec.add(savedGrid);
-        return sec;
-    }
-
-    private void renderSaved() {
-        final List<SavedRow> rows = new ArrayList<>();
-        etsyMapping.entries().forEach((k, v) -> rows.add(savedRow("etsy", k, v.parts())));
-        ebayMapping.entries().forEach((k, v) -> rows.add(savedRow("ebay", k, v.parts())));
-        rows.sort((a, b) -> (a.market() + a.listing()).compareToIgnoreCase(b.market() + b.listing()));
-        savedGrid.setItems(rows);
-    }
-
-    private SavedRow savedRow(final String market, final String storageKey, final List<MappingPart> parts) {
+    private static String listingOf(final String storageKey) {
         final int sep = storageKey.indexOf('|');
-        final String listing = sep < 0 ? storageKey : storageKey.substring(0, sep);
-        final String variations = sep < 0 || sep == storageKey.length() - 1 ? "(all)" : storageKey.substring(sep + 1);
-        return new SavedRow(market, storageKey, listing, variations, partsSummary(parts));
+        return sep < 0 ? storageKey : storageKey.substring(0, sep);
+    }
+
+    private List<MappingPart> baseParts(final ListingRow r) {
+        return "etsy".equals(r.market())
+                ? Optional.ofNullable(etsyMapping.entries().get(r.key() + "|")).map(EtsyMappingService.MappingEntry::parts).orElse(List.of())
+                : Optional.ofNullable(ebayMapping.entries().get(r.key() + "|")).map(EbayMappingService.MappingEntry::parts).orElse(List.of());
+    }
+
+    private static final List<String> ORDER = List.of("needs", "variations", "mapped", "hidden");
+
+    private void render() {
+        final List<ListingRow> rows = buildRows();
+        final Map<String, Long> counts = rows.stream().collect(Collectors.groupingBy(ListingRow::category, Collectors.counting()));
+        chips.forEach((f, chip) -> {
+            final long n = "all".equals(f) ? rows.stream().filter(r -> !r.hidden()).count() : counts.getOrDefault(f, 0L);
+            chip.setText("%s %d".formatted(switch (f) {
+                case "needs" -> "Needs a mapping";
+                case "variations" -> "Variations only";
+                case "mapped" -> "Mapped";
+                case "hidden" -> "Hidden";
+                default -> "All";
+            }, n));
+            chip.getElement().setAttribute("data-on", f.equals(filter) ? "true" : "false");
+            chip.getElement().setAttribute("data-tone", n > 0 && ("needs".equals(f) || "variations".equals(f)) ? "warn" : "");
+        });
+        final String q = Optional.ofNullable(search.getValue()).orElse("").trim().toLowerCase(java.util.Locale.ENGLISH);
+        final List<ListingRow> shown = rows.stream()
+                .filter(r -> "all".equals(filter) ? !r.hidden() : filter.equals(r.category()))
+                .filter(r -> q.isEmpty() || haystack(r).contains(q))
+                .filter(r -> marketPick.getValue() == null || MARKET_ALL.equals(marketPick.getValue())
+                        || ("Etsy".equals(marketPick.getValue()) == "etsy".equals(r.market())))
+                .sorted(comparator())
+                .toList();
+        list.removeAll();
+        if (shown.isEmpty()) {
+            final Span none = new Span(rows.isEmpty() ? "No listings yet - press Refresh listings." : "Nothing matches.");
+            none.addClassName("mp-dim");
+            list.add(none);
+        }
+        shown.forEach(r -> list.add(rowCard(r)));
+        fetchedStatus.setText("Etsy listings %s · eBay %s".formatted(
+                listingCache.etsyLoadedAt().map(t -> "fetched " + timeAgo(t)).orElse("never fetched"),
+                listingCache.ebayLoadedAt().map(MappingsView::timeAgo).orElse("never fetched")));
+    }
+
+    private java.util.Comparator<ListingRow> comparator() {
+        final java.util.Comparator<ListingRow> byName = java.util.Comparator.comparing(ListingRow::title, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(ListingRow::market);
+        final String sort = Optional.ofNullable(sortBy.getValue()).orElse(SORT_ATTENTION);
+        return switch (sort) {
+            case SORT_NAME -> byName;
+            case SORT_MARKET -> java.util.Comparator.comparing(ListingRow::market).thenComparing(byName);
+            // Listings that print the same first file sit together - the Etsy and eBay listing of one product,
+            // or two listings of the same part. Unmapped ones go last, by name.
+            case SORT_FILE -> java.util.Comparator.comparing((ListingRow r) -> partKey(r).isEmpty())
+                    .thenComparing(this::partKey, String.CASE_INSENSITIVE_ORDER)
+                    .thenComparing(byName);
+            default -> java.util.Comparator.comparingInt((ListingRow r) -> ORDER.indexOf(r.category())).thenComparing(byName);
+        };
+    }
+
+    /** The first file the listing prints, by its Files-page name, or "" when it has no listing-wide mapping. */
+    private String partKey(final ListingRow r) {
+        return baseParts(r).stream().findFirst().map(p -> friendly(p.path())).orElse("");
+    }
+
+    private String haystack(final ListingRow r) {
+        final StringBuilder sb = new StringBuilder(r.title()).append(' ').append(r.key()).append(' ');
+        final String prefix = r.key() + "|";
+        final List<List<MappingPart>> mapped = new ArrayList<>();
+        if ("etsy".equals(r.market())) {
+            etsyMapping.entries().forEach((k, v) -> {
+                if (k.startsWith(prefix)) {
+                    mapped.add(v.parts());
+                }
+            });
+        } else {
+            ebayMapping.entries().forEach((k, v) -> {
+                if (k.startsWith(prefix)) {
+                    mapped.add(v.parts());
+                }
+            });
+        }
+        mapped.forEach(parts -> parts.forEach(p -> sb.append(p.path()).append(' ')
+                .append(com.tfyre.bambu.printer.LibraryService.titleOf(p.path()))
+                .append(' ').append(p.h2dPath().orElse("")).append(' ')));
+        return sb.toString().toLowerCase(java.util.Locale.ENGLISH);
+    }
+
+    private Div rowCard(final ListingRow r) {
+        final Span name = new Span(r.title());
+        name.addClassName("mp-name");
+        final Span market = new Span("etsy".equals(r.market()) ? "Etsy" : "eBay");
+        market.addClassName("mp-badge");
+        market.getElement().setAttribute("data-m", r.market());
+        final Span state = new Span(switch (r.category()) {
+            case "needs" -> "not mapped";
+            case "mapped" -> r.state().startsWith("✓") ? "mapped" : r.state();
+            default -> r.state();
+        });
+        state.addClassName("mp-chip");
+        state.getElement().setAttribute("data-tone", switch (r.category()) {
+            case "mapped" -> "ok";
+            case "hidden" -> "";
+            default -> "warn";
+        });
+        if (r.hidden()) {
+            state.setText("hidden · " + state.getText());
+        }
+        final Div where = new Div(market, state);
+        where.addClassName("mp-where");
+        if ("ebay".equals(r.market()) && !r.key().equals(r.title())) {
+            final Span key = new Span(r.key());
+            key.addClassName("mp-dim");
+            where.add(key);
+        }
+        if (!r.active()) {
+            final Span gone = new Span("not in the active listings");
+            gone.addClassName("mp-dim");
+            where.add(gone);
+        }
+        final List<MappingPart> parts = baseParts(r);
+        if (!parts.isEmpty()) {
+            where.add(stockSummary(r.market(), r.key() + "|"));
+        }
+        final Div text = new Div(name, where);
+        text.addClassName("mp-text");
+
+        final Div partsDiv = new Div();
+        partsDiv.addClassName("mp-parts");
+        if (!parts.isEmpty()) {
+            partsDiv.add(partsCell(parts));
+        } else if ("variations".equals(r.category()) || r.state().endsWith(" only")) {
+            final Span v = new Span("Each variation has its own mapping - see Variations.");
+            v.addClassName("mp-dim");
+            partsDiv.add(v);
+        }
+
+        final Div actions = new Div();
+        actions.addClassName("mp-act");
+        final boolean unmapped = parts.isEmpty();
+        if (unmapped && "needs".equals(r.category())) {
+            suggestButton(editorTitle(r), r.title(), p -> saveBase(r, p)).ifPresent(b -> {
+                b.removeThemeVariants(ButtonVariant.LUMO_TERTIARY);
+                b.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+                b.setText("Use " + b.getText().replaceAll("\\?$", ""));
+                actions.add(b);
+            });
+        }
+        final Button edit = new Button(unmapped ? "Map…" : "Edit", new Icon(unmapped ? VaadinIcon.PLUS : VaadinIcon.EDIT));
+        edit.addThemeVariants(ButtonVariant.LUMO_SMALL);
+        edit.addClickListener(e -> openEditor(editorTitle(r), parts, p -> saveBase(r, p)));
+        actions.add(edit);
+        if (r.etsy() != null && r.etsy().hasVariations()) {
+            actions.add(etsyVariationsButton(r.etsy()));
+        } else if (r.ebay() != null && !r.ebay().variations().isEmpty()) {
+            actions.add(ebayVariationsButton(r.ebay()));
+        }
+        actions.add(testButton(r.state(), () -> baseParts(r), r.title()));
+        actions.add(hideButton(r.market(), r.key(), r.hidden()));
+        deleteButton(r).ifPresent(actions::add);
+
+        final Div card = new Div(thumbnail(r.imageUrl()), text, partsDiv, actions);
+        card.addClassName("mp-row");
+        return card;
+    }
+
+    private static String editorTitle(final ListingRow r) {
+        return ("etsy".equals(r.market()) ? "Etsy: " : "eBay: ") + r.title();
+    }
+
+    private void saveBase(final ListingRow r, final List<MappingPart> parts) {
+        if ("etsy".equals(r.market())) {
+            etsyMapping.set(Long.parseLong(r.key()), List.of(), new EtsyMappingService.MappingEntry(parts));
+        } else {
+            ebayMapping.set(r.key(), List.of(), new EbayMappingService.MappingEntry(parts));
+        }
+        showNotification("Mapping saved for " + r.title());
+        render();
+    }
+
+    /** Trash: removes this listing's mapping and its per-variation mappings, after a confirm. */
+    private Optional<Button> deleteButton(final ListingRow r) {
+        final String prefix = r.key() + "|";
+        final List<String> keys = ("etsy".equals(r.market()) ? etsyMapping.entries().keySet() : ebayMapping.entries().keySet())
+                .stream().filter(k -> k.startsWith(prefix)).toList();
+        if (keys.isEmpty()) {
+            return Optional.empty();
+        }
+        final Button del = new Button(new Icon(VaadinIcon.TRASH));
+        del.addThemeVariants(ButtonVariant.LUMO_SMALL, ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_ERROR);
+        del.setTooltipText("Delete this listing's mapping" + (keys.size() > 1 ? " and its variation mappings" : ""));
+        del.addClickListener(e -> com.tfyre.bambu.YesNoCancelDialog.show(
+                "Delete %d mapping%s for %s?".formatted(keys.size(), keys.size() == 1 ? "" : "s", r.title()), ync -> {
+                    if (!ync.isConfirmed()) {
+                        return;
+                    }
+                    if ("etsy".equals(r.market())) {
+                        keys.forEach(etsyMapping::removeByKey);
+                    } else {
+                        keys.forEach(ebayMapping::removeByKey);
+                    }
+                    showNotification("Mapping deleted");
+                    render();
+                }));
+        return Optional.of(del);
+    }
+
+    /**
+     * A mapping's parts, one block each: pieces per unit and the requirement on top, then the P1 file and the
+     * H2D file on their own lines with how many each print makes - the same two rows the editor and the Files
+     * page show, so a part reads the same everywhere.
+     */
+    private static Div partsCell(final List<MappingPart> parts) {
+        final Div cell = new Div();
+        cell.getStyle().set("display", "flex").set("flex-direction", "column").set("gap", "6px")
+                .set("font-size", "var(--lumo-font-size-s)");
+        if (parts.isEmpty()) {
+            cell.add(new Span("(no parts)"));
+        }
+        for (final MappingPart p : parts) {
+            final List<String> needs = new ArrayList<>();
+            needs.add("%d per unit".formatted(p.copiesPerUnit()));
+            if (p.filamentType() != null) {
+                needs.add(p.filamentType() + (p.filamentColor() == null ? "" : " " + p.filamentColor()));
+            }
+            if (p.amsSlot() != null) {
+                needs.add(AmsSlotSupport.label(p.amsSlot()));
+            }
+            p.extraSlots().forEach(s -> needs.add("2nd filament: " + AmsSlotSupport.label(s)));
+            final Span head = new Span(String.join(" · ", needs));
+            head.getStyle().setColor("var(--lumo-secondary-text-color)");
+            final Div block = new Div(new Div(head));
+            if (p.source() == com.tfyre.bambu.printer.GcodeSource.LIBRARY && p.h2dPath().isEmpty()
+                    && com.tfyre.bambu.printer.LibraryFileInfo.namedH2d(p.path())) {
+                // An H2D-only part (no P1 file): its one file is the H2D slice, not a P1 file with no H2D partner
+                block.add(fileLine("H2D", "%s · plate %d · H2D only".formatted(friendly(p.path()), p.plateId()),
+                        "var(--lumo-primary-text-color)", false));
+            } else if (p.source() == com.tfyre.bambu.printer.GcodeSource.LIBRARY) {
+                block.add(fileLine("P1", "%s · plate %d".formatted(friendly(p.path()), p.plateId()), "var(--lumo-success-text-color)", false));
+                block.add(p.h2dPath()
+                        .map(h -> fileLine("H2D", "%s · makes %d".formatted(friendly(h), p.h2dYield()), "var(--lumo-primary-text-color)", false))
+                        .orElseGet(() -> fileLine("H2D", "none", "var(--lumo-secondary-text-color)", true)));
+            } else {
+                block.add(fileLine("SD", "%s · plate %d".formatted(p.path(), p.plateId()), "var(--lumo-warning-color, #e8a33d)", false));
+            }
+            cell.add(block);
+        }
+        return cell;
+    }
+
+    /** Library file as the Files page names it: "Rollhoop Grilles" rather than "Rollhoop/Rollhoop_Grilles_H2D.gcode.3mf". */
+    private static String friendly(final String path) {
+        return com.tfyre.bambu.printer.LibraryService.titleOf(path);
+    }
+
+    private static Div fileLine(final String kind, final String text, final String color, final boolean dashed) {
+        final Span badge = new Span(kind);
+        badge.getStyle().setColor(color).set("border", "1px %s currentColor".formatted(dashed ? "dashed" : "solid"))
+                .set("border-radius", "4px").set("padding", "0 5px").set("font-size", "var(--lumo-font-size-xs)")
+                .set("font-weight", "700").set("margin-right", "6px").set("display", "inline-block").set("min-width", "30px")
+                .set("text-align", "center");
+        final Span t = new Span(text);
+        t.getStyle().set("overflow-wrap", "anywhere");
+        if (dashed) {
+            t.getStyle().setColor("var(--lumo-secondary-text-color)");
+        }
+        return new Div(badge, t);
     }
 
     private static String partsSummary(final List<MappingPart> parts) {
@@ -458,7 +759,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
                 .map(p -> "%s plate %d ×%d%s%s%s".formatted(p.path(), p.plateId(), p.copiesPerUnit(),
                         p.amsSlot() != null ? " · " + AmsSlotSupport.label(p.amsSlot()) : "",
                         p.filamentType() != null ? " · " + p.filamentType() : "",
-                        p.h2dPath().map(h -> " · H2D: " + h).orElse("")))
+                        p.h2dPath().map(h -> " · H2D: " + h + (p.h2dYield() > 1 ? " (makes %d)".formatted(p.h2dYield()) : "")).orElse("")))
                 .collect(Collectors.joining(";  "));
     }
 
@@ -471,7 +772,11 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
         if (secs < 3600) {
             return "%d min ago".formatted(secs / 60);
         }
-        return "%dh %dm ago".formatted(secs / 3600, (secs % 3600) / 60);
+        if (secs < 86400) {
+            return "%dh %dm ago".formatted(secs / 3600, (secs % 3600) / 60);
+        }
+        final long days = secs / 86400;
+        return days == 1 ? "1 day ago" : "%d days ago".formatted(days);
     }
 
     private static String mappedState(final Map<String, ?> saved, final String listingKeyPrefix) {
@@ -599,7 +904,7 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
 
     private Div buildEtsyVariationRow(final EtsyRow listing, final EtsyApiClient.VariationCombo combo, final Runnable refresh) {
         final String label = combo.variations().stream()
-                .map(v -> v.propertyName() + ": " + v.value())
+                .map(v -> com.tfyre.bambu.printer.HtmlText.plain(v.propertyName() + ": " + v.value()))
                 .collect(Collectors.joining(", "));
         final String exactKey = listing.listingId() + "|" + EtsyMappingService.MappingKey.signatureOf(combo.variations());
         final boolean mapped = etsyMapping.entries().containsKey(exactKey);
@@ -794,7 +1099,9 @@ public class MappingsView extends VerticalLayout implements NotificationHelper {
     private Optional<Button> suggestButton(final String editorTitle, final String listingTitle,
             final Consumer<List<MappingPart>> onSave) {
         if (System.currentTimeMillis() - suggestLibraryAt > 5000) {
-            suggestLibrary = getLibraryFiles();
+            // Not the H2D slices: the suggestion becomes the part's P1 file.
+            suggestLibrary = getLibraryFiles().stream()
+                    .filter(f -> !com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D.equals(fileInfo.family(f))).toList();
             suggestLibraryAt = System.currentTimeMillis();
         }
         final Optional<String> file = com.tfyre.bambu.printer.MappingSuggester.suggest(listingTitle, suggestLibrary);

@@ -94,7 +94,7 @@ public class EbayApiClient {
     }
 
     private HttpResponse<String> send(final String path, final String token) throws Exception {
-        return http.send(HttpRequest.newBuilder(URI.create(apiBase() + path))
+        return http.send(HttpRequest.newBuilder(URI.create(path.startsWith("https://") ? path : apiBase() + path))
                 .timeout(config.ebay().timeout())
                 .header("Authorization", "Bearer " + token)
                 .header("X-EBAY-C-MARKETPLACE-ID", config.ebay().marketplaceId())
@@ -424,6 +424,43 @@ public class EbayApiClient {
     }
 
     /** Every order created since {@code since}, in any state - the sales history behind the Profit page. */
+    /** A shipping label bought through eBay: its order (blank when eBay doesn't say) and its cost; a refund is negative. */
+    public record LabelCharge(String transactionId, String orderId, Instant date, double amount) {
+    }
+
+    /**
+     * Shipping labels from the Finances API (GET /sell/finances/v1/transaction, transactionType SHIPPING_LABEL).
+     * It lives on apiz.ebay.com, not api.ebay.com. Checked against this account on 2026-10-13: a label shows up
+     * the moment it is bought, carries its orderId in most cases (44 of 49 over 90 days), and an order can have
+     * more than one (a reprint, a void refunded as a CREDIT).
+     */
+    public List<LabelCharge> getLabelChargesSince(final Instant since) throws Exception {
+        final String from = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+                .withZone(java.time.ZoneOffset.UTC).format(since);
+        final String filter = java.net.URLEncoder.encode("transactionType:{SHIPPING_LABEL},transactionDate:[" + from + "..]",
+                java.nio.charset.StandardCharsets.UTF_8);
+        final String base = config.ebay().sandbox() ? "https://apiz.sandbox.ebay.com" : "https://apiz.ebay.com";
+        final List<LabelCharge> result = new ArrayList<>();
+        final int pageSize = 200;
+        for (int offset = 0; offset < 4000; offset += pageSize) {
+            final JsonNode root = getOrThrow("%s/sell/finances/v1/transaction?filter=%s&limit=%d&offset=%d"
+                    .formatted(base, filter, pageSize, offset));
+            int pageCount = 0;
+            for (final JsonNode t : root.path("transactions")) {
+                pageCount++;
+                final double amount = t.path("amount").path("value").asDouble();
+                result.add(new LabelCharge(t.path("transactionId").asText(),
+                        t.hasNonNull("orderId") ? t.get("orderId").asText() : "",
+                        Instant.parse(t.path("transactionDate").asText()),
+                        "CREDIT".equals(t.path("bookingEntry").asText()) ? -amount : amount));
+            }
+            if (pageCount < pageSize) {
+                break;
+            }
+        }
+        return result;
+    }
+
     public List<Order> getOrdersSince(final Instant since) throws Exception {
         final String from = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
                 .withZone(java.time.ZoneOffset.UTC).format(since);

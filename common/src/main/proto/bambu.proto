@@ -76,6 +76,18 @@ message AmsSingle {
   optional string humidity = 2;
   optional string temp = 3;
   repeated Tray tray = 4;
+  // Drying, as an H2D (firmware 01.03) reports it for an AMS 2 Pro / AMS HT. dry_time is the minutes left,
+  // 0 when not drying. dry_setting only appears where the firmware can dry the unit: a P1S (01.10) with an
+  // AMS 2 Pro sends dry_time but never dry_setting, and Bambu Studio can't start a dry there either.
+  optional int32 dry_time = 5;
+  optional AmsDrySetting dry_setting = 6;
+  repeated int32 dry_sf_reason = 7;
+}
+
+message AmsDrySetting {
+  optional int32 dry_duration = 1;
+  optional string dry_filament = 2;
+  optional int32 dry_temperature = 3;
 }
 
 message Ams {
@@ -157,6 +169,14 @@ message Xcam {
   optional bool spaghetti_detector = 7;
 }
 
+// One entry of ams_mapping2: where one filament of the print feeds from, as unit + slot. What Bambu Studio
+// sends an H2D beside the flat ams_mapping (captured 2026-10-07): AMS 0 slot 1 is {0,1}; an AMS HT is unit
+// 128 and up with slot 0.
+message AmsMappingEntry {
+  optional int32 ams_id = 1;
+  optional int32 slot_id = 2;
+}
+
 message Print {
   optional UpgradeState upgrade_state = 1;
   optional Upload upload = 2;
@@ -229,6 +249,9 @@ message Print {
   optional bool layer_inspect = 69;
   repeated int32 ams_mapping = 70;
   optional bool use_ams = 71;
+  repeated AmsMappingEntry ams_mapping2 = 120;
+  // The printer's answer to a command (e.g. ams_filament_drying) carries result/reason plus this code.
+  optional int32 err_code = 121;
   optional string reason = 72;
   optional string result = 73;
 

@@ -55,8 +55,8 @@ public class SalesService {
     /**
      * @param etsyFeePercent  Etsy's cut of items + shipping: 6.5% transaction + 3% payment processing by default
      * @param etsyFeePerOrder Etsy's fixed charges per order: $0.25 processing + $0.20 listing renewal by default
-     * @param labelCost       what a shipping label costs you per order, on average (labels are bought elsewhere,
-     *                        so the app cannot see the real figure)
+     * @param labelCost       what a shipping label costs per order, used only where neither marketplace has
+     *                        reported label costs (both normally do since 2026-10-13)
      */
     public record Settings(double etsyFeePercent, double etsyFeePerOrder, double labelCost) {
 
@@ -65,7 +65,37 @@ public class SalesService {
         }
     }
 
-    public record Store(Settings settings, Map<String, Sale> sales) {
+    /**
+     * A shipping label charge as the marketplace reported it.
+     *
+     * @param orderId the order it was for; blank when the marketplace doesn't say (always, on Etsy)
+     * @param cost    what it cost; negative for a refund or adjustment credit
+     */
+    public record Label(String market, String orderId, String date, double cost) {
+    }
+
+    public record Store(Settings settings, Map<String, Sale> sales, Map<String, Label> labels) {
+    }
+
+    /**
+     * What labels cost, ready to apply to sale lines for one period of the Profit page.
+     *
+     * @param ebayByOrder  eBay's label cost per order, where eBay reported one
+     * @param ebayAverage  eBay label spend per labelled order in the period - for eBay orders without a record
+     * @param etsyPerOrder Etsy label spend in the period divided by the Etsy orders in it (Etsy can't say which
+     *                     label went with which order)
+     */
+    public record LabelCosts(Map<String, Double> ebayByOrder, double ebayAverage, boolean ebayKnown,
+            double etsyPerOrder, double etsySpend, int etsyOrders, boolean etsyKnown, double fallback) {
+
+        /** This sale line's share of its order's label. */
+        public double forSale(final Sale sale) {
+            if ("ebay".equals(sale.market())) {
+                final Double exact = ebayByOrder.get(sale.orderId());
+                return (exact != null ? exact : ebayKnown ? ebayAverage : fallback) * sale.orderShare();
+            }
+            return (etsyKnown ? etsyPerOrder : fallback) * sale.orderShare();
+        }
     }
 
     @Inject
@@ -82,6 +112,7 @@ public class SalesService {
     EbayMappingService ebayMappings;
 
     private final Map<String, Sale> sales = new LinkedHashMap<>();
+    private final Map<String, Label> labels = new LinkedHashMap<>();
     private Settings settings = Settings.defaults();
     private Instant lastSync;
     private String lastError;
@@ -100,10 +131,18 @@ public class SalesService {
         try {
             final Store store = mapper.readValue(path.toFile(), Store.class);
             if (store.sales() != null) {
-                sales.putAll(store.sales());
+                // Titles are display-only; ones saved before 2026-10-13 are still HTML-encoded (6.5&quot;)
+                store.sales().forEach((k, s) -> sales.put(k, new Sale(s.market(), s.orderId(), s.lineId(), s.date(),
+                        s.listingKey(), HtmlText.plain(s.title()), s.mappingKey(), s.quantity(), s.revenue(),
+                        s.shippingShare(), s.orderShare(), s.marketFee(), s.cancelled())));
             }
+            // The page said "Sales have not been pulled yet" after every restart. The file is written by each sync.
+            lastSync = Files.getLastModifiedTime(path).toInstant();
             if (store.settings() != null) {
                 settings = store.settings();
+            }
+            if (store.labels() != null) {
+                labels.putAll(store.labels());
             }
             Log.infof("SalesService: loaded %d sale line(s) from %s", sales.size(), path);
         } catch (IOException | RuntimeException ex) {
@@ -113,7 +152,7 @@ public class SalesService {
 
     private synchronized void save() {
         try {
-            mapper.writerWithDefaultPrettyPrinter().writeValue(getPath().toFile(), new Store(settings, sales));
+            mapper.writerWithDefaultPrettyPrinter().writeValue(getPath().toFile(), new Store(settings, sales, labels));
         } catch (IOException ex) {
             Log.errorf(ex, "SalesService: cannot save %s: %s", getPath(), ex.getMessage());
         }
@@ -152,6 +191,7 @@ public class SalesService {
     public void sync() {
         final List<String> problems = new ArrayList<>();
         final List<Sale> fresh = new ArrayList<>();
+        final Map<String, Label> freshLabels = new LinkedHashMap<>();
         if (etsy.isConnected()) {
             try {
                 for (final EtsyApiClient.Receipt r : etsy.getReceiptsSince(Instant.now().minus(ETSY_WINDOW))) {
@@ -159,6 +199,13 @@ public class SalesService {
                 }
             } catch (Exception ex) {
                 problems.add("Etsy: " + ex.getMessage());
+            }
+            try {
+                for (final EtsyApiClient.LabelCharge c : etsy.getLabelChargesSince(Instant.now().minus(ETSY_WINDOW))) {
+                    freshLabels.put("etsy|" + c.entryId(), new Label("etsy", "", c.date().toString(), c.amount()));
+                }
+            } catch (Exception ex) {
+                problems.add("Etsy labels: " + ex.getMessage());
             }
         }
         if (ebay.isConnected()) {
@@ -169,19 +216,85 @@ public class SalesService {
             } catch (Exception ex) {
                 problems.add("eBay: " + ex.getMessage());
             }
+            try {
+                for (final EbayApiClient.LabelCharge c : ebay.getLabelChargesSince(Instant.now().minus(EBAY_WINDOW))) {
+                    freshLabels.put("ebay|" + c.transactionId(), new Label("ebay", c.orderId(), c.date().toString(), c.amount()));
+                }
+            } catch (Exception ex) {
+                problems.add("eBay labels: " + ex.getMessage());
+            }
         }
         synchronized (this) {
             fresh.forEach(s -> sales.put(s.market() + "|" + s.orderId() + "|" + s.lineId(), s));
+            labels.putAll(freshLabels);
             lastSync = Instant.now();
             lastError = problems.isEmpty() ? null : String.join("; ", problems);
-            if (!fresh.isEmpty()) {
+            if (!fresh.isEmpty() || !freshLabels.isEmpty()) {
                 save();
             }
         }
         if (problems.isEmpty()) {
-            Log.infof("SalesService: synced %d sale line(s); %d on record", fresh.size(), sales.size());
+            Log.infof("SalesService: synced %d sale line(s) and %d label charge(s); %d sale lines on record",
+                    fresh.size(), freshLabels.size(), sales.size());
         } else {
             Log.warnf("SalesService: sync incomplete: %s", String.join("; ", problems));
+        }
+    }
+
+    /**
+     * Label costs for the Profit page, for sales from {@code from} on. eBay: the order's own label(s) where eBay
+     * reported them, the period's eBay average otherwise. Etsy: label spend over the period divided by the Etsy
+     * orders in it - counted only from the first label on record, so a period reaching back before the ledger was
+     * first pulled isn't diluted by orders whose labels were never fetched.
+     */
+    public synchronized LabelCosts labelCosts(final Instant from) {
+        final Map<String, Double> ebayByOrder = new java.util.HashMap<>();
+        Instant etsyFirst = null;
+        for (final Label l : labels.values()) {
+            if ("ebay".equals(l.market()) && !l.orderId().isBlank()) {
+                ebayByOrder.merge(l.orderId(), l.cost(), Double::sum);
+            } else if ("etsy".equals(l.market())) {
+                final Instant at = parse(l.date());
+                if (at != null && (etsyFirst == null || at.isBefore(etsyFirst))) {
+                    etsyFirst = at;
+                }
+            }
+        }
+        // eBay average over the period's orders that have a label on record
+        final java.util.Set<String> ebayOrders = new java.util.HashSet<>();
+        final java.util.Set<String> etsyOrders = new java.util.HashSet<>();
+        final Instant etsyFrom = etsyFirst == null ? null : etsyFirst.isAfter(from) ? etsyFirst : from;
+        for (final Sale s : sales.values()) {
+            final Instant at = parse(s.date());
+            if (at == null || s.cancelled()) {
+                continue;
+            }
+            if ("ebay".equals(s.market()) && !at.isBefore(from) && ebayByOrder.containsKey(s.orderId())) {
+                ebayOrders.add(s.orderId());
+            } else if ("etsy".equals(s.market()) && etsyFrom != null && !at.isBefore(etsyFrom)) {
+                etsyOrders.add(s.orderId());
+            }
+        }
+        final double ebaySum = ebayOrders.stream().mapToDouble(ebayByOrder::get).sum();
+        double etsySpend = 0;
+        if (etsyFrom != null) {
+            for (final Label l : labels.values()) {
+                final Instant at = parse(l.date());
+                if ("etsy".equals(l.market()) && at != null && !at.isBefore(etsyFrom)) {
+                    etsySpend += l.cost();
+                }
+            }
+        }
+        return new LabelCosts(ebayByOrder, ebayOrders.isEmpty() ? 0 : ebaySum / ebayOrders.size(), !ebayOrders.isEmpty(),
+                etsyOrders.isEmpty() ? 0 : etsySpend / etsyOrders.size(), etsySpend, etsyOrders.size(), !etsyOrders.isEmpty(),
+                settings.labelCost());
+    }
+
+    private static Instant parse(final String date) {
+        try {
+            return date == null ? null : Instant.parse(date);
+        } catch (RuntimeException ex) {
+            return null;
         }
     }
 

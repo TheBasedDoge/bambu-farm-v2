@@ -103,9 +103,8 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         // finishing a print should enable its Start Next button without needing to re-navigate.
         final UI ui = attachEvent.getUI();
         future.ifPresent(f -> f.cancel(true));
-        future = Optional.of(ses.scheduleAtFixedRate(
-                () -> ui.access(() -> tickers.forEach(Runnable::run)),
-                0, config.refreshInterval().getSeconds(), TimeUnit.SECONDS));
+        future = Optional.of(RefreshTicker.start(ses, ui, "PrintQueueView", config.refreshInterval(),
+                () -> tickers.forEach(Runnable::run)));
     }
 
     @Override
@@ -171,7 +170,9 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
         }
         final ComboBox<BambuPrinters.PrinterDetail> sendTo = new ComboBox<>();
         sendTo.setPlaceholder("Send to…");
-        sendTo.setItems(details.stream().filter(pd -> autoQueueService.resolveSlot(pd, part).isPresent()).toList());
+        // ...and, for a printer whose file makes several pieces (an H2D plate of two), only when that many are waiting.
+        sendTo.setItems(details.stream().filter(pd -> autoQueueService.resolveSlot(pd, part).isPresent()
+                && dispatchQueue.plateSiblings(job, pd) != null).toList());
         sendTo.setItemLabelGenerator(BambuPrinters.PrinterDetail::name);
         sendTo.setWidth("170px");
         sendTo.setTooltipText("Only printers that currently have the required filament loaded are listed");
@@ -181,12 +182,19 @@ public class PrintQueueView extends VerticalLayout implements NotificationHelper
                 return;
             }
             final Integer slot = autoQueueService.resolveSlot(pd, part).map(AutoQueueService.Candidate::resolvedSlot).orElse(part.amsSlot());
+            final List<com.tfyre.bambu.printer.DispatchQueueService.PendingJob> siblings = dispatchQueue.plateSiblings(job, pd);
+            if (siblings == null) {
+                showError("%s prints a full plate of this part and not enough pieces are waiting any more".formatted(pd.name()));
+                return;
+            }
             final Optional<String> err = queuer.queuePart(part, pd.name(), slot, job.orderRef());
             if (err.isPresent()) {
                 showError(err.get());
                 return;
             }
             dispatchQueue.markDispatched(job.id());
+            // The one print covers these too; leaving them in the pool would print them a second time.
+            siblings.forEach(s -> dispatchQueue.markDispatched(s.id()));
             showNotification("Sent to %s - use its Start Next below".formatted(pd.name()));
         });
         final Button retry = new Button(new Icon(VaadinIcon.REFRESH), l -> {

@@ -343,7 +343,8 @@ public class InventoryView extends VerticalLayout implements NotificationHelper 
                     // The two marketplaces' own colours, used only as a key for which is which.
                     dot.getStyle().set("width", "8px").set("height", "8px").set("border-radius", "50%").set("flex", "none")
                             .set("background", "etsy".equals(s.market()) ? "#f1641e" : "#6cb6ff");
-                    final String label = s.variation().isBlank() ? s.title() : s.title() + " · " + s.variation();
+                    final String label = com.tfyre.bambu.printer.HtmlText.plain(
+                            s.variation().isBlank() ? s.title() : s.title() + " · " + s.variation());
                     final Span text = new Span(label);
                     text.getStyle().set("overflow", "hidden").set("text-overflow", "ellipsis").set("white-space", "nowrap");
                     final Span takes = new Span("takes " + s.takes());

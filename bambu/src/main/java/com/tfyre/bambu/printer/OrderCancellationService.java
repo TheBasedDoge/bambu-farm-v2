@@ -69,6 +69,8 @@ public class OrderCancellationService {
     OrderTrackingService tracking;
     @Inject
     NotificationService notificationService;
+    @Inject
+    PlateYieldService plateYield;
 
     /** "market|orderId" → what was cancelled. Concurrent: read from the print-history thread without a lock. */
     private final Map<String, Cancelled> orders = new ConcurrentHashMap<>();
@@ -213,6 +215,8 @@ public class OrderCancellationService {
             final List<String> inFlight = history.inFlightFiles(market, orderId);
             final Map<String, Integer> running = new LinkedHashMap<>();
             inFlight.forEach(f -> partFor(refs, f).ifPresent(k -> running.merge(k, 1, Integer::sum)));
+            // An H2D plate under way holds more than the one piece counted for its file above.
+            plateYield.forOrder(market, orderId).forEach(e -> running.merge(e.partKey(), e.pieces() - 1, Integer::sum));
 
             // 3. Pieces the order took off the shelf.
             final Map<String, Integer> taken = stock.takenFor(label);
@@ -276,7 +280,7 @@ public class OrderCancellationService {
      * A print for a cancelled order has ended. Called from the print-history thread, so it takes no lock that
      * {@link #cancel} holds.
      */
-    public void onJobEnded(final PrintHistoryService.PrintJob job) {
+    public void onJobEnded(final PrintHistoryService.PrintJob job, final int pieces) {
         final OrderRef ref = job.orderRef();
         if (ref == null) {
             return;
@@ -292,7 +296,7 @@ public class OrderCancellationService {
         }
         final Optional<String> partKey = partFor(cancelled.parts(), job.file());
         if (partKey.isPresent()) {
-            final int onHand = stock.adjust(partKey.get(), 1,
+            final int onHand = stock.adjust(partKey.get(), Math.max(1, pieces),
                     "%s cancelled - print finished on %s".formatted(cancelled.label(), job.printer()));
             Log.infof("OrderCancellationService: %s: %s finished for the cancelled %s - added to stock (%d on hand)",
                     job.printer(), job.file(), cancelled.label(), onHand);

@@ -178,13 +178,21 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
 
         final UI ui = attachEvent.getUI();
         future.ifPresent(f -> f.cancel(true));
-        future = Optional.of(ses.scheduleAtFixedRate(
-                () -> ui.access(() -> {
-                    if (tabs.getSelectedTab() == overviewTab) {
-                        refreshOverview();
-                    }
-                }),
-                0, config.refreshInterval().getSeconds(), TimeUnit.SECONDS));
+        // The overview is rebuilt (to compare against what is on screen) every OVERVIEW_EVERY_MS, not every tick -
+        // it builds the whole page to find out whether anything changed. The parts that move by the second (the
+        // waiting-on timers, camera frames) still update every tick.
+        future = Optional.of(RefreshTicker.start(ses, ui, "AutomationView", config.refreshInterval(), () -> {
+            if (tabs.getSelectedTab() != overviewTab) {
+                return;
+            }
+            final long now = System.currentTimeMillis();
+            if (now - lastOverviewCheck >= OVERVIEW_EVERY_MS) {
+                refreshOverview();
+            } else {
+                updatePendingTimers();
+                updateCameras();
+            }
+        }));
     }
 
     @Override
@@ -217,7 +225,12 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     // -------------------------------------------------------------------------
 
     /** Rebuilds the overview only when the displayed data actually changed (change-detection key). */
+    /** How often the scheduled refresh rebuilds the overview to look for changes; a click still refreshes at once. */
+    private static final long OVERVIEW_EVERY_MS = 5_000;
+    private long lastOverviewCheck;
+
     private void refreshOverview() {
+        lastOverviewCheck = System.currentTimeMillis();
         final List<Component> sections = new ArrayList<>();
         final StringBuilder key = new StringBuilder();
         pendingCams.clear();

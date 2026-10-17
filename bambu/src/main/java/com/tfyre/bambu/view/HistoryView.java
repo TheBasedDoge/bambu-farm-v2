@@ -223,7 +223,7 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
         if (!fileGrid.getColumns().isEmpty()) {
             return;
         }
-        fileGrid.addColumn(FileStat::file).setHeader("File").setFlexGrow(3).setSortable(true)
+        fileGrid.addColumn(s -> com.tfyre.bambu.printer.LibraryService.titleOf(s.file())).setHeader("File").setFlexGrow(3).setSortable(true)
                 .setComparator(Comparator.comparing(FileStat::file, String.CASE_INSENSITIVE_ORDER))
                 .setTooltipGenerator(FileStat::file);
         fileGrid.addColumn(FileStat::total).setHeader("Prints").setAutoWidth(true).setSortable(true)
@@ -270,7 +270,7 @@ public class HistoryView extends VerticalLayout implements GridHelper<PrintJob>,
     private void configureGrid() {
         setupColumn("Printer", PrintJob::printer)
                 .setSortable(true).setComparator(Comparator.comparing(PrintJob::printer, String.CASE_INSENSITIVE_ORDER));
-        setupColumn("File", PrintJob::file)
+        setupColumn("File", j -> j.file() == null || j.file().isBlank() ? "" : com.tfyre.bambu.printer.LibraryService.titleOf(j.file()))
                 .setSortable(true).setComparator(Comparator.comparing(PrintJob::file, String.CASE_INSENSITIVE_ORDER))
                 .setFlexGrow(3)
                 .setTooltipGenerator(PrintJob::file);

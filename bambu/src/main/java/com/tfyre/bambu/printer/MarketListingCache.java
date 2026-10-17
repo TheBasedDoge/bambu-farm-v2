@@ -58,7 +58,11 @@ public class MarketListingCache {
         }
         try {
             final CacheData data = mapper.readValue(path.toFile(), CacheData.class);
-            etsy = data.etsy() == null ? List.of() : data.etsy();
+            // Titles saved before 2026-10-13 are still HTML-encoded (6.5&quot;) - decode them as they load
+            etsy = data.etsy() == null ? List.of() : data.etsy().stream()
+                    .map(l -> new EtsyApiClient.Listing(l.listingId(), HtmlText.plain(l.title()), l.quantityAvailable(),
+                            l.imageUrl(), l.hasVariations()))
+                    .toList();
             ebay = data.ebay() == null ? List.of() : data.ebay();
             etsyLoadedAt = data.etsyLoadedAt();
             ebayLoadedAt = data.ebayLoadedAt();

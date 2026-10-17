@@ -54,7 +54,7 @@ public class PrinterView extends PushDiv implements HasUrlParameter<String>, Not
         final DashboardPrinter card = cardInstance.get();
         content.add(card.build(printer, false));
         final UI ui = getUI().get();
-        createFuture(() -> ui.access(card::update), config.refreshInterval());
+        createRefresh(ui, config.refreshInterval(), card::update);
     }
 
     private Component buildContent() {
@@ -69,8 +69,15 @@ public class PrinterView extends PushDiv implements HasUrlParameter<String>, Not
         add(buildContent());
         comboBox.setItemLabelGenerator(BambuPrinter::getName);
         comboBox.setItems(printers.getPrinters().stream().sorted(Comparator.comparing(BambuPrinter::getName)).toList());
-        comboBox.addValueChangeListener(l -> buildPrinter(l.getValue()));
-        _printer.ifPresent(comboBox::setValue);
+        comboBox.addValueChangeListener(l -> {
+            if (l.getValue() != null) {
+                LastPrinter.set(l.getValue().getName());
+                buildPrinter(l.getValue());
+            }
+        });
+        // Open on the printer in the address, else the last one picked, else the first - never on an empty page
+        LastPrinter.pick(_printer, printers.getPrinters().stream().sorted(Comparator.comparing(BambuPrinter::getName)).toList(),
+                BambuPrinter::getName).ifPresent(comboBox::setValue);
     }
 
     @Override

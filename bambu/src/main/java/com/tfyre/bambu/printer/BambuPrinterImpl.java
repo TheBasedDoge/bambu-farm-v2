@@ -111,6 +111,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
             printerError = print.getPrintError();
         }
         updateMqttSignatureRequired(print);
+        updateAmsDry(print);
         // Mirrors the dashboard's HMS badge filter: severity 1 (fatal) or 2 (serious) only. Recomputed from
         // this message's hms list (not sticky) - matches the existing, already-working badge behaviour.
         activeHmsErrors = print.getHmsList().stream()
@@ -880,30 +881,111 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                 .findFirst();
     }
 
+    /** Drying state per AMS id - see {@link #updateAmsDry(Print)}. */
+    private final java.util.concurrent.ConcurrentHashMap<Integer, BambuPrinter.AmsDryState> amsDryStates =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** sequence_id of each drying command sent and not yet answered → AMS id. */
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer> pendingDry = new java.util.concurrent.ConcurrentHashMap<>();
+
     @Override
-    public void commandAmsDry(final int amsId, final int targetTemp, final int durationHours) {
-        // Clamp temp to firmware minimum (45°C) — below this the command is silently ignored.
+    public java.util.Map<Integer, BambuPrinter.AmsDryState> getAmsDryStates() {
+        return java.util.Map.copyOf(amsDryStates);
+    }
+
+    /**
+     * Keeps {@link #getAmsDryStates()} current from two kinds of message: the regular AMS push (dry_time,
+     * dry_setting), and the printer's answer to an ams_filament_drying command (result, err_code). An answer is
+     * matched to the app's command by sequence_id, so drying started from Bambu Studio is still picked up from
+     * the AMS push but never mistaken for the answer to the app's own command.
+     */
+    private void updateAmsDry(final Print print) {
+        if ("ams_filament_drying".equals(print.getCommand()) && print.hasSequenceId()) {
+            final Integer amsId = pendingDry.remove(print.getSequenceId());
+            if (amsId != null) {
+                final String result = print.hasResult() && !print.getResult().isBlank() ? print.getResult() : "unknown";
+                amsDryStates.computeIfPresent(amsId, (k, old) -> {
+                    final BambuPrinter.DryCommand sent = old.lastCommand();
+                    if (sent == null || !print.getSequenceId().equals(sent.sequenceId())) {
+                        return old;
+                    }
+                    return old.withCommand(new BambuPrinter.DryCommand(sent.sequenceId(), sent.start(), sent.sentAt(),
+                            result, print.getErrCode()));
+                });
+                if ("fail".equalsIgnoreCase(result)) {
+                    Log.warnf("%s: AMS #%d refused the drying command (err_code %d / 0x%08X)", name, amsId,
+                            print.getErrCode(), print.getErrCode());
+                } else {
+                    Log.infof("%s: AMS #%d drying command answered: %s", name, amsId, result);
+                }
+            }
+        }
+        if (!print.hasAms()) {
+            return;
+        }
+        print.getAms().getAmsList().forEach(single -> {
+            if (!single.hasDryTime() && !single.hasDrySetting()) {
+                return;
+            }
+            final int amsId = parseIntSafe(single.getId(), -1);
+            if (amsId < 0) {
+                return;
+            }
+            amsDryStates.compute(amsId, (k, old) -> {
+                final boolean supported = single.hasDrySetting() || old != null && old.supported();
+                final int minutes = single.hasDryTime() ? Math.max(0, single.getDryTime())
+                        : old == null ? 0 : old.minutesLeft();
+                String filament = old == null ? "" : old.filament();
+                int temp = old == null ? 0 : old.temp();
+                int hours = old == null ? 0 : old.hours();
+                if (single.hasDrySetting()) {
+                    final com.tfyre.bambu.model.AmsDrySetting setting = single.getDrySetting();
+                    filament = setting.getDryFilament();
+                    temp = Math.max(0, setting.getDryTemperature());
+                    hours = Math.max(0, setting.getDryDuration());
+                }
+                return new BambuPrinter.AmsDryState(amsId, supported, minutes, filament, temp, hours,
+                        old == null ? null : old.lastCommand());
+            });
+        });
+    }
+
+    private void trackDryCommand(final int amsId, final String sequenceId, final boolean start) {
+        final BambuPrinter.DryCommand command = new BambuPrinter.DryCommand(sequenceId, start, java.time.Instant.now(), null, 0);
+        pendingDry.put(sequenceId, amsId);
+        amsDryStates.compute(amsId, (k, old) -> old == null
+                ? new BambuPrinter.AmsDryState(amsId, false, 0, "", 0, 0, command)
+                : old.withCommand(command));
+    }
+
+    @Override
+    public void commandAmsDry(final int amsId, final String filament, final int targetTemp, final int durationHours) {
+        // Clamp temp to firmware minimum (45°C) - below this the command is refused.
         final int clampedTemp = Math.max(45, targetTemp);
-        logUser("%s: commandAmsDry ams[%d] temp[%d] duration[%d]h".formatted(name, amsId, clampedTemp, durationHours));
-        // Command: ams_filament_drying  (NOT ams_control/dry — that is the old incorrect param)
-        // duration is in HOURS (not minutes).
-        // cooling_temp, mode, rotate_tray, humidity are all required; omitting any causes silent failure.
-        // Requires P1S firmware >= 01.08.00.00; firmware 01.09+ also requires Developer Mode.
+        final String type = filament == null ? "" : filament.trim().toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9+]", "");
+        logUser("%s: commandAmsDry ams[%d] filament[%s] temp[%d] duration[%d]h".formatted(name, amsId, type, clampedTemp, durationHours));
+        // Command: ams_filament_drying, duration in HOURS. Field set copied from Bambu Studio driving an H2D
+        // (captured 2026-10-12). Without "filament" the H2D answers result "fail", err_code 0 - which is what
+        // every drying command the app sent got until then. cooling_temp = temp was tested and accepted; Studio
+        // itself sent 50 with a 45°C PLA dry.
+        final long seq = counter.incrementAndGet();
         final String json = ("{\"print\":{\"sequence_id\":\"%d\",\"command\":\"ams_filament_drying\","
-                + "\"ams_id\":%d,\"temp\":%d,\"cooling_temp\":%d,\"duration\":%d,"
-                + "\"humidity\":0,\"mode\":1,\"rotate_tray\":false}}")
-                .formatted(counter.incrementAndGet(), amsId, clampedTemp, clampedTemp, durationHours);
+                + "\"ams_id\":%d,\"temp\":%d,\"cooling_temp\":%d,\"duration\":%d,\"humidity\":0,\"mode\":1,"
+                + "\"rotate_tray\":false,\"filament\":\"%s\",\"close_power_conflict\":false}}")
+                .formatted(seq, amsId, clampedTemp, clampedTemp, durationHours, type);
+        trackDryCommand(amsId, String.valueOf(seq), true);
         sendData(json);
     }
 
     @Override
     public void commandAmsStopDry(final int amsId) {
         logUser("%s: commandAmsStopDry ams[%d]".formatted(name, amsId));
-        // Stop: mode=0, temp=0, cooling_temp=40, duration=0
+        // Exactly what Bambu Studio sends to stop: mode 0, everything else zeroed, filament blank.
+        final long seq = counter.incrementAndGet();
         final String json = ("{\"print\":{\"sequence_id\":\"%d\",\"command\":\"ams_filament_drying\","
-                + "\"ams_id\":%d,\"temp\":0,\"cooling_temp\":40,\"duration\":0,"
-                + "\"humidity\":0,\"mode\":0,\"rotate_tray\":false}}")
-                .formatted(counter.incrementAndGet(), amsId);
+                + "\"ams_id\":%d,\"temp\":0,\"cooling_temp\":0,\"duration\":0,\"humidity\":0,\"mode\":0,"
+                + "\"rotate_tray\":false,\"filament\":\"\",\"close_power_conflict\":false}}")
+                .formatted(seq, amsId);
+        trackDryCommand(amsId, String.valueOf(seq), false);
         sendData(json);
     }
 
@@ -1040,6 +1122,19 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                 .formatted(name, _filename, command.useAms(), command.timelapse(), command.bedLevelling(), command.flowCalibration(), command.amsMapping()));
         final int pos = _filename.lastIndexOf(".");
         final String taskName = pos == -1 ? _filename : _filename.substring(0, pos);
+        // Two-nozzle printers also want each filament's source as unit + slot (ams_mapping2), which is how
+        // Bambu Studio tells an H2D that the second filament is in the AMS HT on the other nozzle. Sent only to
+        // those printers, so nothing changes for the P1s.
+        final List<com.tfyre.bambu.model.AmsMappingEntry> mapping2 = new java.util.ArrayList<>();
+        if (model.isDualNozzle()) {
+            for (final Integer tray : command.amsMapping()) {
+                final int id = tray == null ? 0 : tray;
+                mapping2.add(com.tfyre.bambu.model.AmsMappingEntry.newBuilder()
+                        .setAmsId(id >= 128 ? id : id / 4)
+                        .setSlotId(id >= 128 ? 0 : id % 4)
+                        .build());
+            }
+        }
         final BambuMessage message = BambuMessage.newBuilder()
                 .setPrint(
                         Print.newBuilder()
@@ -1063,6 +1158,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                                 .setVibrationCali(command.vibrationCalibration())
                                 .setLayerInspect(true)
                                 .addAllAmsMapping(command.amsMapping())
+                                .addAllAmsMapping2(mapping2)
                                 .setUseAms(command.useAms())
                 )
                 .build();

@@ -51,15 +51,9 @@ public class StockService {
     /** What a part key is made of, for display. {@code material}/{@code color} are "" when the mapping has none. */
     public record PartId(String file, int plateId, String material, String color) {
 
-        /** The file name without its slicer extensions - what you would call the part out loud. */
+        /** What you would call the part out loud - the same name the Files page uses ("S2000 SpeakerPods Cover"). */
         public String name() {
-            String n = file;
-            for (final String ext : List.of(".gcode.3mf", ".3mf", ".gcode")) {
-                if (n.toLowerCase(Locale.ROOT).endsWith(ext)) {
-                    n = n.substring(0, n.length() - ext.length());
-                    break;
-                }
-            }
+            final String n = LibraryService.titleOf(file);
             return plateId > 1 ? "%s (plate %d)".formatted(n, plateId) : n;
         }
     }
@@ -249,6 +243,38 @@ public class StockService {
             mapper.writeValue(resolve(LEDGER_FILENAME).toFile(), ledger);
         } catch (IOException ex) {
             Log.errorf(ex, "StockService: cannot save %s: %s", resolve(LEDGER_FILENAME), ex.getMessage());
+        }
+    }
+
+    /**
+     * A library file moved (into or out of a project folder). The file's path is part of every stock key, so the
+     * counts and their history are carried over to the new path; without this the pieces on the shelf would
+     * stay filed under a path no mapping points at any more.
+     */
+    public synchronized void renamePath(final String oldPath, final String newPath) {
+        final String from = PART_PREFIX + oldPath + "|";
+        final String to = PART_PREFIX + newPath + "|";
+        boolean changed = false;
+        for (final String key : List.copyOf(stock.keySet())) {
+            if (key.startsWith(from)) {
+                final Integer pieces = stock.remove(key);
+                stock.merge(to + key.substring(from.length()), pieces, Integer::sum);
+                changed = true;
+            }
+        }
+        boolean ledgerChanged = false;
+        for (int i = 0; i < ledger.size(); i++) {
+            final LedgerEntry e = ledger.get(i);
+            if (e.partKey() != null && e.partKey().startsWith(from)) {
+                ledger.set(i, new LedgerEntry(e.timestamp(), to + e.partKey().substring(from.length()), e.delta(), e.reason(), e.balance()));
+                ledgerChanged = true;
+            }
+        }
+        if (changed) {
+            save();
+        }
+        if (ledgerChanged) {
+            saveLedger();
         }
     }
 

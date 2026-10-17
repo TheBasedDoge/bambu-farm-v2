@@ -88,7 +88,10 @@ public class PrintAiService {
     /** How often to sample the layer number while waiting for the first layer to be laid down. */
     private static final long FIRST_LAYER_POLL_MS = 10_000;
 
-    /** Newest-first bounded history of check attempts. In-memory only (images included) - resets on restart. */
+    /**
+     * Newest-first bounded history of check attempts. Kept on disk too (see {@link #saveChecks()}), frames
+     * included, so a deploy no longer leaves the AI Settings page with "no frame" on every printer.
+     */
     private final Deque<CheckRecord> history = new ArrayDeque<>();
 
     /** Most recent CheckRecord per printer (kept even for no-snapshot attempts). */
@@ -96,6 +99,7 @@ public class PrintAiService {
 
     private void record(final CheckRecord rec) {
         lastChecks.put(rec.printer(), rec);
+        scheduleSave();
         // Keep scheduled "couldn't run" noise (no snapshot every 5 minutes) out of the bounded history,
         // but always keep real results and anything a human or the queue explicitly asked for.
         if (rec.good() == null && "scheduled".equals(rec.trigger())) {
@@ -106,6 +110,147 @@ public class PrintAiService {
             while (history.size() > MAX_HISTORY) {
                 history.removeLast();
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // On disk: <data>/ai-checks/checks.json plus one JPEG per kept frame
+    // -------------------------------------------------------------------------
+
+    /** On-disk shape of a {@link CheckRecord}: the frame is a JPEG file beside the JSON, named here. */
+    public record StoredCheck(Instant at, String printer, String checkType, String trigger, String context,
+            Boolean good, OllamaService.Severity severity, String description, String frame, Double pixelDiff) {
+    }
+
+    public record StoredChecks(List<StoredCheck> history, List<StoredCheck> last) {
+    }
+
+    private static final String STORE_DIR = "ai-checks";
+    private static final String STORE_FILE = "checks.json";
+
+    @Inject
+    com.fasterxml.jackson.databind.ObjectMapper mapper;
+
+    private final java.util.concurrent.atomic.AtomicBoolean saveQueued = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private java.nio.file.Path storeDir() {
+        final java.nio.file.Path parent = java.nio.file.Path.of(config.maintenanceFile()).getParent();
+        return (parent != null ? parent : java.nio.file.Path.of(".")).resolve(STORE_DIR);
+    }
+
+    private static String frameName(final CheckRecord rec) {
+        return "%d-%s-%s.jpg".formatted(rec.at().toEpochMilli(),
+                rec.printer().replaceAll("[^A-Za-z0-9_-]", "_"), rec.checkType().replaceAll("[^A-Za-z0-9_-]", "_"));
+    }
+
+    @jakarta.annotation.PostConstruct
+    void loadChecks() {
+        final java.nio.file.Path dir = storeDir();
+        final java.nio.file.Path file = dir.resolve(STORE_FILE);
+        if (!java.nio.file.Files.isRegularFile(file)) {
+            return;
+        }
+        try {
+            final StoredChecks stored = mapper.readValue(file.toFile(), StoredChecks.class);
+            final Map<String, CheckRecord> byFrame = new java.util.HashMap<>();
+            final java.util.function.Function<StoredCheck, CheckRecord> restore = sc -> {
+                byte[] frame = null;
+                if (sc.frame() != null) {
+                    final CheckRecord seen = byFrame.get(sc.frame());
+                    if (seen != null) {
+                        return seen;
+                    }
+                    try {
+                        frame = java.nio.file.Files.readAllBytes(dir.resolve(sc.frame()));
+                    } catch (java.io.IOException ex) {
+                        // frame pruned or lost - keep the verdict without it
+                    }
+                }
+                final CheckRecord rec = new CheckRecord(sc.at(), sc.printer(), sc.checkType(), sc.trigger(), sc.context(),
+                        sc.good(), sc.severity(), sc.description(), frame, sc.pixelDiff());
+                if (sc.frame() != null) {
+                    byFrame.put(sc.frame(), rec);
+                }
+                return rec;
+            };
+            synchronized (history) {
+                history.clear();
+                Optional.ofNullable(stored.history()).orElse(List.of()).stream().limit(MAX_HISTORY)
+                        .map(restore).forEach(history::addLast);
+            }
+            Optional.ofNullable(stored.last()).orElse(List.of()).stream().map(restore)
+                    .forEach(r -> lastChecks.put(r.printer(), r));
+            Log.infof("PrintAiService: loaded %d check(s) and the last check of %d printer(s) from %s",
+                    history.size(), lastChecks.size(), file);
+        } catch (Exception ex) {
+            // Display history only - a file from an older build must not stop the app starting
+            Log.warnf("PrintAiService: cannot load %s (%s) - check history starts empty", file, ex.getMessage());
+        }
+    }
+
+    /** Saves a couple of seconds after a check, so a burst of checks is one write. */
+    private void scheduleSave() {
+        if (saveQueued.compareAndSet(false, true)) {
+            executor.submit(() -> {
+                try {
+                    Thread.sleep(2_000);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                }
+                saveQueued.set(false);
+                saveChecks();
+            });
+        }
+    }
+
+    @io.quarkus.runtime.Shutdown
+    void onShutdownSaveChecks() {
+        saveChecks();
+    }
+
+    private synchronized void saveChecks() {
+        final java.nio.file.Path dir = storeDir();
+        try {
+            java.nio.file.Files.createDirectories(dir);
+            final List<CheckRecord> hist = getHistory();
+            final List<CheckRecord> last = List.copyOf(lastChecks.values());
+            final Set<String> keep = new java.util.HashSet<>();
+            final java.util.function.Function<CheckRecord, StoredCheck> store = rec -> {
+                String name = null;
+                if (rec.snapshot() != null && rec.snapshot().length > 0) {
+                    name = frameName(rec);
+                    keep.add(name);
+                    final java.nio.file.Path f = dir.resolve(name);
+                    if (!java.nio.file.Files.exists(f)) {
+                        try {
+                            java.nio.file.Files.write(f, rec.snapshot());
+                        } catch (java.io.IOException ex) {
+                            Log.warnf("PrintAiService: cannot save frame %s: %s", f, ex.getMessage());
+                            name = null;
+                        }
+                    }
+                }
+                return new StoredCheck(rec.at(), rec.printer(), rec.checkType(), rec.trigger(), rec.context(), rec.good(),
+                        rec.severity(), rec.description(), name, rec.pixelDiff());
+            };
+            final StoredChecks out = new StoredChecks(hist.stream().map(store).toList(), last.stream().map(store).toList());
+            final java.nio.file.Path tmp = dir.resolve(STORE_FILE + ".tmp");
+            mapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), out);
+            java.nio.file.Files.move(tmp, dir.resolve(STORE_FILE), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            // Frames no record points at any more
+            try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.list(dir)) {
+                files.filter(f -> f.getFileName().toString().endsWith(".jpg"))
+                        .filter(f -> !keep.contains(f.getFileName().toString()))
+                        .forEach(f -> {
+                            try {
+                                java.nio.file.Files.deleteIfExists(f);
+                            } catch (java.io.IOException ex) {
+                                // next save tries again
+                            }
+                        });
+            }
+        } catch (Exception ex) {
+            Log.warnf("PrintAiService: cannot save the check history to %s: %s", dir, ex.getMessage());
         }
     }
 

@@ -343,10 +343,15 @@ public class AutoQueueService {
      * Decides whether a printer qualifies for a part and which AMS slot to pin the job to.
      * Empty = printer doesn't qualify (mapped filament type isn't loaded where it needs to be).
      */
+    @Inject
+    LibraryFileInfo fileInfo;
+
     public Optional<Candidate> resolveSlot(final BambuPrinters.PrinterDetail detail, final MappingPart part) {
         // A printer whose family has no file for this part is never a candidate, whatever it has loaded: the
         // library is sliced for the P1s, and the H2D only joins in for parts with an H2D file mapped.
-        if (part.pathFor(detail.config().model()).isEmpty()) {
+        // ...and a file sliced for the other kind of printer never makes its printer a candidate either, so a
+        // part that exists only as an H2D slice goes to the H2D and is simply not offered to the P1s.
+        if (fileInfo.fileFor(part, detail.config().model()).isEmpty()) {
             return Optional.empty();
         }
         final BambuPrinter printer = detail.printer();

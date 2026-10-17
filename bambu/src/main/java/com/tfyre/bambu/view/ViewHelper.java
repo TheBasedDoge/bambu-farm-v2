@@ -62,19 +62,18 @@ public interface ViewHelper {
         }
     }
 
+    /** "34d 4h", "4h 55m", "48m" - was "34 day(s) 4 hour(s) 35 minute(s)". */
     default String formatTime(final Duration duration) {
-        final StringBuilder sb = new StringBuilder();
         final long days = duration.toDays();
+        final int hours = duration.toHoursPart();
+        final int minutes = duration.toMinutesPart();
         if (days > 0) {
-            sb.append(days)
-                    .append(" day(s) ");
+            return hours > 0 ? "%dd %dh".formatted(days, hours) : "%dd".formatted(days);
         }
-        sb
-                .append(duration.toHoursPart())
-                .append(" hour(s) ")
-                .append(duration.toMinutesPart())
-                .append(" minute(s)");
-        return sb.toString();
+        if (hours > 0) {
+            return "%dh %02dm".formatted(hours, minutes);
+        }
+        return "%dm".formatted(minutes);
     }
 
     default Div newDiv(final String className, final Component... components) {

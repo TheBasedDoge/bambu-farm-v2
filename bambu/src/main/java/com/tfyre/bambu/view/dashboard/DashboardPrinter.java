@@ -162,6 +162,31 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     private int lastKnownActiveTrayId = -1;
 
     private Component thumbnailOrIframe;
+    /**
+     * Drawn over the camera on the Dashboard, in the Overview's vocabulary: a state pill, the file, the
+     * percentage and time left, a progress bar along the bottom edge, and an outline on the card that means
+     * the same as it does there - red for a fault or a failed print, green for a part waiting to come off.
+     */
+    private final Span overlayPillText = new Span();
+    private final Span overlayFile = new Span();
+    private final Span overlayPct = new Span();
+    private final Span overlayLeft = new Span();
+    private final Div overlayFill = new Div();
+    /** Same "Bed cleared" as on the Overview tile and the Farm page - shown over a finished or failed print. */
+    private final Button overlayClear = new Button("Bed cleared");
+    // Dashboard card body (2026-10-13): print controls that only show when there is a print to act on, and the
+    // speed / fans / light line that sits under the temperature strip.
+    private final Button dashResume = new Button("Resume");
+    private final Button dashPause = new Button("Pause");
+    private final Button dashStop = new Button("Stop");
+    private final Div dashMisc = new Div();
+    /** The last status message processed by update(), compared by identity. */
+    private BambuPrinter.Message lastProcessed;
+    private Component contentRoot;
+    @Inject
+    com.tfyre.bambu.printer.BedClearService bedClear;
+    @Inject
+    com.tfyre.bambu.printer.DispatchQueueService dispatchQueue;
     private BambuPrinter printer;
     private boolean fromDashboard;
 
@@ -192,7 +217,13 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     }
 
     private void setTemperature(final Span span, final double value) {
-        span.setText("%.2fºC".formatted(value));
+        span.setText(fromDashboard ? "%.0f°".formatted(value) : "%.2fºC".formatted(value));
+    }
+
+    /** A target temperature: on the dashboard it is only shown while something is heating (target above 0). */
+    private void setTarget(final Span span, final double value) {
+        setTemperature(span, value);
+        span.getElement().getClassList().set("t-off", value <= 0);
     }
 
     private Images getHumidityImage(final String id) {
@@ -231,7 +262,36 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         return lastKnownActiveTrayId;
     }
 
+    /**
+     * Badge text for an AMS unit's drying, or null for no badge. The printer's dry_time is the truth; the app's
+     * last command only adds a short "starting" or a "refused" note around it.
+     *
+     * @param warmWhileIdle fallback guess for firmware that reports no drying fields at all
+     */
+    private static String dryBadgeText(final BambuPrinter.AmsDryState dry, final boolean warmWhileIdle) {
+        if (dry == null) {
+            return warmWhileIdle ? "🔥 Drying" : null;
+        }
+        if (dry.isDrying()) {
+            final int m = dry.minutesLeft();
+            return "🔥 Drying%s · %dh %02dm left".formatted(dry.filament().isBlank() ? "" : " " + dry.filament(), m / 60, m % 60);
+        }
+        final BambuPrinter.DryCommand cmd = dry.lastCommand();
+        if (cmd == null || !cmd.start()) {
+            return null;
+        }
+        final long ageMinutes = Duration.between(cmd.sentAt(), Instant.now()).toMinutes();
+        if (cmd.failed()) {
+            return ageMinutes < 30
+                    ? "⚠ Dry refused" + (cmd.errCode() != 0 ? " (0x%08X)".formatted(cmd.errCode()) : "")
+                    : null;
+        }
+        // Sent and either unanswered or accepted, but the AMS push hasn't shown a dry_time yet
+        return ageMinutes < 2 ? "Starting dry…" : null;
+    }
+
     private void processAms(final com.tfyre.bambu.model.Ams ams) {
+        updateAmsDryVisibility();
         final int amsTrayId = activeAmsTrayId(ams);
         ams.getAmsList().forEach(single -> {
             final int amsId = getAmsId(single);
@@ -240,15 +300,13 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 setTemperature(header.temperature(), amsTemp);
                 header.humidity().setSrc(getHumidityImage(single.getHumidity()).getImage());
 
-                // Drying indicator: check service-tracked session OR heuristic (temp > 40°C while idle)
-                final Optional<AmsDryService.DryingSession> session = amsDryService.getActiveDrying(printer.getName(), amsId);
-                final boolean isDryingHeuristic = gcodeState.isIdle() && amsTemp > 40.0;
-                final boolean isDrying = session.isPresent() || isDryingHeuristic;
-                header.dryingBadge().setVisible(isDrying);
-                if (isDrying) {
-                    session.ifPresentOrElse(
-                            s -> header.dryingBadge().setText("🔥 Drying (%d min left)".formatted(s.remainingMinutes())),
-                            () -> header.dryingBadge().setText("🔥 Drying"));
+                // Drying badge from what the printer itself reports (dry_time = minutes left) and its answer to
+                // the app's command. Until 2026-10-12 this counted down from the moment the app SENT the command,
+                // and showed 4 hours of drying on two AMS units the printers had refused to heat.
+                final String dryText = dryBadgeText(printer.getAmsDryStates().get(amsId), gcodeState.isIdle() && amsTemp > 40.0);
+                header.dryingBadge().setVisible(dryText != null);
+                if (dryText != null) {
+                    header.dryingBadge().setText(dryText);
                 }
             });
 
@@ -257,8 +315,10 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 Optional.ofNullable(amsFilaments.get(getFilamentTrayKey(amsId, trayId))).ifPresent(filament -> {
                     if (!tray.hasTrayInfoIdx()) {
                         filament.type().setText("Empty");
+                        filament.div().addClassName("empty");
                         return;
                     }
+                    filament.div().removeClassName("empty");
                     filament.type().setText(Filament.getFilamentDescription(tray.getTrayInfoIdx(), config.dashboard().filamentFullName()));
                     filament.color().getStyle().setBackgroundColor("#%s".formatted(tray.getTrayColor()));
                     setActive(filament.div(), amsTrayId == filament.amsTrayId());
@@ -350,7 +410,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         }
         if (print.hasBedTargetTemper()) {
             temperatureBed = print.getBedTargetTemper();
-            setTemperature(bedTarget, temperatureBed);
+            setTarget(bedTarget, temperatureBed);
         }
 
         //Nozzle & Target Temperature
@@ -360,7 +420,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         }
         if (print.hasNozzleTargetTemper()) {
             temperatureNozzle = print.getNozzleTargetTemper();
-            setTemperature(nozzleTarget, temperatureNozzle);
+            setTarget(nozzleTarget, temperatureNozzle);
         }
 
         // H2D: device.extruder.info[] overrides scalar nozzle fields.
@@ -373,12 +433,12 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                     setTemperature(nozzle, current);
                     nozzleImage.setSrc(current > 0 ? Images.MONITOR_NOZZLE_TEMP_ACTIVE.getImage() : Images.MONITOR_NOZZLE_TEMP.getImage());
                     temperatureNozzle = target;
-                    setTemperature(nozzleTarget, temperatureNozzle);
+                    setTarget(nozzleTarget, temperatureNozzle);
                 } else if (entry.getId() == 1) {
                     setTemperature(nozzle2, current);
                     nozzle2Image.setSrc(current > 0 ? Images.MONITOR_NOZZLE_TEMP_ACTIVE.getImage() : Images.MONITOR_NOZZLE_TEMP.getImage());
                     temperatureNozzle2 = target;
-                    setTemperature(nozzle2Target, temperatureNozzle2);
+                    setTarget(nozzle2Target, temperatureNozzle2);
                 }
             }
         } else {
@@ -389,7 +449,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             }
             if (print.hasNozzle2TargetTemper()) {
                 temperatureNozzle2 = print.getNozzle2TargetTemper();
-                setTemperature(nozzle2Target, temperatureNozzle2);
+                setTarget(nozzle2Target, temperatureNozzle2);
             }
         }
 
@@ -426,7 +486,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             final long packed = print.getDevice().getCtc().getInfo().getTemp();
             setTemperature(frame, (int) (packed & 0xFFFFL));
             temperatureChamber = (packed >> 16) & 0xFFFFL;
-            setTemperature(frameTarget, temperatureChamber);
+            setTarget(frameTarget, temperatureChamber);
         } else if (print.hasChamberTemper()) {
             setTemperature(frame, print.getChamberTemper());
         }
@@ -519,6 +579,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                     monitorLampText.setText(lr.getMode());
                     monitorLamp.setSrc(BambuConst.LightMode.ON.getValue().equals(lr.getMode()) ? Images.MONITOR_LAMP_ON.getImage() : Images.MONITOR_LAMP_OFF.getImage());
                 });
+        updateOverlay();
     }
 
     private <T> void process(final boolean hasValue, final BambuPrinter.Message message, final T data, final BiConsumer<BambuPrinter.Message, T> consumer) {
@@ -593,7 +654,14 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 processMessage(message);
             });
         }
-        printer.getStatus().ifPresent(this::processMessage);
+        // Only a message we haven't processed yet - the printer object holds on to its last one, and re-applying the
+        // same message every second for every card was most of the Dashboard's per-tick work.
+        printer.getStatus().ifPresent(message -> {
+            if (message != lastProcessed) {
+                lastProcessed = message;
+                processMessage(message);
+            }
+        });
         printer.getThumbnail().ifPresent(data -> {
             if (data.thumbnail().getId().equals(thumbnailId)) {
                 return;
@@ -612,6 +680,8 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         updateAiStatus();
         updateCheckBedLabel();
         updateAmsDryVisibility();
+        // Every tick, not only on a new message: "Bed cleared" pressed on another page has to show here too
+        updateOverlay();
     }
 
     private void updateFailureBadge(final BambuConst.GCodeState newState) {
@@ -705,6 +775,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         checkBed.setTooltipText("Ask AI whether the bed is clear");
         checkBed.setVisible(aiService.isEnabled());
         checkBed.addClickListener(l -> doCheckBed());
+        if (fromDashboard) {
+            checkBed.setText("Check bed");
+        }
     }
 
     private Div buildAiStatus() {
@@ -872,6 +945,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             checkBed.setTooltipText("Ask AI if the print looks OK");
         } else {
             checkBed.setTooltipText("Ask AI whether the bed is clear");
+        }
+        if (fromDashboard) {
+            checkBed.setText(gcodeState.isPrinting() ? "Check print" : "Check bed");
         }
     }
 
@@ -1228,10 +1304,16 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 // Don't buildImage
             } else if (fromDashboard && !config.dashboard().remoteView()) {
                 // Don't buildImage
+            } else if (fromDashboard) {
+                // On the Dashboard the camera leads the card, as it does on the Overview.
+                list.add(0, buildImage());
             } else {
                 list.add(buildImage());
             }
             list.add(buildStatus());
+            if (fromDashboard) {
+                list.add(dashMisc);
+            }
             list.add(buildAms());
             list.add(buildProgressBar());
             list.add(progressBar);
@@ -1242,7 +1324,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                 list.add(buildPrintAgain());
                 list.add(buildStartNext());
             }
-            return createContent(list);
+            final Component content = createContent(list);
+            updateOverlay();
+            return content;
         } finally {
             built = true;
         }
@@ -1255,6 +1339,10 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         content.setSpacing(false);
         list.forEach(content::add);
         content.setSizeUndefined();
+        if (fromDashboard) {
+            content.addClassName("dash-v2");
+        }
+        contentRoot = content;
         return content;
     }
 
@@ -1276,7 +1364,10 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         nameControls.addClassName("name-controls");
         printerName.add(new Div(new Span(printer.getName()), aiCheckDot), nameControls);
         setupCheckBed();
-        if (isAdmin) {
+        if (isAdmin && fromDashboard) {
+            nameControls.add(buildDashMenu());
+            result.add(buildDashActions());
+        } else if (isAdmin) {
             result.add(
                     newButton("Show Logs", VaadinIcon.CLIPBOARD_TEXT, l -> UI.getCurrent().navigate(LogsView.class, printer.getName())),
                     newButton("Show SD Card", VaadinIcon.ARCHIVE, l -> UI.getCurrent().navigate(SdCardView.class, printer.getName())),
@@ -1305,6 +1396,60 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             }
         }
         return result;
+    }
+
+    /** Labelled tool button for the dashboard card's action row. */
+    private Button dashTool(final String text, final VaadinIcon icon, final ComponentEventListener<ClickEvent<Button>> clickListener) {
+        final Button result = new Button(text, new Icon(icon), clickListener);
+        result.addClassNames("dash-act", "dash-tool");
+        return result;
+    }
+
+    /**
+     * The dashboard card's action row: Pause / Resume / Stop only while there is a print to act on (see
+     * updateOverlay), then the tools used every day with their names on them. The rarely used ones are in the
+     * "⋯" menu next to the info button.
+     */
+    private Div buildDashActions() {
+        dashResume.setIcon(new Icon(VaadinIcon.PLAY));
+        dashResume.addClickListener(l -> doConfirm(BambuConst.CommandControl.RESUME));
+        dashPause.setIcon(new Icon(VaadinIcon.PAUSE));
+        dashPause.addClickListener(l -> doConfirm(BambuConst.CommandControl.PAUSE));
+        dashStop.setIcon(new Icon(VaadinIcon.STOP));
+        dashStop.addClickListener(l -> doConfirm(BambuConst.CommandControl.STOP));
+        dashStop.addClassName("dash-act-stop");
+        for (final Button b : List.of(dashResume, dashPause, dashStop)) {
+            b.addClassName("dash-act");
+            b.setVisible(false);
+        }
+        checkBed.addClassNames("dash-act", "dash-tool");
+        final Div result = newDiv("dash-actions", dashResume, dashPause, dashStop,
+                dashTool("SD card", VaadinIcon.ARCHIVE, l -> UI.getCurrent().navigate(SdCardView.class, printer.getName())),
+                dashTool("Queue", VaadinIcon.TIME_FORWARD, l -> showQueue()),
+                checkBed,
+                dashTool("Logs", VaadinIcon.CLIPBOARD_TEXT, l -> UI.getCurrent().navigate(LogsView.class, printer.getName())));
+        printers.getPrinterDetail(printer.getName())
+                .filter(pd -> pd.config().tasmota().isPresent())
+                .ifPresent(pd -> {
+                    final Button plug = buildTasmota(
+                            TasmotaService.TasmotaTarget.of(pd.config().tasmota().get(), pd.config().tasmotaChannel()));
+                    plug.setText("Plug");
+                    plug.addClassNames("dash-act", "dash-tool");
+                    result.add(plug);
+                });
+        return result;
+    }
+
+    /** The "⋯" next to the info button: what used to be icon buttons on every card but is rarely needed. */
+    private Button buildDashMenu() {
+        final Button more = new Button(new Icon(VaadinIcon.ELLIPSIS_DOTS_H));
+        more.setTooltipText("More");
+        final ContextMenu menu = new ContextMenu(more);
+        menu.setOpenOnClick(true);
+        menu.addItem("Request full status", l -> printer.commandFullStatus(true));
+        menu.addItem("Clear print error", l -> printer.commandClearPrinterError());
+        menu.addItem("Printer page", l -> UI.getCurrent().navigate(PrinterView.class, printer.getName()));
+        return more;
     }
 
     private Component buildControls() {
@@ -1372,10 +1517,73 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
     }
 
     private Component buildImage() {
+        if (!fromDashboard) {
+            return newDiv("image",
+                    buildControls(),
+                    newDiv("imagestatus", thumbnailUpdated, printerStatus)
+            );
+        }
+        final Span dot = new Span();
+        dot.addClassName("dash-pill-dot");
+        final Div pill = newDiv("dash-pill", dot, overlayPillText);
+        overlayFile.addClassName("dash-file");
+        overlayPct.addClassName("dash-pct");
+        overlayLeft.addClassName("dash-left");
+        overlayFill.addClassName("dash-fill");
+        overlayClear.addThemeVariants(ButtonVariant.LUMO_PRIMARY, ButtonVariant.LUMO_SMALL);
+        // The overlay ignores the pointer so the picture underneath stays usable; the button opts back in.
+        // Inline, like the Overview tile's, so this needs no theme rebuild.
+        overlayClear.getStyle().set("pointer-events", "auto").set("cursor", "pointer").set("text-shadow", "none")
+                .set("margin-top", "0.4em");
+        overlayClear.setVisible(false);
+        overlayClear.addClickListener(e -> onBedCleared());
         return newDiv("image",
-                fromDashboard ? thumbnailOrIframe : buildControls(),
+                thumbnailOrIframe,
+                newDiv("dash-scrim"),
+                pill,
+                newDiv("dash-info", overlayFile, newDiv("dash-right", overlayPct, overlayLeft, overlayClear)),
+                newDiv("dash-track", overlayFill),
                 newDiv("imagestatus", thumbnailUpdated, printerStatus)
         );
+    }
+
+    /** Brings the camera overlay and the card's outline into line with the printer. Dashboard cards only. */
+    private void updateOverlay() {
+        if (!fromDashboard || contentRoot == null || printer == null) {
+            return;
+        }
+        final BambuConst.GCodeState state = printer.getGCodeState();
+        final boolean cleared = bedClear.isCleared(printer.getName());
+        final boolean paused = state == BambuConst.GCodeState.PAUSE;
+        final boolean inJob = state.isPrinting() || paused;
+        final boolean fault = printer.getPrintError() != 0 || !printer.getActiveHmsErrors().isEmpty();
+        final boolean failed = state == BambuConst.GCodeState.FAILED && !cleared;
+        final boolean done = !fault && state == BambuConst.GCodeState.FINISH && !cleared;
+        contentRoot.getElement().setAttribute("data-tone", fault || failed ? "bad" : done ? "done" : paused ? "warn" : "none");
+        overlayPillText.setText(fault ? "Fault" : failed ? "Print failed" : done ? "Finished · clear bed"
+                : paused ? "Paused" : state.isPrinting() ? "Printing" : state.isReady() ? "Idle" : state.getDescription());
+        final int percent = Math.max(0, printer.getProgressPercent());
+        final int left = printer.getRemainingMinutes();
+        overlayPct.setText(inJob ? percent + "%" : "");
+        overlayLeft.setText(state.isPrinting() && left > 0 ? "%s left".formatted(formatTime(Duration.ofMinutes(left))) : "");
+        overlayFile.setText(inJob || failed || done ? printer.getSubtaskName().orElse("") : "");
+        overlayFill.getStyle().set("width", (inJob || failed ? percent : done ? 100 : 0) + "%");
+        overlayClear.setVisible((failed || done) && !fault);
+        dashPause.setVisible(isAdmin && state.isPrinting());
+        dashResume.setVisible(isAdmin && paused);
+        dashStop.setVisible(isAdmin && inJob);
+    }
+
+    /**
+     * "Bed cleared" on a dashboard card: take the person's word for it, drop the finished outline, and let the
+     * next waiting job go to this printer now (skipping the camera check once). See BedClearService.
+     */
+    private void onBedCleared() {
+        if (printer != null && bedClear.markCleared(printer.getName(), "Dashboard")) {
+            dispatchQueue.passNow();
+            showNotification("%s: bed marked clear".formatted(printer.getName()));
+        }
+        updateOverlay();
     }
 
     private Div getBadge(final String toolTip, final Component... components) {
@@ -1489,34 +1697,52 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         return result;
     }
 
+    /** Short label inside a status badge - shown on the dashboard card, hidden on the printer page (bambu.css). */
+    private Span badgeLabel(final String text) {
+        final Span result = newSpan("t-label");
+        result.setText(text);
+        return result;
+    }
+
     private FlexLayout buildStatus() {
         final FlexLayout result = new FlexLayout();
         result.addClassName("status");
+        for (final Span target : List.of(nozzleTarget, nozzle2Target, bedTarget, frameTarget)) {
+            target.addClassName("t-target");
+            target.addClassName("t-off"); // until the printer reports a target
+        }
+        final boolean dual = printer.getModel().isDualNozzle();
         result.add(
-                wrapTemperature(getBadge("Nozzle", nozzleImage, nozzle, nozzleTarget), () -> (int) temperatureNozzle, BambuConst.TEMPERATURE_MAX_NOZZLE, BambuConst::gcodeTargetTemperatureNozzle),
-                wrapTemperature(getBadge("Bed", bedImage, bed, bedTarget), () -> (int) temperatureBed, BambuConst.TEMPERATURE_MAX_BED, BambuConst::gcodeTargetTemperatureBed)
+                wrapTemperature(getBadge("Nozzle", badgeLabel(dual ? "Nozzle 1" : "Nozzle"), nozzleImage, nozzle, nozzleTarget), () -> (int) temperatureNozzle, BambuConst.TEMPERATURE_MAX_NOZZLE, BambuConst::gcodeTargetTemperatureNozzle),
+                wrapTemperature(getBadge("Bed", badgeLabel("Bed"), bedImage, bed, bedTarget), () -> (int) temperatureBed, BambuConst.TEMPERATURE_MAX_BED, BambuConst::gcodeTargetTemperatureBed)
         );
 
         if (printer.getModel().isDualNozzle()) {
-            result.add(wrapTemperature(getBadge("Nozzle 2", nozzle2Image, nozzle2, nozzle2Target), () -> (int) temperatureNozzle2, BambuConst.TEMPERATURE_MAX_NOZZLE, BambuConst::gcodeTargetTemperatureNozzle));
+            result.add(wrapTemperature(getBadge("Nozzle 2", badgeLabel("Nozzle 2"), nozzle2Image, nozzle2, nozzle2Target), () -> (int) temperatureNozzle2, BambuConst.TEMPERATURE_MAX_NOZZLE, BambuConst::gcodeTargetTemperatureNozzle));
         }
 
         if (printer.getModel().isActiveChamberHeater()) {
             // Settable, and shows a target alongside the reading like Bed and Nozzle do.
-            result.add(wrapTemperature(getBadge("Chamber", frameImage, frame, frameTarget),
+            result.add(wrapTemperature(getBadge("Chamber", badgeLabel("Chamber"), frameImage, frame, frameTarget),
                     () -> (int) temperatureChamber, printer.getModel().getMaxChamberTemperature(),
                     t -> BambuConst.gcodeTargetTemperatureChamber(printer.getModel(), t)));
         } else if (printer.getModel().isTemperature()) {
             // Reports a chamber temperature but cannot heat it (X1C) - read-only, because a Set Target that
             // does nothing is worse than no Set Target at all.
-            result.add(getBadge("Frame", frameImage, frame));
+            result.add(getBadge("Frame", badgeLabel("Frame"), frameImage, frame));
         }
 
-        result.add(
-                wrapSpeedMenu(getBadge("Speed", speedImage, speed)),
-                wrapFanMenu(getBadge("Fan", fanCooling, fanAux)),
-                wrapMonitorMenu(getBadge("Lamp", monitorLamp, monitorLampText))
-        );
+        final List<Component> misc = List.of(
+                wrapSpeedMenu(getBadge("Speed", badgeLabel("Speed"), speedImage, speed)),
+                wrapFanMenu(getBadge("Fan", badgeLabel("Fans"), fanCooling, fanAux)),
+                wrapMonitorMenu(getBadge("Lamp", badgeLabel("Light"), monitorLamp, monitorLampText)));
+        if (fromDashboard) {
+            // On the dashboard these are a quiet line under the temperatures, not three more tiles
+            dashMisc.addClassName("dash-misc");
+            misc.forEach(dashMisc::add);
+        } else {
+            misc.forEach(result::add);
+        }
         return result;
     }
 
@@ -1530,14 +1756,36 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         final AmsDryService.DrySetting current = amsDryService.getSetting(printer.getName());
 
         final Dialog d = new Dialog();
-        d.setHeaderTitle("%s — AMS #%d Drying".formatted(printer.getName(), amsId));
+        d.setHeaderTitle("%s — %s drying".formatted(printer.getName(), amsLabel(amsId)));
         d.setWidth("340px");
 
         // ── Dry Now ──────────────────────────────────────────────
+        // The printer refuses a drying command that names no filament, so it is picked here - preset to what is
+        // loaded in this AMS.
+        final String loaded = AmsDryService.loadedFilament(printer, amsId);
+        final java.util.List<String> filaments = new java.util.ArrayList<>(AmsDryService.FILAMENTS);
+        if (!loaded.isBlank() && !filaments.contains(loaded)) {
+            filaments.add(0, loaded);
+        }
+        final com.vaadin.flow.component.combobox.ComboBox<String> nowFilament =
+                new com.vaadin.flow.component.combobox.ComboBox<>("Filament", filaments);
+        nowFilament.setValue(loaded.isBlank() ? null : loaded);
+        nowFilament.setWidth("100%");
+
+        // What the printer says right now, so the dialog doesn't have to be trusted on its own say-so
+        final BambuPrinter.AmsDryState dryState = printer.getAmsDryStates().get(amsId);
+        final Span nowStatus = new Span(dryStatusLine(dryState));
+        nowStatus.getStyle().set("font-size", "var(--lumo-font-size-s)").set("color", "var(--lumo-secondary-text-color)");
+
         final IntegerField nowTemp = new IntegerField("Temperature (°C)");
         nowTemp.setValue(current.temp());
+        // AMS 2 Pro tops out at 65°C, the AMS HT goes higher (Studio dries HIPS in it at 80°C)
+        final int maxTemp = printer.getModules().stream()
+                .filter(m -> m.unitIndex() == amsId && m.getAmsType().isSupportsDrying())
+                .mapToInt(m -> m.getAmsType().getMaxDryTemp())
+                .max().orElse(65);
         nowTemp.setMin(40);
-        nowTemp.setMax(65);
+        nowTemp.setMax(maxTemp);
         nowTemp.setStepButtonsVisible(true);
         nowTemp.setWidth("100%");
 
@@ -1550,26 +1798,33 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
 
         final Button stopBtn = new Button("Stop Drying", new Icon(VaadinIcon.CLOSE_SMALL), e -> {
             printer.commandAmsStopDry(amsId);
-            amsDryService.clearDrying(printer.getName(), amsId);
             showNotification("%s: AMS #%d drying stopped".formatted(printer.getName(), amsId));
             d.close();
         });
         stopBtn.addThemeVariants(ButtonVariant.LUMO_ERROR, ButtonVariant.LUMO_TERTIARY);
-        // Only show stop if there's an active session or we detect drying from AMS temp
-        stopBtn.setVisible(amsDryService.getActiveDrying(printer.getName(), amsId).isPresent());
+        // Only offer stop while the printer reports this unit drying
+        stopBtn.setVisible(dryState != null && dryState.isDrying());
 
         final Button startBtn = new Button("Start Drying", new Icon(VaadinIcon.FIRE), e -> {
-            printer.commandAmsDry(amsId, nowTemp.getValue(), nowDur.getValue());
-            amsDryService.recordDrying(printer.getName(), amsId, nowTemp.getValue(), nowDur.getValue());
-            showNotification("%s: AMS #%d drying started (%d°C / %dh)"
-                    .formatted(printer.getName(), amsId, nowTemp.getValue(), nowDur.getValue()));
+            final String filament = nowFilament.getValue();
+            if (filament == null || filament.isBlank()) {
+                showNotification("Pick the filament being dried - the printer won't start without it");
+                return;
+            }
+            if (nowTemp.getValue() == null || nowDur.getValue() == null) {
+                showNotification("Set a temperature and a duration");
+                return;
+            }
+            printer.commandAmsDry(amsId, filament, nowTemp.getValue(), nowDur.getValue());
+            showNotification("%s: AMS #%d drying sent (%s, %d°C / %dh) - the AMS badge shows whether the printer started it"
+                    .formatted(printer.getName(), amsId, filament, nowTemp.getValue(), nowDur.getValue()));
             d.close();
         });
         startBtn.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
 
         final com.vaadin.flow.component.html.H4 nowHeader = new com.vaadin.flow.component.html.H4("Dry Now");
         nowHeader.getStyle().set("margin", "0 0 var(--lumo-space-s) 0");
-        final Div nowSection = new Div(nowHeader, nowTemp, nowDur);
+        final Div nowSection = new Div(nowHeader, nowStatus, nowFilament, nowTemp, nowDur);
         nowSection.getStyle()
                 .setBorder("1px solid var(--lumo-contrast-20pct)")
                 .setBorderRadius("var(--lumo-border-radius-m)")
@@ -1584,6 +1839,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         final IntegerField autoTemp = new IntegerField("Temperature (°C)");
         autoTemp.setValue(current.temp());
         autoTemp.setMin(40);
+        // One auto-dry temperature for every unit on this printer, so it is capped at what all of them accept
         autoTemp.setMax(65);
         autoTemp.setStepButtonsVisible(true);
         autoTemp.setWidth("100%");
@@ -1606,7 +1862,9 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
 
         final com.vaadin.flow.component.html.H4 autoHeader = new com.vaadin.flow.component.html.H4("Auto-dry on Print Finish");
         autoHeader.getStyle().set("margin", "0 0 var(--lumo-space-s) 0");
-        final Div autoSection = new Div(autoHeader, autoToggle, autoTemp, autoDur);
+        final Span autoNote = new Span("Dries whatever filament is loaded in the AMS when the print finishes.");
+        autoNote.getStyle().set("font-size", "var(--lumo-font-size-s)").set("color", "var(--lumo-secondary-text-color)");
+        final Div autoSection = new Div(autoHeader, autoToggle, autoNote, autoTemp, autoDur);
         autoSection.getStyle()
                 .setBorder("1px solid var(--lumo-contrast-20pct)")
                 .setBorderRadius("var(--lumo-border-radius-m)")
@@ -1615,6 +1873,23 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         d.add(nowSection, autoSection);
         d.getFooter().add(new Button("Cancel", e -> d.close()), stopBtn, saveBtn, startBtn);
         d.open();
+    }
+
+    /** One line for the dry dialog: what the printer reports for this unit right now. */
+    private static String dryStatusLine(final BambuPrinter.AmsDryState dry) {
+        if (dry == null) {
+            return "The printer hasn't reported drying status for this AMS yet.";
+        }
+        if (dry.isDrying()) {
+            return "Printer reports: drying %s at %d°C, %dh %02dm left.".formatted(
+                    dry.filament().isBlank() ? "filament" : dry.filament(), dry.temp(), dry.minutesLeft() / 60, dry.minutesLeft() % 60);
+        }
+        final BambuPrinter.DryCommand cmd = dry.lastCommand();
+        if (cmd != null && cmd.start() && cmd.failed()) {
+            return "Not drying. The printer refused the last start%s.".formatted(
+                    cmd.errCode() != 0 ? " (error 0x%08X)".formatted(cmd.errCode()) : "");
+        }
+        return "Not drying.";
     }
 
     private Button buildAmsDryButton(final int amsId) {
@@ -1641,12 +1916,14 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         final AmsDryService.DrySetting dryConf = amsDryService.getSetting(printer.getName());
         amsDryButtons.forEach((amsId, btn) -> {
             final BambuConst.AmsType type = amsTypeByIndex.getOrDefault(amsId, BambuConst.AmsType.UNKNOWN);
-            final boolean visible = type.isSupportsDrying();
+            // The AMS model alone isn't enough: a P1S with an AMS 2 Pro can't dry it (Bambu Studio can't either),
+            // and only printers that can report dry_setting for the unit - so the button follows that.
+            final boolean visible = type.isSupportsDrying() && AmsDryService.canDry(printer, amsId);
             btn.setVisible(visible);
             if (visible) {
                 btn.setTooltipText(dryConf.autoOnFinish()
                         ? "Dry filament — auto-dry ON (%d°C / %dh)".formatted(dryConf.temp(), dryConf.durationHours())
-                        : "Dry filament (AMS 2 Pro)");
+                        : "Dry filament (%s)".formatted(type.getLabel()));
             }
         });
     }
@@ -1710,6 +1987,14 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         return "single[%d]tray[%d]".formatted(amsId, trayId);
     }
 
+    /** "AMS 1" for unit 0, "AMS HT" for unit 128 - the names people use, not the firmware's ids. */
+    private static String amsLabel(final int id) {
+        if (id >= 128) {
+            return id == 128 ? "AMS HT" : "AMS HT %d".formatted(id - 127);
+        }
+        return "AMS %d".formatted(id + 1);
+    }
+
     private String getAmsHeaderId(final int id) {
         return "AMS#%d".formatted(id);
     }
@@ -1730,7 +2015,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
         }
         final Div trayL = newDiv("amstray");
         filaments.forEach(trayL::add);
-        return newDiv("ams", buildAmsHeader(amsHeader, amsHeaderId, amsId), trayL);
+        return newDiv("ams", buildAmsHeader(amsHeader, fromDashboard ? amsLabel(amsId) : amsHeaderId, amsId), trayL);
     }
 
     private void buildAms(final Div parent, final com.tfyre.bambu.model.Ams ams) {

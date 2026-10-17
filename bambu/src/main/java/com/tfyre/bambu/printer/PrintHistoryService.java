@@ -113,6 +113,8 @@ public class PrintHistoryService {
     /** Lazy to avoid an eager circular reference (OrderCancellationService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<OrderCancellationService> cancellationInstance;
+    @Inject
+    PlateYieldService plateYield;
 
     private final List<PrintJob> jobs = new ArrayList<>();
     private final Map<String, BambuConst.GCodeState> lastState = new HashMap<>();
@@ -128,6 +130,12 @@ public class PrintHistoryService {
     private final Map<String, RunningJob> running = new HashMap<>();
     private final Map<String, Pending> pending = new HashMap<>();
     private boolean dirty;
+
+    /** The order the print under way on this printer is for, if it is for one. */
+    public synchronized java.util.Optional<OrderRef> runningOrder(final String printer) {
+        final RunningJob job = running.get(printer);
+        return job == null ? java.util.Optional.empty() : java.util.Optional.ofNullable(job.orderRef());
+    }
 
     /** Files of the prints under way, or commanded and about to start, for one order. */
     public synchronized List<String> inFlightFiles(final String market, final String orderId) {
@@ -387,8 +395,15 @@ public class PrintHistoryService {
                 && cancellationInstance.get().isCancelled(job.orderRef().market(), job.orderRef().orderId());
 
         // Ready-to-ship: count this finish towards its order; fires exactly once per completed order
-        if (!cancelledOrder && job.orderRef() != null && "Finished".equals(job.result())
-                && orderTracking.recordJobPrinted(job.orderRef().market(), job.orderRef().orderId())) {
+        // One print is one piece, except an H2D plate sliced to hold several of the part (PlateYieldService).
+        final int pieces = job.orderRef() == null ? 1 : plateYield.pieces(job.printer(), job.orderRef());
+        boolean orderComplete = false;
+        if (!cancelledOrder && job.orderRef() != null && "Finished".equals(job.result())) {
+            for (int i = 0; i < pieces; i++) {
+                orderComplete |= orderTracking.recordJobPrinted(job.orderRef().market(), job.orderRef().orderId());
+            }
+        }
+        if (orderComplete) {
             Log.infof("PrintHistoryService: %s fully printed", job.orderRef().label());
             notificationService.notifyEvent("order_printed", job.orderRef().market(),
                     "%s is fully printed - ready to ship".formatted(job.orderRef().label()));
@@ -407,7 +422,11 @@ public class PrintHistoryService {
         // Give the queue a chance to auto-requeue a failed queue-started job (opt-in, single retry)
         final boolean requeued = queueServiceInstance.get().onJobEnded(job, !cancelledOrder);
         if (cancelledOrder) {
-            cancellationInstance.get().onJobEnded(job);
+            cancellationInstance.get().onJobEnded(job, pieces);
+        }
+        if (!requeued) {
+            // A retry is the same plate again and still makes the same pieces; anything else is the end of it.
+            plateYield.clear(job.printer());
         }
 
         // A print that ended without producing a part must release the expectation it was covering, unless it was
@@ -415,7 +434,7 @@ public class PrintHistoryService {
         // re-queue registers a second one for the same part, so the order over-counts and can never reach
         // "ready to ship": a stopped cupholder left Etsy #4130857746 reading 0/2 for a single-item order.
         if (!cancelledOrder && job.orderRef() != null && !"Finished".equals(job.result()) && !requeued) {
-            orderTracking.removeExpectedJobs(job.orderRef().market(), job.orderRef().orderId(), 1, true);
+            orderTracking.removeExpectedJobs(job.orderRef().market(), job.orderRef().orderId(), pieces, true);
             Log.infof("PrintHistoryService: %s ended %s and was not requeued - released one expected job from %s,"
                     + " which now needs a re-queue before it can be ready to ship",
                     job.file(), job.result(), job.orderRef().label());

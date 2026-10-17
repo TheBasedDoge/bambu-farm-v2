@@ -33,7 +33,7 @@ import java.util.Optional;
  * Accessible from the sidebar. Admin only.
  */
 @Route(value = "notification-settings", layout = com.tfyre.bambu.MainLayout.class)
-@PageTitle("Notification Settings")
+@PageTitle("Settings")
 @RolesAllowed(SystemRoles.ROLE_ADMIN)
 public class NotificationSettingsView extends VerticalLayout implements NotificationHelper {
 
@@ -75,11 +75,14 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("spool_low", "Spool Low",
                     "A tracked filament spool dropped to/below its low-grams warning threshold"),
             new EventDef("digest", "Daily Digest",
-                    "Scheduled farm summary - beds waiting to be cleared, jobs waiting for them, last 24h tallies. "
+                    "Scheduled farm summary - jobs waiting in the dispatch pool, what is printing, last 24h tallies. "
                     + "This only allows it through; the time it goes out is set in the Daily digest section below"),
             new EventDef("order_cancelled", "Order Cancelled",
                     "A buyer or the marketplace cancelled an order before it shipped - queued jobs were removed, "
                     + "and anything already printing or printed went into on-hand stock"),
+            new EventDef("dry_failed", "AMS Drying Failed",
+                    "A printer refused, or never answered, a command to start drying an AMS - from the dashboard or "
+                    + "auto-dry on finish"),
             new EventDef("backup_failed", "Backup Failed",
                     "The nightly backup of the app's data files could not be written"),
             new EventDef("usps_pickup", "USPS Pickup",
@@ -116,7 +119,8 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
         setPadding(true);
         setSpacing(true);
 
-        add(new H3("Notification Settings"));
+        add(SettingsTabs.create());
+        add(new H3("Notifications"));
         add(buildConfigSection());
         add(buildEventsSection());
         add(buildDigestSection());
@@ -286,9 +290,22 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
     // Helpers
     // -------------------------------------------------------------------------
 
-    /** Mask credentials in URLs — replace user:password@ with *****@. */
+    /**
+     * Hide the secret parts of a URL: user:password@, the query string, and a long last path segment - which is
+     * where a Discord / Slack webhook keeps its token (anyone with the full URL can post to the channel).
+     */
     private static String mask(final String url) {
-        return url.replaceAll("://[^@]+@", "://*****@");
+        String s = url.replaceAll("://[^@/]+@", "://*****@").replaceAll("\\?.*$", "?*****");
+        final int slash = s.lastIndexOf('/');
+        if (slash > s.indexOf("://") + 2 && s.length() - slash - 1 >= 16) {
+            s = s.substring(0, slash + 1) + "*****";
+        }
+        return s;
+    }
+
+    /** The name a person reads for an event id ("dry_failed" → "AMS Drying Failed"); the id when unknown. */
+    public static String eventLabel(final String id) {
+        return EVENTS.stream().filter(e -> e.id().equals(id)).map(EventDef::label).findFirst().orElse(id);
     }
 
     private static Span badge(final String text, final boolean good) {

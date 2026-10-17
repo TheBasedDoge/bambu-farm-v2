@@ -54,17 +54,19 @@
     }
 }
 
-/* Center the header controls on the bar itself (wide screens only) */
+/* Wide screens: the header controls are centred in the space left after the title and the status chip.
+   They used to be centred on the whole bar with position:absolute, which takes them out of the row - so once
+   the status chip arrived (2026-10-07) the controls were drawn on top of it. In the row, the chip shortens
+   (ellipsis) before anything overlaps. */
 @media screen and (min-width: 1111px) {
-    .main-header {
-        position: relative;
-    }
     .main-header .header-content {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        width: max-content;
-        flex-grow: 0;
+        flex: 1 1 auto;
+        min-width: 0;
+        justify-content: center;
+        flex-wrap: nowrap;
+    }
+    .main-header .header-content > * {
+        flex-shrink: 0;
     }
 }
 
@@ -2109,9 +2111,16 @@ img:fullscreen {
 .wall-scrim {
     position: absolute;
     inset: auto 0 0 0;
-    height: 60%;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.78) 60%, rgba(0, 0, 0, 0.9));
+    /* Short and light (2026-10-07), as on the Dashboard cards: at 60% / 0.9 it hid the lower half of the bed.
+       Taller than the Dashboard's because a tile carries a name and a job line; the text has its own shadow. */
+    height: 34%;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.5));
     pointer-events: none;
+}
+
+/* The enlarged tile's text sits higher, above the control row, so its shading has to reach a little further. */
+.wall-p[data-focus] .wall-scrim {
+    height: 42%;
 }
 
 .wall-pill {
@@ -2198,6 +2207,7 @@ img:fullscreen {
     column-gap: 3cqw;
     color: #fff;
     pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6);
 }
 
 .wall-p-name {
@@ -2517,3 +2527,1109 @@ vaadin-app-layout.wall-fullscreen::part(drawer) {
     border: 1px solid var(--lumo-contrast-30pct);
 }
 
+
+/* ---- Overview: the enlarged tile's extras (2026-10-07). Keyed on [data-focus], which the layout script sets,
+   not on the .focus class: the server rewrites a tile's class list whenever its state changes. ---- */
+.wall-layer,
+.wall-p-order,
+.wall-actions {
+    display: none;
+}
+
+.wall-p[data-focus] .wall-layer {
+    display: block;
+    position: absolute;
+    top: 3cqw;
+    right: 3cqw;
+    font-size: max(11px, 1.5cqw);
+    color: rgba(255, 255, 255, 0.85);
+    background: rgba(0, 0, 0, 0.55);
+    padding: 0.25em 0.6em;
+    border-radius: 6px;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.wall-p[data-focus] .wall-p-order {
+    display: block;
+    font-size: max(11px, 1.6cqw);
+    color: var(--lumo-primary-text-color);
+    margin-top: 0.3em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wall-layer:empty {
+    display: none !important;
+}
+
+/* The text block moves up to make room for the control row underneath it. */
+.wall-p[data-focus] .wall-p-info {
+    bottom: calc(3cqw + max(46px, 4.2cqw));
+}
+
+.wall-p[data-focus] .wall-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: max(6px, 0.8cqw);
+    position: absolute;
+    left: 3.2cqw;
+    right: 3.2cqw;
+    bottom: calc(1.5cqw + 6px);
+    cursor: default;
+}
+
+.wall-actions vaadin-button {
+    margin: 0;
+    font-size: max(12px, 1.3cqw);
+    backdrop-filter: blur(6px);
+    cursor: pointer;
+}
+
+.wall-actions vaadin-button:not([theme~="primary"]):not([theme~="error"]) {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+}
+
+.wall-actions vaadin-button[theme~="error"] {
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.wall-action-link {
+    font-size: max(12px, 1.3cqw);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: var(--lumo-border-radius-m);
+    padding: 0.35em 0.9em;
+    text-decoration: none;
+    backdrop-filter: blur(6px);
+}
+
+/* ---- Sidebar groups (2026-10-07) ---- */
+[slot="drawer"].drawer-group {
+    padding-top: 0;
+    padding-bottom: 0;
+    gap: 0;
+}
+
+.drawer-group-head {
+    display: flex;
+    align-items: center;
+    gap: var(--lumo-space-s);
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--lumo-space-s) 0 var(--lumo-space-xs);
+    font-size: var(--lumo-font-size-xxs);
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--lumo-tertiary-text-color);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.drawer-group-head::before {
+    content: "";
+    flex: none;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform 150ms ease;
+}
+
+.drawer-group.collapsed .drawer-group-head::before {
+    transform: rotate(-45deg);
+}
+
+.drawer-group.collapsed .drawer-nav {
+    display: none;
+}
+
+.drawer-group .drawer-nav {
+    padding: 0;
+    gap: var(--lumo-space-xs);
+}
+
+.drawer-count {
+    margin-left: auto;
+    font-size: var(--lumo-font-size-xxs);
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.5;
+    padding: 0 6px;
+    border-radius: 99px;
+    background: var(--lumo-warning-color, #e8a33d);
+    color: #2a1c00;
+}
+
+/* The group's own count is only worth showing while the group is folded - open, the entry carries it. */
+.drawer-group:not(.collapsed) .drawer-group-head .drawer-count {
+    display: none;
+}
+
+/* Icon rail: no room for a heading, so a group is just a thin rule and its entries always show. */
+vaadin-app-layout.drawer-rail .drawer-group-head {
+    height: 1px;
+    padding: 0;
+    margin: var(--lumo-space-xs) 0;
+    background: var(--lumo-contrast-10pct);
+    font-size: 0;
+    pointer-events: none;
+}
+
+vaadin-app-layout.drawer-rail .drawer-group-head::before,
+vaadin-app-layout.drawer-rail .drawer-count {
+    display: none;
+}
+
+vaadin-app-layout.drawer-rail .drawer-group.collapsed .drawer-nav {
+    display: flex;
+}
+
+/* ---- Settings pages: the tab strip that joins them ---- */
+.settings-tabs {
+    display: flex;
+    gap: var(--lumo-space-m);
+    border-bottom: 1px solid var(--lumo-contrast-10pct);
+    width: 100%;
+}
+
+.settings-tabs a {
+    padding: var(--lumo-space-s) var(--lumo-space-xs);
+    color: var(--lumo-secondary-text-color);
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+
+.settings-tabs a[highlight] {
+    color: var(--lumo-body-text-color);
+    border-bottom-color: var(--lumo-primary-color);
+}
+
+/* ---- Header status chip (2026-10-07): the farm in one sentence, on every page but the Overview ---- */
+.header-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 46vw;
+    padding: 3px 12px;
+    border: 1px solid var(--lumo-contrast-20pct);
+    border-radius: 99px;
+    background: var(--lumo-contrast-5pct);
+    font-size: var(--lumo-font-size-s);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.header-chip > span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.header-chip-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--lumo-contrast-40pct);
+}
+
+.header-chip[data-tone="ok"] .header-chip-dot { background: var(--lumo-success-color); }
+.header-chip[data-tone="warn"] { border-color: var(--lumo-warning-color, #e8a33d); }
+.header-chip[data-tone="warn"] .header-chip-dot { background: var(--lumo-warning-color, #e8a33d); }
+.header-chip[data-tone="bad"] { border-color: var(--lumo-error-color); }
+.header-chip[data-tone="bad"] .header-chip-dot { background: var(--lumo-error-color); }
+.header-chip[data-tone="quiet"] { color: var(--lumo-secondary-text-color); }
+
+/* ---- Bottom tabs: only where AppLayout puts its touch navbar at the bottom (same breakpoint as Vaadin's) ---- */
+.bottom-tabs {
+    display: none;
+}
+
+@media (max-width: 800px), (max-height: 600px) {
+    .bottom-tabs {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        width: 100%;
+        background: var(--lumo-base-color);
+        border-top: 1px solid var(--lumo-contrast-10pct);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    .bottom-tabs .bottom-tab {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        min-height: 52px;
+        margin: 0;
+        padding: 4px 2px;
+        font-size: var(--lumo-font-size-xs);
+        color: var(--lumo-secondary-text-color);
+        text-decoration: none;
+        background: none;
+    }
+
+    .bottom-tabs .bottom-tab vaadin-icon {
+        width: 20px;
+        height: 20px;
+    }
+
+    .bottom-tabs a.bottom-tab[highlight] {
+        color: var(--lumo-primary-text-color);
+    }
+}
+
+/* ---- Farm page (2026-10-07): printers by who needs you. One column on a phone; list and printer side by side
+   from 600 px (a tablet, an unfolded phone). ---- */
+.farm {
+    display: block;
+    padding: var(--lumo-space-s);
+    box-sizing: border-box;
+}
+
+.farm-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lumo-space-s);
+    min-width: 0;
+}
+
+.farm-row {
+    background: var(--lumo-contrast-5pct);
+    border-radius: 12px;
+    padding: 10px;
+    min-width: 0;
+}
+
+.farm-row.bad { box-shadow: inset 3px 0 0 var(--lumo-error-color); }
+.farm-row.warn { box-shadow: inset 3px 0 0 var(--lumo-warning-color, #e8a33d); }
+
+.farm-row-head {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr) auto;
+    grid-template-areas: "thumb name right" "thumb text text";
+    column-gap: 10px;
+    row-gap: 2px;
+    align-items: center;
+    cursor: pointer;
+}
+
+.farm-thumb {
+    grid-area: thumb;
+    width: 76px;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #000;
+}
+
+.farm-name {
+    grid-area: name;
+    font-weight: 650;
+    font-size: var(--lumo-font-size-l);
+}
+
+.farm-right {
+    grid-area: right;
+    color: var(--lumo-secondary-text-color);
+    font-variant-numeric: tabular-nums;
+}
+
+.farm-text {
+    grid-area: text;
+    font-size: var(--lumo-font-size-s);
+    color: var(--lumo-secondary-text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.farm-row.bad .farm-text { color: var(--lumo-error-text-color); }
+.farm-row.warn .farm-text { color: var(--lumo-warning-text-color, #e8a33d); }
+
+.farm-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.farm-buttons vaadin-button.farm-big {
+    flex: 1 1 120px;
+    min-height: 44px;
+    margin: 0;
+    font-size: var(--lumo-font-size-m);
+}
+
+.farm-detail {
+    display: none;
+    flex-direction: column;
+    gap: var(--lumo-space-s);
+    min-width: 0;
+}
+
+.farm[data-open] .farm-list { display: none; }
+.farm[data-open] .farm-detail { display: flex; }
+
+.farm-back { align-self: flex-start; margin: 0; }
+
+.farm-cam {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: contain;
+    background: #000;
+    border-radius: 10px;
+}
+
+.farm-detail-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.farm-detail-name { font-size: var(--lumo-font-size-xxl); font-weight: 650; }
+.farm-detail-right { margin-left: auto; font-size: var(--lumo-font-size-xl); font-weight: 300; font-variant-numeric: tabular-nums; }
+.farm-detail-text { color: var(--lumo-secondary-text-color); overflow-wrap: anywhere; }
+.farm-detail-text.bad { color: var(--lumo-error-text-color); }
+.farm-detail-text.warn { color: var(--lumo-warning-text-color, #e8a33d); }
+
+.farm-links {
+    display: flex;
+    gap: var(--lumo-space-l);
+    margin-top: var(--lumo-space-s);
+}
+
+@media (min-width: 600px) {
+    .farm {
+        display: grid;
+        grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+        gap: var(--lumo-space-m);
+        align-items: start;
+    }
+
+    .farm .farm-list,
+    .farm[data-open] .farm-list { display: flex; }
+    .farm .farm-detail { display: flex; }
+    .farm-back { display: none; }
+    .farm-row.selected { background: var(--lumo-contrast-10pct); }
+}
+
+/* ---- Dashboard cards in the Overview's style (2026-10-07). Only .dash-v2 (the Dashboard); the printer page
+   keeps the old card. ---- */
+.dashboard-printer.dash-v2 {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    border-radius: 12px;
+    transition: outline-color 400ms ease;
+}
+
+.dashboard-printer.dash-v2[data-tone="bad"] { outline-color: var(--lumo-error-color); }
+.dashboard-printer.dash-v2[data-tone="done"] { outline-color: var(--lumo-success-color); }
+.dashboard-printer.dash-v2[data-tone="warn"] { outline-color: var(--lumo-warning-color, #e8a33d); }
+
+.dashboard-printer.dash-v2 .image {
+    position: relative;
+    display: block;
+    flex-grow: 0;
+    min-height: 0;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: #000;
+    box-shadow: none;
+    border-radius: 10px;
+    container-type: inline-size;
+}
+
+.dashboard-printer.dash-v2 .image > img,
+.dashboard-printer.dash-v2 .image > iframe,
+.dashboard-printer.dash-v2 .image > .live-view {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+}
+
+.dash-scrim {
+    position: absolute;
+    inset: auto 0 0 0;
+    /* Short and light: just enough behind the one line of text. At 55% / 0.88 it hid the lower half of the
+       bed, which is the part of the picture you are looking at. The text carries its own shadow instead. */
+    height: 24%;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.45));
+    pointer-events: none;
+}
+
+.dash-pill {
+    position: absolute;
+    top: 3cqw;
+    left: 3cqw;
+    display: flex;
+    align-items: center;
+    gap: 0.45em;
+    font-size: max(11px, 2.9cqw);
+    font-weight: 600;
+    line-height: 1.6;
+    padding: 0 0.7em;
+    border-radius: 99px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+    pointer-events: none;
+}
+
+.dash-pill-dot {
+    width: 0.6em;
+    height: 0.6em;
+    border-radius: 50%;
+    background: var(--lumo-success-color);
+}
+
+.dash-v2[data-tone="none"] .dash-pill-dot { background: var(--lumo-contrast-50pct); }
+.dash-v2[data-tone="warn"] .dash-pill-dot { background: var(--lumo-warning-color, #e8a33d); }
+.dash-v2[data-tone="bad"] .dash-pill { background: var(--lumo-error-color); }
+.dash-v2[data-tone="bad"] .dash-pill-dot { background: #fff; }
+.dash-v2[data-tone="done"] .dash-pill { background: var(--lumo-success-color); color: #00210f; }
+.dash-v2[data-tone="done"] .dash-pill-dot { background: #00210f; }
+
+.dash-info {
+    position: absolute;
+    left: 3.2cqw;
+    right: 3.2cqw;
+    bottom: 4.4cqw;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    column-gap: 3cqw;
+    color: #fff;
+    pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6);
+}
+
+.dash-file {
+    font-size: max(11px, 3cqw);
+    color: rgba(255, 255, 255, 0.8);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-right { text-align: right; }
+
+.dash-pct {
+    display: block;
+    font-size: max(18px, 9cqw);
+    font-weight: 300;
+    line-height: 0.9;
+    font-variant-numeric: tabular-nums;
+}
+
+.dash-left {
+    display: block;
+    font-size: max(11px, 3cqw);
+    color: rgba(255, 255, 255, 0.8);
+    margin-top: 0.35em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.dash-track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: max(4px, 1.5cqw);
+    background: rgba(255, 255, 255, 0.14);
+    pointer-events: none;
+}
+
+.dash-fill {
+    height: 100%;
+    background: var(--lumo-success-color);
+    transition: width 600ms ease;
+}
+
+.dash-v2[data-tone="bad"] .dash-fill { background: var(--lumo-error-color); }
+
+/* The camera's age moves into the picture's corner; the state it used to share a line with is the pill now. */
+.dashboard-printer.dash-v2 .imagestatus {
+    position: absolute;
+    top: 3cqw;
+    right: 3cqw;
+    width: auto;
+    margin: 0;
+    padding: 0.15em 0.6em;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: max(10px, 2.4cqw);
+    pointer-events: none;
+}
+
+.dashboard-printer.dash-v2 .imagestatus > :last-child,
+.dashboard-printer.dash-v2 .progress > span:not(:last-child),
+.dashboard-printer.dash-v2 > vaadin-progress-bar {
+    display: none;
+}
+
+.dashboard-printer.dash-v2 .name {
+    padding-top: 8px;
+}
+
+/* ---- Cameras page in the Overview's style (2026-10-07). The overlay pieces are the Dashboard's dash-*
+   classes; only what is specific to this card is here. ---- */
+.camera-view .camera-card {
+    container-type: inline-size;
+    outline: 3px solid transparent;
+    outline-offset: -3px;
+    transition: outline-color 400ms ease;
+}
+
+.camera-card[data-tone="bad"] { outline-color: var(--lumo-error-color); }
+.camera-card[data-tone="done"] { outline-color: var(--lumo-success-color); }
+.camera-card[data-tone="warn"] { outline-color: var(--lumo-warning-color, #e8a33d); }
+
+.camera-card[data-tone="none"] .dash-pill-dot { background: var(--lumo-contrast-50pct); }
+.camera-card[data-tone="warn"] .dash-pill-dot { background: var(--lumo-warning-color, #e8a33d); }
+.camera-card[data-tone="bad"] .dash-pill { background: var(--lumo-error-color); }
+.camera-card[data-tone="bad"] .dash-pill-dot { background: #fff; }
+.camera-card[data-tone="done"] .dash-pill { background: var(--lumo-success-color); color: #00210f; }
+.camera-card[data-tone="done"] .dash-pill-dot { background: #00210f; }
+.camera-card[data-tone="bad"] .dash-fill { background: var(--lumo-error-color); }
+.camera-card[data-tone="bad"] .dash-file { color: #ffd6d6; white-space: normal; }
+
+.camera-card .cam-left {
+    min-width: 0;
+}
+
+.camera-card .dash-file {
+    display: block;
+}
+
+.camera-card .camera-name {
+    font-size: max(15px, 6cqw);
+    font-weight: 650;
+    line-height: 1;
+    margin-bottom: 0.3em;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+/* A name and a job line, so a little more shading than a Dashboard card needs. */
+.camera-card .dash-scrim {
+    height: 34%;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.5));
+}
+
+/* ---- Dashboard card body, tidied (2026-10-13). Dashboard only (.dash-v2); the printer page keeps the old card.
+   Name left with info / alerts / "⋯" on the right, labelled actions under it, one temperature strip in whole
+   degrees, speed / fans / light as one line of chips, one line per AMS and small tray chips. ---- */
+.dashboard-printer .t-label {
+    display: none;
+}
+
+.dashboard-printer.dash-v2 .name {
+    font-size: 1rem;
+    text-align: left;
+    padding: 10px 2px 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.dashboard-printer.dash-v2 .name > div:first-child {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.dashboard-printer.dash-v2 .name > div:first-child > div {
+    width: auto;
+    justify-content: flex-start;
+    font-size: 1.35rem;
+    font-weight: 700;
+}
+
+.dashboard-printer.dash-v2 .name .name-controls {
+    position: static;
+    transform: none;
+    gap: 4px;
+}
+
+.dashboard-printer.dash-v2 .name vaadin-button {
+    margin: 0;
+}
+
+.dashboard-printer.dash-v2 .dash-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 6px;
+    width: 100%;
+    font-weight: normal;
+}
+
+.dashboard-printer.dash-v2 .dash-act {
+    height: 32px;
+    padding: 0 12px;
+    margin: 0;
+    font-size: var(--lumo-font-size-s);
+    font-weight: 600;
+}
+
+.dashboard-printer.dash-v2 .dash-tool {
+    font-weight: 500;
+    color: var(--lumo-secondary-text-color);
+}
+
+.dashboard-printer.dash-v2 .dash-act-stop {
+    color: var(--lumo-error-text-color);
+}
+
+/* Temperatures: one strip. FlexLayout sets display:flex inline, hence the !important. */
+.dashboard-printer.dash-v2 .status {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    gap: 1px;
+    margin-top: 10px;
+    background: var(--lumo-contrast-10pct);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.dashboard-printer.dash-v2 .status .badge {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 6px;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 10px;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--lumo-base-color);
+}
+
+.dashboard-printer.dash-v2 .status .badge img {
+    display: none;
+}
+
+.dashboard-printer.dash-v2 .t-label {
+    display: block;
+    flex-basis: 100%;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--lumo-secondary-text-color);
+}
+
+.dashboard-printer.dash-v2 .status .badge > span:not(.t-label) {
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-printer.dash-v2 .status .badge > span.t-target {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+.dashboard-printer.dash-v2 .status .t-target::before {
+    content: "/ ";
+}
+
+.dashboard-printer.dash-v2 .t-off {
+    display: none;
+}
+
+/* Speed / fans / light: one line of chips (each still opens its menu) */
+.dashboard-printer.dash-v2 .dash-misc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.dashboard-printer.dash-v2 .dash-misc .badge {
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin: 0;
+    padding: 3px 10px;
+    border-radius: 99px;
+    box-shadow: none;
+    background: var(--lumo-contrast-5pct);
+    font-size: var(--lumo-font-size-s);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.dashboard-printer.dash-v2 .dash-misc .badge img {
+    display: none;
+}
+
+.dashboard-printer.dash-v2 .dash-misc .t-label {
+    display: inline;
+    flex-basis: auto;
+}
+
+/* AMS: one header line, tray chips four to a row */
+.dashboard-printer.dash-v2 .filaments {
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.dashboard-printer.dash-v2 .amsheader {
+    height: auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: var(--lumo-font-size-s);
+}
+
+.dashboard-printer.dash-v2 .amsheader span {
+    flex-grow: 0;
+}
+
+.dashboard-printer.dash-v2 .amsheader > span:first-child {
+    font-weight: 700;
+}
+
+.dashboard-printer.dash-v2 .amsheader span.filler {
+    flex-grow: 1;
+    order: 3;
+}
+
+.dashboard-printer.dash-v2 .amsheader img {
+    flex-grow: 0;
+    height: 18px;
+    max-height: 18px;
+}
+
+.dashboard-printer.dash-v2 .amsheader .drying-badge {
+    order: 4;
+    font-weight: 600;
+    color: var(--lumo-warning-text-color, #e8a33d);
+}
+
+.dashboard-printer.dash-v2 .amsheader vaadin-button {
+    order: 5;
+    margin: 0;
+}
+
+.dashboard-printer.dash-v2 .amstray {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.dashboard-printer.dash-v2 .amstray .filament {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--lumo-contrast-10pct);
+    border-radius: 8px;
+    box-shadow: none;
+    font-size: var(--lumo-font-size-s);
+}
+
+.dashboard-printer.dash-v2 .amstray .filament > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.dashboard-printer.dash-v2 .amstray .filament .color {
+    order: -1;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    min-height: 18px;
+    border: 1px solid var(--lumo-contrast-30pct);
+    border-radius: 5px;
+    box-shadow: none;
+}
+
+.dashboard-printer.dash-v2 .amstray .filament.empty {
+    background: transparent;
+    border-style: dashed;
+    color: var(--lumo-tertiary-text-color);
+}
+
+.dashboard-printer.dash-v2 .amstray .filament.empty .color {
+    border-style: dashed;
+    background: transparent !important;
+}
+
+.dashboard-printer.dash-v2 .amstray .active {
+    border: 1px solid var(--lumo-success-color);
+}
+
+/* H2D external spools: two small chips side by side */
+.dashboard-printer.dash-v2 .filaments .vir-slots-row {
+    gap: 6px;
+}
+
+.dashboard-printer.dash-v2 .vir-slots-row .amstray {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.dashboard-printer.dash-v2 .vir-slots-row .amsheader {
+    margin-bottom: 4px;
+    font-size: var(--lumo-font-size-xs);
+    color: var(--lumo-secondary-text-color);
+}
+
+/* Name of a page whose controls sit in the top bar (Printer, SD Card, Logs, History, Maintenance, Batch Print) */
+.header-page-title {
+    font-weight: 700;
+    font-size: var(--lumo-font-size-l);
+    margin-right: var(--lumo-space-s);
+    white-space: nowrap;
+}
+
+/* ---- Maintenance task board (2026-10-13) ---- */
+.mt-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+    gap: 12px;
+    width: 100%;
+    align-items: start;
+}
+
+.mt-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--lumo-contrast-10pct);
+    border-radius: 10px;
+    background: var(--lumo-contrast-5pct);
+}
+
+.mt-card.mt-due {
+    border-color: color-mix(in srgb, var(--lumo-error-color) 55%, transparent);
+}
+
+.mt-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+}
+
+.mt-name {
+    font-size: var(--lumo-font-size-l);
+    font-weight: 700;
+}
+
+.mt-edit {
+    margin-left: auto;
+}
+
+.mt-dim,
+.mt-hint {
+    color: var(--lumo-secondary-text-color);
+    font-size: var(--lumo-font-size-s);
+}
+
+.mt-chip {
+    border-radius: 99px;
+    padding: 1px 10px;
+    font-size: var(--lumo-font-size-s);
+    font-weight: 600;
+    border: 1px solid var(--lumo-contrast-20pct);
+    white-space: nowrap;
+}
+
+.mt-chip[data-tone="bad"] {
+    color: var(--lumo-error-text-color);
+    border-color: color-mix(in srgb, var(--lumo-error-color) 50%, transparent);
+}
+
+.mt-chip[data-tone="ok"] {
+    color: var(--lumo-success-text-color);
+}
+
+.mt-task {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    align-items: center;
+    padding: 2px 0;
+}
+
+.mt-task-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.mt-task-name {
+    font-weight: 600;
+    font-size: var(--lumo-font-size-s);
+}
+
+.mt-bar {
+    grid-column: 1 / -1;
+    height: 6px;
+    border-radius: 99px;
+    background: var(--lumo-contrast-10pct);
+    overflow: hidden;
+}
+
+.mt-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: var(--lumo-success-color);
+}
+
+.mt-fill[data-tone="warn"] {
+    background: var(--lumo-warning-color, #e8a33d);
+}
+
+.mt-fill[data-tone="bad"] {
+    background: var(--lumo-error-color);
+}
+
+.mt-more {
+    font-size: var(--lumo-font-size-s);
+}
+
+/* ---- Batch Print v2 (3 steps) ---- */
+.batchprint-view.bp-v2 {
+    align-items: stretch;
+    height: auto;
+}
+.bpx-title h3 { margin: 0; }
+.bpx-title { display: flex; flex-direction: column; gap: 2px; }
+.bpx-dim { color: var(--lumo-secondary-text-color); font-size: var(--lumo-font-size-s); }
+.bpx-steps {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 14px;
+}
+.bpx-steps > .bpx-step:nth-child(3) { grid-column: 1 / -1; }
+@media (max-width: 900px) {
+    .bpx-steps { grid-template-columns: minmax(0, 1fr); }
+    /* phone order: 1, 2, 3 */
+    .bpx-steps > .bpx-step:nth-child(2) { order: 3; }
+    .bpx-steps > .bpx-step:nth-child(3) { order: 2; }
+}
+.bpx-step {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--lumo-contrast-10pct);
+    border-radius: 10px;
+    background: var(--lumo-contrast-5pct);
+}
+.bpx-step-h { display: flex; align-items: center; gap: 8px; }
+.bpx-step-h h3 { margin: 0; font-size: var(--lumo-font-size-l); }
+.bpx-n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--lumo-primary-color); color: var(--lumo-primary-contrast-color);
+    font-size: 12px; font-weight: 700; flex: none;
+}
+.bpx-pick { display: flex; gap: 12px; align-items: flex-start; }
+.bpx-pick-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bpx-facts-line { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.bpx-thumb.small { width: 96px; height: 96px; object-fit: contain; flex: none; cursor: zoom-in; }
+.bpx-thumb:not(.small) { width: 280px; max-width: 100%; cursor: zoom-out; }
+.batchprint-view.bp-v2 .filaments { justify-content: flex-start; gap: 6px; }
+.bpx-go { display: flex; flex-wrap: wrap; gap: 8px; }
+.bpx-options { display: flex; flex-direction: column; gap: 2px; }
+.bpx-chip {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: var(--lumo-font-size-xs); font-weight: 600; white-space: nowrap;
+    background: var(--lumo-contrast-10pct); color: var(--lumo-secondary-text-color);
+}
+.bpx-chip[data-tone="ok"] { background: rgba(46, 160, 67, .18); color: var(--lumo-success-text-color); }
+.bpx-chip[data-tone="warn"] { background: rgba(232, 163, 61, .18); color: var(--lumo-warning-text-color, #e8a33d); }
+.bpx-chip[data-tone="off"] { background: rgba(229, 72, 77, .16); color: var(--lumo-error-text-color); }
+
+/* ---- Mappings v2: one filtered list ---- */
+.mappings-view { gap: 10px; }
+.mappings-view > * { align-self: stretch; }
+.mp-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.mp-title h3 { margin: 0; }
+.mp-title vaadin-button { margin-left: auto; }
+.mp-dim { color: var(--lumo-secondary-text-color); font-size: var(--lumo-font-size-s); }
+.mp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mp-filter {
+    --lumo-button-size: 30px;
+    border-radius: 999px;
+    font-size: var(--lumo-font-size-s);
+    background: var(--lumo-contrast-5pct);
+    color: var(--lumo-body-text-color);
+    border: 1px solid var(--lumo-contrast-10pct);
+    margin: 0;
+}
+.mp-filter[data-tone="warn"] { color: var(--lumo-warning-text-color, #e8a33d); }
+.mp-filter[data-on="true"] { background: var(--lumo-primary-color-10pct); border-color: var(--lumo-primary-color); color: var(--lumo-primary-text-color); }
+.mp-search { margin-left: auto; width: min(100%, 280px); padding: 0; }
+.mp-select { width: auto; min-width: 150px; padding: 0; }
+.mp-list { display: flex; flex-direction: column; gap: 8px; }
+.mp-row {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1.3fr) minmax(0, 1.2fr) auto;
+    gap: 8px 14px;
+    align-items: start;
+    padding: 10px 12px;
+    border: 1px solid var(--lumo-contrast-10pct);
+    border-radius: 10px;
+    background: var(--lumo-contrast-5pct);
+}
+.mp-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mp-name { font-weight: 600; overflow-wrap: anywhere; }
+.mp-where { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--lumo-font-size-s); }
+.mp-parts { min-width: 0; }
+.mp-act { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.mp-badge {
+    font-size: var(--lumo-font-size-xs); font-weight: 700; padding: 0 6px; border-radius: 4px;
+    border: 1px solid currentColor;
+}
+.mp-badge[data-m="etsy"] { color: #f1641e; }
+.mp-badge[data-m="ebay"] { color: #3665f3; }
+.mp-chip {
+    display: inline-block; padding: 0 8px; border-radius: 999px; font-size: var(--lumo-font-size-xs); font-weight: 600;
+    background: var(--lumo-contrast-10pct); color: var(--lumo-secondary-text-color);
+}
+.mp-chip[data-tone="ok"] { background: rgba(46, 160, 67, .18); color: var(--lumo-success-text-color); }
+.mp-chip[data-tone="warn"] { background: rgba(232, 163, 61, .18); color: var(--lumo-warning-text-color, #e8a33d); }
+@media (max-width: 900px) {
+    .mp-row { grid-template-columns: 48px minmax(0, 1fr); }
+    .mp-parts, .mp-act { grid-column: 1 / -1; }
+    .mp-act { justify-content: flex-start; }
+    .mp-search { margin-left: 0; width: 100%; }
+    .mp-select { flex: 1 1 140px; }
+}

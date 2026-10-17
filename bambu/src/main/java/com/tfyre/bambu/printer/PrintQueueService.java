@@ -80,6 +80,8 @@ public class PrintQueueService {
     NotificationService notificationService;
     @Inject
     SimulationService simulation;
+    @Inject
+    PlateYieldService plateYield;
     /** Lazy to avoid an eager circular reference (AutoQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<AutoQueueService> autoQueueInstance;
@@ -174,7 +176,7 @@ public class PrintQueueService {
                 queue.remove(i);
                 dirty = true;
                 save();
-                returnToDispatchPool(entry);
+                returnToDispatchPool(entry, printer);
                 return;
             }
         }
@@ -210,11 +212,17 @@ public class PrintQueueService {
         return entry.orderRef() != null && entry.part() != null;
     }
 
-    private void returnToDispatchPool(final QueueEntry entry) {
+    private void returnToDispatchPool(final QueueEntry entry, final String printer) {
         if (!returnsToPool(entry)) {
             return;
         }
-        dispatchInstance.get().enqueue(entry.part(), entry.orderRef());
+        // One pool job per PIECE. An entry on the H2D for a plate of two stands for two pieces, and the pool
+        // counts in pieces - handing back one would quietly lose the other from the order.
+        final int pieces = printers.getPrinterDetail(printer)
+                .map(d -> entry.part().yieldFor(d.config().model())).orElse(1);
+        for (int i = 0; i < pieces; i++) {
+            dispatchInstance.get().enqueue(entry.part(), entry.orderRef());
+        }
         Log.infof("PrintQueueService: %s returned to the dispatch pool (removed from a printer queue)",
                 entry.command().filename());
     }
@@ -460,6 +468,10 @@ public class PrintQueueService {
                 // nothing to upload, just send the print command directly.
                 historyService.registerExpectedWeight(printerName, command.filename(), entry.grams(), trigger, entry.orderRef());
                 lastStarted.put(printerName, new StartedJob(entry, command.filename()));
+                // An H2D plate that holds two of a part counts as two when it finishes - recorded for every
+                // start, so an ordinary one-piece print also clears what the last print left behind.
+                plateYield.started(printerName, entry.orderRef(), entry.part(),
+                        entry.part() == null ? 1 : entry.part().yieldFor(detail.config().model()));
                 detail.printer().commandPrintProjectFile(command);
                 removeFirst(printerName, entry);
                 Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, command.filename(), command.plateId());

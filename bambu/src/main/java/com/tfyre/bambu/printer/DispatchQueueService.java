@@ -221,6 +221,35 @@ public class DispatchQueueService {
     }
 
     /**
+     * The other pool jobs one print of {@code job} on {@code pd} would also cover - empty for a printer whose
+     * file makes one piece. Null when the printer's file makes several and there are not enough pieces of the
+     * same part, for the same order, waiting: sending it there would print pieces nobody ordered.
+     */
+    public List<PendingJob> plateSiblings(final PendingJob job, final BambuPrinters.PrinterDetail pd) {
+        final int pieces = job.part().yieldFor(pd.config().model());
+        if (pieces <= 1) {
+            return List.of();
+        }
+        if (job.orderRef() == null) {
+            return null;
+        }
+        final String partKey = StockService.partKey(job.part());
+        final List<PendingJob> extras = new ArrayList<>();
+        for (final PendingJob other : getPool()) {
+            if (extras.size() >= pieces - 1) {
+                break;
+            }
+            if (!other.id().equals(job.id()) && other.orderRef() != null
+                    && other.orderRef().market().equals(job.orderRef().market())
+                    && other.orderRef().orderId().equals(job.orderRef().orderId())
+                    && partKey.equals(StockService.partKey(other.part()))) {
+                extras.add(other);
+            }
+        }
+        return extras.size() < pieces - 1 ? null : extras;
+    }
+
+    /**
      * Removes a job that IS going to be printed (handed to a printer's queue elsewhere, e.g. the "Send to…"
      * control on the Print Queue page). The order's expected count stays as-is - the job still counts.
      */
@@ -536,7 +565,17 @@ public class DispatchQueueService {
     }
 
     /** A pending job matched to a printer that can print it right now, with the resolved AMS slot for that printer. */
-    private record Match(PendingJob job, Integer slot) {
+    /**
+     * @param extras the other pool jobs this one print also covers. Empty for a P1. On the H2D a part's file can
+     *               hold several pieces, and the pool counts in pieces, so one H2D print claims that many jobs of
+     *               the same part from the same order: {@code job} is the one that is queued and tracked, the
+     *               extras leave the pool with it and must come back with it if the print does not happen.
+     */
+    private record Match(PendingJob job, Integer slot, List<PendingJob> extras) {
+
+        int pieces() {
+            return 1 + extras.size();
+        }
     }
 
     /**
@@ -546,7 +585,7 @@ public class DispatchQueueService {
      * {@code jobFailures} and {@code jobParked} are keyed by, and losing it is what let a broken job retry
      * forever - see {@link #verifyStarts}.
      */
-    private record PendingStart(String printer, PendingJob job, Instant deadline) {
+    private record PendingStart(String printer, PendingJob job, Instant deadline, List<PendingJob> extras) {
 
         MappingPart part() {
             return job.part();
@@ -593,6 +632,8 @@ public class DispatchQueueService {
             recordJobFailure(ps.job(), ps.printer(),
                     "the printer accepted the command but never started - the file may be missing from its SD "
                     + "card, or the copy on the card is corrupt and cannot be parsed");
+            // The rest of a multi-piece plate goes back as it was: free for the P1s, or for another try here.
+            ps.extras().forEach(this::returnToPool);
             reportBlocked("start-failed|" + ps.printer(),
                     "%s accepted the print command but never started %s%s - the file may be missing from that printer's SD card. Put back in the dispatch pool; %s is held for %d minutes so it goes to another printer."
                             .formatted(ps.printer(), ps.part().path(),
@@ -673,6 +714,7 @@ public class DispatchQueueService {
         } finally {
             if (!handedOff) {
                 // checkBedClear threw before returning a future (e.g. executor shutting down) - don't strand the job
+                match.extras().forEach(this::returnToPool);
                 returnToPool(job);
                 inFlight.remove(pd.name());
             }
@@ -737,11 +779,13 @@ public class DispatchQueueService {
             final Optional<String> error = queuer.queuePart(job.part(), pd.name(), match.slot(), job.orderRef());
             if (error.isPresent()) {
                 consumed = true; // recordJobFailure puts it back itself, with backoff
+                match.extras().forEach(this::returnToPool);
                 recordJobFailure(job, pd.name(), error.get());
                 return;
             }
             consumed = true;
             forget(job.id());
+            match.extras().forEach(e -> forget(e.id()));
             save();
             clearBlocked();
             queueService.startNext(pd.name(), "auto-start",
@@ -753,10 +797,12 @@ public class DispatchQueueService {
                         // and holding the printer for 20 minutes.
                         if (!simulation.isEnabled()) {
                             pendingStarts.put(pd.name(), new PendingStart(pd.name(), job,
-                                    Instant.now().plus(START_VERIFY_AFTER)));
+                                    Instant.now().plus(START_VERIFY_AFTER), match.extras()));
                         }
                         notificationService.notifyEvent("auto_start", pd.name(),
-                                "Dispatched order job to %s: %s%s%s".formatted(pd.name(), job.part().path(),
+                                "Dispatched order job to %s: %s%s%s%s".formatted(pd.name(),
+                                        job.part().pathFor(pd.config().model()).orElse(job.part().path()),
+                                        match.pieces() > 1 ? " - one plate of %d pieces".formatted(match.pieces()) : "",
                                         job.orderRef() == null ? "" : " (" + job.orderRef().label() + ")",
                                         bedVerdict(pd.name())),
                                 aiService.getLastCheck(pd.name()).map(PrintAiService.CheckRecord::snapshot).orElse(null));
@@ -766,6 +812,7 @@ public class DispatchQueueService {
             Log.errorf(ex, "DispatchQueueService: %s: dispatch failed unexpectedly: %s", pd.name(), ex.getMessage());
         } finally {
             if (!consumed) {
+                match.extras().forEach(this::returnToPool);
                 returnToPool(job);
             }
         }
@@ -824,10 +871,39 @@ public class DispatchQueueService {
                     continue;
                 }
                 final Optional<AutoQueueService.Candidate> c = autoQueueService.resolveSlot(pd, job.part());
-                if (c.isPresent()) {
-                    pool.remove(i);
-                    return Optional.of(new Match(job, c.get().resolvedSlot()));
+                if (c.isEmpty()) {
+                    continue;
                 }
+                final int pieces = job.part().yieldFor(pd.config().model());
+                if (pieces <= 1) {
+                    pool.remove(i);
+                    return Optional.of(new Match(job, c.get().resolvedSlot(), List.of()));
+                }
+                // This printer's file for the part makes several pieces (an H2D plate of two). It takes a full
+                // plate's worth - the same part, for the same order, all still waiting - or it leaves the job
+                // for a P1. A half-used plate would print a piece nobody ordered.
+                final List<PendingJob> extras = new ArrayList<>();
+                if (job.orderRef() != null) {
+                    final String partKey = StockService.partKey(job.part());
+                    for (int k = 0; k < pool.size() && extras.size() < pieces - 1; k++) {
+                        final PendingJob other = pool.get(k);
+                        if (k == i || other.orderRef() == null || jobParked.containsKey(other.id())
+                                || jobBackoff.getOrDefault(other.id(), Instant.MIN).isAfter(now)) {
+                            continue;
+                        }
+                        if (other.orderRef().market().equals(job.orderRef().market())
+                                && other.orderRef().orderId().equals(job.orderRef().orderId())
+                                && partKey.equals(StockService.partKey(other.part()))) {
+                            extras.add(other);
+                        }
+                    }
+                }
+                if (extras.size() < pieces - 1) {
+                    continue;
+                }
+                pool.remove(job);
+                pool.removeAll(extras);
+                return Optional.of(new Match(job, c.get().resolvedSlot(), List.copyOf(extras)));
             }
         }
         return Optional.empty();
@@ -848,6 +924,11 @@ public class DispatchQueueService {
     /** Why the dispatch pool isn't moving right now, or empty when it is (or has nothing waiting). */
     public Optional<String> getBlockedStatus() {
         return Optional.ofNullable(blockedStatus);
+    }
+
+    /** The reason code behind {@link #getBlockedStatus()}, e.g. {@code auto-start-off} or {@code bed-dirty|P1S}. */
+    public Optional<String> getBlockedKey() {
+        return Optional.ofNullable(blockedKey);
     }
 
     /** Severity of the current hold - drives amber vs red in the UI. */

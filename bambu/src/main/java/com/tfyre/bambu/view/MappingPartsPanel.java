@@ -96,9 +96,15 @@ public class MappingPartsPanel extends Div {
                     .filter(part -> part.source() == GcodeSource.LIBRARY)
                     .map(MappingPart::path)
                     .collect(java.util.stream.Collectors.toSet());
-            files.stream()
-                    .filter(f -> !already.contains(f))
-                    .forEach(f -> addRow(new MappingPart(GcodeSource.LIBRARY, f, 1, 1, null, null)));
+            // An H2D slice in the project is the H2D file OF a part, not a part: it joins the row of the P1
+            // file it is named after instead of getting a row (and a P1 picker it does not belong in).
+            final com.tfyre.bambu.printer.LibraryFileInfo info = fileInfo();
+            final List<MappingPart> paired = info == null
+                    ? files.stream().map(f -> new MappingPart(GcodeSource.LIBRARY, f, 1, 1, null, null)).toList()
+                    : info.pair(files);
+            paired.stream()
+                    .filter(part -> !already.contains(part.path()))
+                    .forEach(this::addRow);
             projectSelect.clear();
         });
         add(projectSelect);
@@ -171,17 +177,36 @@ public class MappingPartsPanel extends Div {
                 : "Will queue %d job(s) - select a printer".formatted(totalJobs));
     }
 
+    /** Looked up rather than injected: this panel is built with {@code new} by several views. */
+    private static com.tfyre.bambu.printer.LibraryFileInfo fileInfo() {
+        try {
+            return jakarta.enterprise.inject.spi.CDI.current().select(com.tfyre.bambu.printer.LibraryFileInfo.class).get();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /** "[P1] file" / "[H2D] file" - what the file is, in front of its name. */
+    private static String labelled(final com.tfyre.bambu.printer.LibraryFileInfo fileInfo, final String file) {
+        if (file == null) {
+            return "";
+        }
+        return fileInfo == null ? file : "[%s] %s".formatted(fileInfo.of(file).badge(), file);
+    }
+
     private final class PartRow {
 
         final HorizontalLayout container = new HorizontalLayout();
         final ComboBox<GcodeSource> sourceSelect = new ComboBox<>("Source");
-        final ComboBox<String> gcodeSelect = new ComboBox<>("Gcode file");
+        final ComboBox<String> gcodeSelect = new ComboBox<>("P1 file");
         final ComboBox<Integer> plateSelect = new ComboBox<>("Plate");
         final ComboBox<String> h2dSelect = new ComboBox<>("H2D file");
         final TextField sdPathField = new TextField("SD card path");
         final IntegerField sdPlateField = new IntegerField("Plate");
-        final IntegerField copiesField = new IntegerField("Copies/unit");
+        final IntegerField h2dYieldField = new IntegerField("H2D print makes");
+        final IntegerField copiesField = new IntegerField("Pieces/unit");
         final ComboBox<Integer> amsSlotSelect = new ComboBox<>("AMS slot");
+        final ComboBox<Integer> extraSlotSelect = new ComboBox<>("2nd filament tray");
         final ComboBox<String> filamentSelect = new ComboBox<>("Filament");
         final ComboBox<com.tfyre.bambu.printer.FilamentColor> colorSelect = new ComboBox<>("Colour");
         final Button removeBtn = new Button(new Icon(VaadinIcon.TRASH));
@@ -196,7 +221,17 @@ public class MappingPartsPanel extends Div {
             sourceSelect.setValue(GcodeSource.LIBRARY);
             sourceSelect.addValueChangeListener(e -> applyVisibility());
 
-            gcodeSelect.setItems(libraryFilesSupplier.get());
+            // Each picker only offers files that can run on its kind of printer, and says what each file is. The
+            // kind is read from the file (LibraryFileInfo), so this is not a naming convention that can be wrong.
+            final com.tfyre.bambu.printer.LibraryFileInfo fileInfo = fileInfo();
+            final List<String> allFiles = libraryFilesSupplier.get();
+            // Every file, labelled. Normally the P1 slice - but a part that only exists as an H2D slice (a plate
+            // too big for a P1) is picked here too, and then only the H2D prints it.
+            gcodeSelect.setItems(allFiles);
+            gcodeSelect.setItemLabelGenerator(f -> labelled(fileInfo, f));
+            gcodeSelect.setTooltipText("The file the P1 printers print; one print of it makes one piece. Pick an [H2D] "
+                    + "file here for a part only the H2D can print.");
+            gcodeSelect.addValueChangeListener(e -> applyVisibility());
             gcodeSelect.setWidth("300px");
             // Let the dropdown overlay be wider than the input so long library filenames aren't truncated.
             gcodeSelect.getStyle().set("--vaadin-combo-box-overlay-width", "460px");
@@ -211,7 +246,18 @@ public class MappingPartsPanel extends Div {
                 plateSelect.setValue(plates.isEmpty() ? null : plates.get(0));
             });
 
-            h2dSelect.setItems(libraryFilesSupplier.get());
+            h2dSelect.setItems(allFiles.stream().filter(f -> fileInfo == null
+                    || !com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_P1.equals(fileInfo.family(f))).toList());
+            h2dSelect.setItemLabelGenerator(f -> labelled(fileInfo, f));
+            h2dSelect.addValueChangeListener(e -> applyVisibility());
+            h2dYieldField.setWidth("130px");
+            h2dYieldField.setValue(1);
+            h2dYieldField.setMin(1);
+            h2dYieldField.setMax(12);
+            h2dYieldField.setStepButtonsVisible(true);
+            h2dYieldField.setTooltipText("How many pieces one print of the H2D file makes. 2 for a plate that holds "
+                    + "a pair: the H2D then takes two of this part from an order in one print, and only when two "
+                    + "are waiting.");
             h2dSelect.setWidth("220px");
             h2dSelect.getStyle().set("--vaadin-combo-box-overlay-width", "460px");
             h2dSelect.setClearButtonVisible(true);
@@ -231,7 +277,8 @@ public class MappingPartsPanel extends Div {
             copiesField.setValue(1);
             copiesField.setMin(1);
             copiesField.setStepButtonsVisible(true);
-            copiesField.setTooltipText("How many prints of this part are needed per 1 unit ordered");
+            copiesField.setTooltipText("How many pieces of this part one unit sold needs. On a P1 that is also the "
+                    + "number of prints.");
             copiesField.addValueChangeListener(e -> updateTotalJobsLabel());
 
             amsSlotSelect.setItems(AmsSlotSupport.ITEMS);
@@ -240,6 +287,15 @@ public class MappingPartsPanel extends Div {
             amsSlotSelect.setClearButtonVisible(true);
             amsSlotSelect.setPlaceholder("Printer default");
             amsSlotSelect.setTooltipText("Force one specific AMS tray. Blank uses whatever is loaded.");
+
+            extraSlotSelect.setItems(AmsSlotSupport.EXTRA_ITEMS);
+            extraSlotSelect.setItemLabelGenerator(AmsSlotSupport::label);
+            extraSlotSelect.setWidth("150px");
+            extraSlotSelect.setClearButtonVisible(true);
+            extraSlotSelect.setPlaceholder("None");
+            extraSlotSelect.setTooltipText("Only for a slice that feeds from two filaments - a part with supports in "
+                    + "another material. Where the second one is: on the H2D, usually the AMS HT on the other nozzle. "
+                    + "The first filament uses the AMS slot beside this.");
 
             filamentSelect.setItems("PLA", "PETG", "ASA", "ABS", "TPU", "PC", "PA", "PVA", "PET-CF", "PA-CF", "PLA-CF");
             filamentSelect.setAllowCustomValue(true);
@@ -284,22 +340,30 @@ public class MappingPartsPanel extends Div {
                     sdPlateField.setValue(initial.plateId());
                 }
                 h2dSelect.setValue(initial.h2dPath().orElse(null));
+                h2dYieldField.setValue(initial.h2dYield());
                 copiesField.setValue(initial.copiesPerUnit());
                 amsSlotSelect.setValue(initial.amsSlot());
+                extraSlotSelect.setValue(initial.extraSlots().isEmpty() ? null : initial.extraSlots().get(0));
                 filamentSelect.setValue(initial.filamentType());
                 colorSelect.setValue(initial.color().orElse(null));
             }
             applyVisibility();
 
-            container.add(sourceSelect, gcodeSelect, plateSelect, h2dSelect, sdPathField, sdPlateField, copiesField,
-                    amsSlotSelect, filamentSelect, colorSelect, removeBtn);
+            container.add(sourceSelect, gcodeSelect, plateSelect, h2dSelect, h2dYieldField, sdPathField, sdPlateField, copiesField,
+                    amsSlotSelect, extraSlotSelect, filamentSelect, colorSelect, removeBtn);
         }
 
         private void applyVisibility() {
             final boolean isLibrary = sourceSelect.getValue() == GcodeSource.LIBRARY;
             gcodeSelect.setVisible(isLibrary);
             plateSelect.setVisible(isLibrary);
-            h2dSelect.setVisible(isLibrary);
+            // A main file that is itself an H2D slice has no separate H2D file.
+            final com.tfyre.bambu.printer.LibraryFileInfo info = fileInfo();
+            final boolean h2dOnly = isLibrary && info != null && gcodeSelect.getValue() != null
+                    && com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D.equals(info.family(gcodeSelect.getValue()));
+            gcodeSelect.setLabel(h2dOnly ? "H2D-only file" : "P1 file");
+            h2dSelect.setVisible(isLibrary && !h2dOnly);
+            h2dYieldField.setVisible(isLibrary && !h2dOnly && h2dSelect.getValue() != null);
             sdPathField.setVisible(!isLibrary);
             sdPlateField.setVisible(!isLibrary);
         }
@@ -316,7 +380,11 @@ public class MappingPartsPanel extends Div {
                 }
                 return new MappingPart(GcodeSource.LIBRARY, gcodeSelect.getValue(), plateSelect.getValue(), copies,
                         amsSlot, filamentType, filamentColor)
-                        .withVariant(com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D, h2dSelect.getValue());
+                        .withVariant(com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D,
+                                h2dSelect.isVisible() ? h2dSelect.getValue() : null)
+                        .withVariantYield(com.tfyre.bambu.printer.BambuConst.PrinterModel.FAMILY_H2D,
+                                h2dSelect.getValue() == null ? null : h2dYieldField.getValue())
+                        .withExtraSlots(extraSlotSelect.getValue() == null ? List.of() : List.of(extraSlotSelect.getValue()));
             }
             if (sdPathField.getValue() == null || sdPathField.getValue().isBlank()) {
                 return null;

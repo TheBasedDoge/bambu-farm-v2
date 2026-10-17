@@ -144,7 +144,12 @@ public class LogsView extends VerticalLayout implements HasUrlParameter<String>,
     private void buildToolbar() {
         comboBox.setItemLabelGenerator(BambuPrinter::getName);
         comboBox.setItems(printers.getPrinters().stream().sorted(Comparator.comparing(BambuPrinter::getName)).toList());
-        comboBox.addValueChangeListener(l -> buildList(l.getValue()));
+        comboBox.addValueChangeListener(l -> {
+            if (l.getValue() != null) {
+                LastPrinter.set(l.getValue().getName());
+                buildList(l.getValue());
+            }
+        });
         filter.addValueChangeListener(l -> buildFilter());
         filter.setValueChangeMode(ValueChangeMode.TIMEOUT);
     }
@@ -156,7 +161,8 @@ public class LogsView extends VerticalLayout implements HasUrlParameter<String>,
         setSizeFull();
         buildToolbar();
         add(buildListBox());
-        _printer.ifPresent(comboBox::setValue);
+        LastPrinter.pick(_printer, printers.getPrinters().stream().sorted(Comparator.comparing(BambuPrinter::getName)).toList(),
+                BambuPrinter::getName).ifPresent(comboBox::setValue);
     }
 
     @Override

@@ -111,7 +111,7 @@ public class ProfitView extends VerticalLayout {
     private final Grid<Row> grid = new Grid<>();
     private final NumberField etsyPercent = new NumberField("Etsy fees, % of items + shipping");
     private final NumberField etsyPerOrder = new NumberField("Etsy fees, fixed per order");
-    private final NumberField labelCost = new NumberField("Shipping label, per order");
+    private final NumberField labelCost = new NumberField("Shipping label, if not reported");
     private boolean built;
 
     @Override
@@ -144,7 +144,8 @@ public class ProfitView extends VerticalLayout {
 
         grid.addThemeVariants(GridVariant.LUMO_COMPACT, GridVariant.LUMO_ROW_STRIPES);
         grid.addColumn(r -> ("etsy".equals(r.market) ? "Etsy · " : "eBay · ") + r.title).setHeader("Listing")
-                .setFlexGrow(4).setSortable(true).setResizable(true)
+                // A floor under the width: with ten number columns beside it, it was squeezed to "Etsy · Hon…"
+                .setWidth("320px").setFlexGrow(4).setSortable(true).setResizable(true)
                 .setComparator(Comparator.comparing((Row r) -> r.title, String.CASE_INSENSITIVE_ORDER))
                 .setTooltipGenerator(r -> r.title);
         number("Sold", r -> String.valueOf(r.units), r -> r.units);
@@ -164,7 +165,7 @@ public class ProfitView extends VerticalLayout {
             f.setStep(0.01);
             f.setWidth("230px");
         }
-        labelCost.setHelperText("Labels are bought outside the app, so this is your average");
+        labelCost.setHelperText("Only used when Etsy or eBay hasn't reported any label costs");
         final Button save = new Button("Save", e -> {
             salesService.setSettings(new SalesService.Settings(value(etsyPercent), value(etsyPerOrder), value(labelCost)));
             render();
@@ -176,7 +177,9 @@ public class ProfitView extends VerticalLayout {
         final Details assumptions = new Details("Assumptions", fields);
         assumptions.setWidthFull();
 
-        add(top, summary, grid, notes, assumptions);
+        final Details howWorkedOut = new Details("How these numbers are worked out", notes);
+        howWorkedOut.setWidthFull();
+        add(top, summary, grid, howWorkedOut, assumptions);
         setFlexGrow(1, grid);
     }
 
@@ -249,6 +252,9 @@ public class ProfitView extends VerticalLayout {
         final Map<String, FileCost> costs = fileCosts();
         final double perGram = config.costPerKg() / 1000.0;
 
+        final SalesService.LabelCosts labelCosts = salesService.labelCosts(cutoff);
+        final java.util.Set<String> ebayOrdersSeen = new java.util.HashSet<>();
+        final java.util.Set<String> ebayOrdersExact = new java.util.HashSet<>();
         final Map<String, Row> rows = new LinkedHashMap<>();
         final java.util.Set<String> orders = new java.util.HashSet<>();
         int cancelled = 0;
@@ -277,7 +283,10 @@ public class ProfitView extends VerticalLayout {
                     ? settings.etsyFeePercent() / 100.0 * (sale.revenue() + sale.shippingShare())
                     + settings.etsyFeePerOrder() * sale.orderShare()
                     : sale.marketFee();
-            row.labels += settings.labelCost() * sale.orderShare();
+            row.labels += labelCosts.forSale(sale);
+            if ("ebay".equals(sale.market()) && ebayOrdersSeen.add(sale.orderId()) && labelCosts.ebayByOrder().containsKey(sale.orderId())) {
+                ebayOrdersExact.add(sale.orderId());
+            }
             if (orders.add(sale.market() + "|" + sale.orderId())) {
                 row.orders++;
             }
@@ -327,9 +336,25 @@ public class ProfitView extends VerticalLayout {
         if (config.costPerKg() <= 0) {
             lines.add("Filament shows as free because no filament price is set - add bambu.cost-per-kg=<price per kg> to data/.env and restart.");
         }
+        lines.add(labelNote(labelCosts, ebayOrdersSeen.size(), ebayOrdersExact.size()));
         if (cancelled > 0) {
             lines.add("%d cancelled or fully refunded order line%s left out.".formatted(cancelled, cancelled == 1 ? "" : "s"));
         }
         lines.forEach(l -> notes.add(new Div(new Span(l))));
+    }
+
+    /** Where the Labels column's figures come from, for this period. */
+    private String labelNote(final SalesService.LabelCosts c, final int ebayOrders, final int ebayExact) {
+        final String fallback = money(c.fallback());
+        final String ebay = ebayOrders == 0 ? "no eBay orders in this period"
+                : "eBay: the order's own label for %d of %d order%s%s".formatted(ebayExact, ebayOrders, ebayOrders == 1 ? "" : "s",
+                        ebayExact == ebayOrders ? "" : c.ebayKnown()
+                                ? ", the eBay average of %s for the rest".formatted(money(c.ebayAverage()))
+                                : ", %s (Assumptions) for the rest".formatted(fallback));
+        final String etsy = c.etsyKnown()
+                ? "Etsy: %s spent on labels over %d order%s, so %s per order - Etsy reports label spend but not which order each label was for"
+                        .formatted(money(c.etsySpend()), c.etsyOrders(), c.etsyOrders() == 1 ? "" : "s", money(c.etsyPerOrder()))
+                : "Etsy: no label costs pulled yet, so %s per order (Assumptions)".formatted(fallback);
+        return "Labels - " + ebay + ". " + etsy + ".";
     }
 }

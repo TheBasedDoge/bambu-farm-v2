@@ -488,18 +488,27 @@ public class BambuConst {
      * </ul>
      */
     public enum AmsType {
-        UNKNOWN("Unknown", false),
-        AMS("AMS", false),
-        AMS_2_PRO("AMS 2 Pro", true),
-        AMS_2_LITE("AMS 2 Lite", false),
-        AMS_HUB("AMS Hub", false);
+        UNKNOWN("Unknown", false, 0),
+        AMS("AMS", false, 0),
+        AMS_2_PRO("AMS 2 Pro", true, 65),
+        // Single-spool high-temperature unit on the H2D (unit id 128). Bambu Studio dries HIPS in it at 80°C.
+        AMS_HT("AMS HT", true, 85),
+        AMS_2_LITE("AMS 2 Lite", false, 0),
+        AMS_HUB("AMS Hub", false, 0);
 
         private final String label;
         private final boolean supportsDrying;
+        private final int maxDryTemp;
 
-        private AmsType(final String label, final boolean supportsDrying) {
+        private AmsType(final String label, final boolean supportsDrying, final int maxDryTemp) {
             this.label = label;
             this.supportsDrying = supportsDrying;
+            this.maxDryTemp = maxDryTemp;
+        }
+
+        /** Highest drying temperature offered in the dry dialog, °C (0 when the unit can't dry). */
+        public int getMaxDryTemp() {
+            return maxDryTemp;
         }
 
         public String getLabel() {
@@ -533,6 +542,10 @@ public class BambuConst {
             // AMS 2 Pro: Bambu internal code name "n3f", hw_ver prefix "N3F"
             if ("n3f".equals(baseName) || hw.startsWith("N3F")) {
                 return AMS_2_PRO;
+            }
+            // AMS HT: module name "n3s/128", hw_ver "N3S05" (seen on the H2D, 2026-10)
+            if ("n3s".equals(baseName) || hw.startsWith("N3S")) {
+                return AMS_HT;
             }
             // AMS 2 Lite: not yet observed — add when hw_ver strings are known
             if (hw.contains("AMS2_LITE") || hw.contains("AMS_LITE")) {

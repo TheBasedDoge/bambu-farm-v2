@@ -143,11 +143,11 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
                 });
         applySavedSizes();
         updateOverview();
-        createFuture(() -> ui.access(() -> {
+        createRefresh(ui, config.refreshInterval(), () -> {
             runnables.forEach(Runnable::run);
             updateOverview();
             reapplyLiveSort();
-        }), config.refreshInterval());
+        });
     }
 
     private String currentFile(final BambuPrinter printer) {
@@ -214,10 +214,10 @@ public class Dashboard extends PushDiv implements UpdateHeader, ViewHelper {
         add(grid);
 
         updateOverview();
-        createFuture(() -> ui.access(() -> {
+        createRefresh(ui, config.refreshInterval(), () -> {
             grid.getDataProvider().refreshAll();
             updateOverview();
-        }), config.refreshInterval());
+        });
     }
 
     private void toggleView() {

@@ -46,6 +46,7 @@ public class TasmotaSettingsView extends VerticalLayout implements NotificationH
         setPadding(true);
         setSpacing(true);
 
+        add(SettingsTabs.create());
         add(new H3("Tasmota Smart Plugs"));
 
         // Collect printers that have a tasmota URL configured

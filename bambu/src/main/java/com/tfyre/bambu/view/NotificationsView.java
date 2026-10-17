@@ -102,6 +102,7 @@ public class NotificationsView extends VerticalLayout {
         filter.addValueChangeListener(e -> refresh());
 
         eventFilter.setPlaceholder("All events");
+        eventFilter.setItemLabelGenerator(NotificationSettingsView::eventLabel);
         eventFilter.setClearButtonVisible(true);
         eventFilter.setWidth("220px");
         eventFilter.addValueChangeListener(e -> {
@@ -124,9 +125,9 @@ public class NotificationsView extends VerticalLayout {
         add(toolbar);
 
         grid.addColumn(e -> when(e.timestamp())).setHeader("When").setAutoWidth(true).setFlexGrow(0);
-        grid.addColumn(NotificationService.LogEntry::event).setHeader("Event").setAutoWidth(true).setFlexGrow(0);
+        grid.addColumn(e -> NotificationSettingsView.eventLabel(e.event())).setHeader("Event").setAutoWidth(true).setFlexGrow(0);
         grid.addColumn(NotificationService.LogEntry::printer).setHeader("About").setAutoWidth(true).setFlexGrow(0);
-        grid.addColumn(NotificationService.LogEntry::message).setHeader("Message").setFlexGrow(1);
+        grid.addColumn(e -> com.tfyre.bambu.printer.HtmlText.plain(e.message())).setHeader("Message").setFlexGrow(1);
         grid.addComponentColumn(e -> {
             if (!e.photo()) {
                 return new Span();
@@ -209,7 +210,7 @@ public class NotificationsView extends VerticalLayout {
 
     private void showDialog(final NotificationService.LogEntry entry) {
         final Dialog dialog = new Dialog();
-        dialog.setHeaderTitle("%s - %s (%s)".formatted(entry.event(), entry.printer(), when(entry.timestamp())));
+        dialog.setHeaderTitle("%s - %s (%s)".formatted(NotificationSettingsView.eventLabel(entry.event()), entry.printer(), when(entry.timestamp())));
         dialog.setWidth("860px");
         final VerticalLayout layout = new VerticalLayout();
         layout.setPadding(false);
@@ -228,7 +229,7 @@ public class NotificationsView extends VerticalLayout {
             }
         }
         final Div message = new Div();
-        message.setText(entry.message());
+        message.setText(com.tfyre.bambu.printer.HtmlText.plain(entry.message()));
         message.getStyle().set("white-space", "pre-wrap");
         layout.add(message, new HorizontalLayout(new Span("Status:"), statusSpan(entry.status())));
         dialog.add(layout);

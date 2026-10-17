@@ -675,8 +675,9 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         diag.addClassName("bed-card-diag");
         card.add(diag);
 
-        final Runnable[] refresh = new Runnable[1];
-        refresh[0] = () -> {
+        // The frames and the three rendered crops are the slow part of this tab (a few hundred ms of image work
+        // per printer), and they sit folded away - so they are only built when "Frames & diagnosis" is opened.
+        final Runnable drawFrames = () -> {
             frames.removeAll();
             bedReference.getReference(printerName).ifPresentOrElse(
                     bytes -> frames.add(labelledThumb("Reference", "bed-ref-%s.jpg".formatted(printerName), bytes, null)),
@@ -687,7 +688,19 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                     });
             bedDiff.getLastFrame(printerName).ifPresent(bytes ->
                     frames.add(labelledThumb("Last measured", "bed-cur-%s.jpg".formatted(printerName), bytes, null)));
+            drawCrops(printerName, cropHolder);
+        };
+        diag.addOpenedChangeListener(e -> {
+            if (e.isOpened()) {
+                drawFrames.run();
+            }
+        });
 
+        final Runnable[] refresh = new Runnable[1];
+        refresh[0] = () -> {
+            if (diag.isOpened()) {
+                drawFrames.run();
+            }
             bedDiff.getLastMeasurement(printerName).ifPresentOrElse(m -> {
                 final com.tfyre.bambu.printer.BedDiffService.Trust trust = bedDiff.trustOf(m);
                 final String tone = switch (trust) {
@@ -732,7 +745,15 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                         : "Save a frame of the empty bed to switch this printer's backstop on.");
                 measured.getStyle().set("white-space", "normal");
             });
+        };
+        refresh[0].run();
+        bedCardRefreshers.add(refresh[0]);
+        return finishBedReferenceCard(card, printerName, refresh);
+    }
 
+    /** The comparison crops for one printer's card - see {@link #buildBedReferenceCard}. */
+    private void drawCrops(final String printerName, final Div cropHolder) {
+        {
             // Show exactly what the comparison sees, so a bad crop is obvious rather than invisible.
             // Prefer the last measured frame - that's the one whose number you're trying to explain.
             cropHolder.removeAll();
@@ -754,9 +775,10 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                     .flatMap(ref -> bedDiff.renderDiff(printerName, cur, ref))
                     .ifPresent(bytes -> cropHolder.add(labelledThumb("What differs",
                             "bed-diff-%s.jpg".formatted(printerName), bytes, "var(--lumo-error-color)"))));
-        };
-        refresh[0].run();
-        bedCardRefreshers.add(refresh[0]);
+        }
+    }
+
+    private Div finishBedReferenceCard(final Div card, final String printerName, final Runnable[] refresh) {
 
         // Measure without involving the AI, so an empty bed and a bed with a part can be read back to back.
         // Calibrating off real checks alone means waiting for real checks.
@@ -944,9 +966,10 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                     .orElseGet(Span::new)).setHeader("Trigger").setAutoWidth(true);
             grid.addComponentColumn(row -> {
                 final Span s = new Span(row.resultText());
-                s.getStyle().setColor(switch (row.severity()) {
+                // No check yet is not a pass - grey, not green
+                s.getStyle().setColor("—".equals(row.checkType()) ? "var(--lumo-secondary-text-color)" : switch (row.severity()) {
                     case OK -> "var(--lumo-success-text-color)";
-                    case WARN -> "#856404";
+                    case WARN -> "var(--lumo-warning-text-color, #e8a33d)";
                     case FAIL -> "var(--lumo-error-text-color)";
                 });
                 return s;
@@ -1098,7 +1121,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         s = new Span("%s %s".formatted(icon, rec.good() ? "OK" : "Problem"));
         s.getStyle().setFontWeight("bold").setColor(switch (rec.severity()) {
             case OK -> "var(--lumo-success-text-color)";
-            case WARN -> "#856404";
+            case WARN -> "var(--lumo-warning-text-color, #e8a33d)";
             case FAIL -> "var(--lumo-error-text-color)";
         });
         return s;
@@ -1341,7 +1364,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                         r.positive() ? "YES" : "no", truncate(r.description(), 160)));
                 line.getStyle().setColor(switch (r.severity()) {
                     case OK -> "var(--lumo-success-text-color)";
-                    case WARN -> "#856404";
+                    case WARN -> "var(--lumo-warning-text-color, #e8a33d)";
                     case FAIL -> "var(--lumo-error-text-color)";
                 });
             }
@@ -1380,7 +1403,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                         r.positive() ? "YES (matched \"%s\")".formatted(type.positiveKeyword()) : "no"));
                 verdict.getStyle().setFontWeight("bold").setColor(switch (r.severity()) {
                     case OK -> "var(--lumo-success-text-color)";
-                    case WARN -> "#856404";
+                    case WARN -> "var(--lumo-warning-text-color, #e8a33d)";
                     case FAIL -> "var(--lumo-error-text-color)";
                 });
                 layout.add(verdict);
@@ -1423,7 +1446,28 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                         formatTimeAgo(r.checkedAt())
                 ));
             } else {
-                rows.add(new PrinterAiRow(printer.getName(), "—", "No check run yet", OllamaService.Severity.OK, ""));
+                // Nothing since this start - the last check saved before the restart, if there is one
+                final Optional<PrintAiService.CheckRecord> saved = aiService.getLastCheck(printer.getName())
+                        .filter(c -> c.good() != null && c.severity() != null);
+                if (saved.isPresent()) {
+                    final PrintAiService.CheckRecord c = saved.get();
+                    final String typeLabel = switch (c.checkType()) {
+                        case "bed-clear" -> "Bed Clear";
+                        case "first-layer" -> "First Layer";
+                        case "extrusion" -> "Extrusion";
+                        default -> "Print";
+                    };
+                    final String icon = switch (c.severity()) {
+                        case OK -> "✓";
+                        case WARN -> "⚠";
+                        case FAIL -> "✗";
+                    };
+                    rows.add(new PrinterAiRow(printer.getName(), typeLabel,
+                            icon + " " + (c.description() == null ? "" : c.description()), c.severity(),
+                            formatTimeAgo(c.at())));
+                } else {
+                    rows.add(new PrinterAiRow(printer.getName(), "—", "No check yet", OllamaService.Severity.OK, ""));
+                }
             }
         });
         grid.setItems(rows);

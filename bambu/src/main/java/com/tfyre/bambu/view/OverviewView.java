@@ -197,9 +197,7 @@ public class OverviewView extends VerticalLayout {
 
         final UI ui = attachEvent.getUI();
         future.ifPresent(f -> f.cancel(true));
-        future = Optional.of(ses.scheduleAtFixedRate(
-                () -> ui.access(this::refresh),
-                0, Math.max(1, config.refreshInterval().getSeconds()), TimeUnit.SECONDS));
+        future = Optional.of(RefreshTicker.start(ses, ui, "OverviewView", config.refreshInterval(), this::refresh));
     }
 
     @Override
@@ -339,6 +337,9 @@ public class OverviewView extends VerticalLayout {
                     const g = Math.max(8, Math.round(W * 0.008));
                     const big = root.__wallFocus ? tiles.find(t => t.dataset.name === root.__wallFocus) : null;
                     tiles.forEach(t => t.classList.toggle('focus', t === big));
+                    // An attribute as well as the class: the server rewrites the class list whenever a tile's
+                    // state changes, which would drop 'focus' - and with it the action bar - until the next layout.
+                    tiles.forEach(t => t.toggleAttribute('data-focus', t === big));
                     if (big && n > 1) {
                         const m = n - 1;
                         let bw = (m * (W - g) + (m - 1) * g * CAM) / (m + 1);
@@ -374,7 +375,7 @@ public class OverviewView extends VerticalLayout {
                     // it is a property of this screen, and a server refresh must not undo it.
                     grid.addEventListener('click', (e) => {
                         // The "Bed cleared" button sits on the tile; pressing it must not also enlarge it.
-                        if (e.target.closest('.wall-clear-btn')) { return; }
+                        if (e.target.closest('.wall-clear-btn, .wall-actions')) { return; }
                         const t = e.target.closest('.wall-p');
                         if (!t) { return; }
                         root.__wallFocus = root.__wallFocus === t.dataset.name ? null : t.dataset.name;
@@ -792,6 +793,21 @@ public class OverviewView extends VerticalLayout {
                 = new com.vaadin.flow.component.button.Button("Bed cleared");
         /** What is currently inside {@link #cam}, so it is only replaced when it genuinely has to be. */
         private String camKind = "";
+        /** Shown only on the enlarged tile (CSS, {@code [data-focus]}): the order being printed, the layer, the controls. */
+        private final Span orderText = new Span();
+        private final Div layer = new Div();
+        private final Div actions = new Div();
+        private final com.vaadin.flow.component.button.Button pauseBtn = actionButton("Pause");
+        private final com.vaadin.flow.component.button.Button resumeBtn = actionButton("Resume");
+        private final com.vaadin.flow.component.button.Button stopBtn = actionButton("Stop");
+        private final com.vaadin.flow.component.button.Button startBtn = actionButton("Start next");
+        private final com.vaadin.flow.component.button.Button lightBtn = actionButton("Light");
+
+        private static com.vaadin.flow.component.button.Button actionButton(final String text) {
+            final com.vaadin.flow.component.button.Button b = new com.vaadin.flow.component.button.Button(text);
+            b.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_SMALL);
+            return b;
+        }
 
         /**
          * The camera fills the tile and everything else is drawn over it: a state pill top-left, name and job
@@ -816,8 +832,24 @@ public class OverviewView extends VerticalLayout {
             nameBox.addClassName("wall-p-name");
             final Div jobBox = new Div(jobText);
             jobBox.addClassName("wall-p-job");
-            final Div l = new Div(nameBox, jobBox);
+            final Div orderBox = new Div(orderText);
+            orderBox.addClassName("wall-p-order");
+            final Div l = new Div(nameBox, jobBox, orderBox);
             l.addClassName("wall-p-l");
+            layer.addClassName("wall-layer");
+
+            // The control row. Only the enlarged tile shows it, so a wall display nobody is touching looks as it
+            // always did and a stray tap on a small tile can do nothing but enlarge it.
+            actions.addClassName("wall-actions");
+            stopBtn.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_ERROR);
+            resumeBtn.addThemeVariants(com.vaadin.flow.component.button.ButtonVariant.LUMO_PRIMARY);
+            final com.vaadin.flow.component.html.Anchor sd = new com.vaadin.flow.component.html.Anchor("sdcard/" + name, "SD card");
+            final com.vaadin.flow.component.html.Anchor open = new com.vaadin.flow.component.html.Anchor("printer/" + name, "Open printer");
+            sd.addClassName("wall-action-link");
+            open.addClassName("wall-action-link");
+            final Span spacer = new Span();
+            spacer.getStyle().set("flex", "1");
+            actions.add(pauseBtn, resumeBtn, stopBtn, startBtn, lightBtn, spacer, sd, open);
 
             pct.addClassName("wall-p-pct");
             left.addClassName("wall-p-left");
@@ -838,7 +870,7 @@ public class OverviewView extends VerticalLayout {
             final Div track = new Div(fill);
             track.addClassName("wall-track");
 
-            root.add(cam, scrim, pill, info, track);
+            root.add(cam, scrim, pill, layer, info, actions, track);
         }
     }
 
@@ -858,6 +890,7 @@ public class OverviewView extends VerticalLayout {
             names.forEach(n -> {
                 final Tile tile = new Tile(n);
                 tile.clearBtn.addClickListener(e -> onBedCleared(n));
+                wireActions(tile, n);
                 tiles.put(n, tile);
             });
             tiles.values().forEach(t -> printerGrid.add(t.root));
@@ -921,6 +954,17 @@ public class OverviewView extends VerticalLayout {
         }
         t.jobText.setText(jobText);
 
+        // The enlarged tile's extras. Hidden on small tiles by CSS; kept current on all of them so the moment one
+        // is enlarged it is already right.
+        final Optional<BambuPrinter> printer = printers.getPrinterDetail(s.name()).map(BambuPrinters.PrinterDetail::printer);
+        t.orderText.setText(inJob ? historyService.runningOrder(s.name()).map(com.tfyre.bambu.printer.OrderRef::label).orElse("") : "");
+        t.layer.setText(inJob ? printer.filter(p -> p.getTotalLayerNum() > 0)
+                .map(p -> "Layer %d / %d".formatted(p.getLayerNum(), p.getTotalLayerNum())).orElse("") : "");
+        t.pauseBtn.setVisible(s.printing() && !paused);
+        t.resumeBtn.setVisible(paused);
+        t.stopBtn.setVisible(inJob);
+        t.startBtn.setVisible(!inJob && s.queued() > 0 && s.fault().isEmpty());
+
         t.pct.setText(inJob ? s.percent() + "%" : "");
         final String left;
         if (s.fault().isPresent() || s.failedCheck()) {
@@ -937,6 +981,52 @@ public class OverviewView extends VerticalLayout {
         t.fill.getStyle().set("width", (inJob || failedPrint ? s.percent() : done ? 100 : 0) + "%");
 
         updateCam(t, s);
+    }
+
+    /**
+     * The enlarged tile's controls. Admins only - the Overview is also open to ordinary users, who can look but
+     * not stop a print. Pause, Resume and Light act at once (each is undone by its opposite); Stop and Start
+     * next ask first, because neither can be taken back.
+     */
+    private void wireActions(final Tile tile, final String name) {
+        final com.vaadin.flow.server.VaadinRequest request = com.vaadin.flow.server.VaadinRequest.getCurrent();
+        if (request == null || !request.isUserInRole(SystemRoles.ROLE_ADMIN)) {
+            // Removed, not hidden: the stylesheet shows this row on the enlarged tile and would win over 'hidden'.
+            tile.root.remove(tile.actions);
+            return;
+        }
+        tile.pauseBtn.addClickListener(e -> withPrinter(name, p -> p.commandControl(BambuConst.CommandControl.PAUSE)));
+        tile.resumeBtn.addClickListener(e -> withPrinter(name, p -> p.commandControl(BambuConst.CommandControl.RESUME)));
+        tile.lightBtn.addClickListener(e -> withPrinter(name, p -> p.commandLight(
+                p.getLightMode().orElse(BambuConst.LightMode.OFF) == BambuConst.LightMode.ON
+                ? BambuConst.LightMode.OFF : BambuConst.LightMode.ON)));
+        tile.stopBtn.addClickListener(e -> com.tfyre.bambu.YesNoCancelDialog.show(
+                "%s - stop the print?\n\nThis cannot be undone.".formatted(name), ync -> {
+                    if (ync.isConfirmed()) {
+                        withPrinter(name, p -> p.commandControl(BambuConst.CommandControl.STOP));
+                    }
+                }));
+        tile.startBtn.addClickListener(e -> queueService.peek(name).ifPresent(entry -> com.tfyre.bambu.YesNoCancelDialog.show(
+                "%s - start the next queued print [%s] plate %d?\n\nIs the bed clear?"
+                        .formatted(name, entry.command().filename(), entry.command().plateId()), ync -> {
+                    if (!ync.isConfirmed()) {
+                        return;
+                    }
+                    // No AI bed check, as with Start Next everywhere else: this is a person saying they looked.
+                    final Optional<UI> ui = getUI();
+                    queueService.startNext(name,
+                            () -> ui.ifPresent(u -> u.access(() -> {
+                                com.vaadin.flow.component.notification.Notification.show("%s: print started".formatted(name));
+                                refresh();
+                            })),
+                            error -> ui.ifPresent(u -> u.access(()
+                                    -> com.vaadin.flow.component.notification.Notification.show("%s: %s".formatted(name, error)))));
+                })));
+    }
+
+    private void withPrinter(final String name, final java.util.function.Consumer<BambuPrinter> action) {
+        printers.getPrinterDetail(name).map(BambuPrinters.PrinterDetail::printer).ifPresent(action);
+        refresh();
     }
 
     /**

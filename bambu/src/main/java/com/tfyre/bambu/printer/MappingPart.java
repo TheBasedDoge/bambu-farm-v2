@@ -39,9 +39,27 @@ package com.tfyre.bambu.printer;
  *                       Same source ({@link GcodeSource}) as {@code path}; the plate id applies to every variant.
  */
 public record MappingPart(GcodeSource source, String path, int plateId, int copiesPerUnit, Integer amsSlot,
-        String filamentType, String filamentColor, java.util.Map<String, String> variants) {
+        String filamentType, String filamentColor, java.util.Map<String, String> variants,
+        java.util.Map<String, Integer> variantYields, java.util.List<Integer> extraSlots) {
 
     public MappingPart {
+        // Trays for the print's 2nd, 3rd... filament, as the printer numbers them (0-15 = AMS A1-D4, 128 and up
+        // = an AMS HT, 254 = external spool). Empty for a one-filament print, which is nearly all of them. A
+        // part in ASA with HIPS supports on the H2D's other nozzle has one entry: where the HIPS is.
+        extraSlots = extraSlots == null ? java.util.List.of()
+                : extraSlots.stream().filter(java.util.Objects::nonNull).toList();
+        // How many pieces one print of a family's variant makes. Missing = 1, which is every mapping saved
+        // before this existed and every variant that is simply the same plate re-sliced. The H2D's bed holds a
+        // pair of some parts, so its file for those makes 2 and one H2D print replaces two P1 prints.
+        final java.util.Map<String, Integer> yields = new java.util.LinkedHashMap<>();
+        if (variantYields != null) {
+            variantYields.forEach((k, v) -> {
+                if (k != null && !k.isBlank() && v != null && v > 1) {
+                    yields.put(k.strip().toLowerCase(), v);
+                }
+            });
+        }
+        variantYields = java.util.Collections.unmodifiableMap(yields);
         if (copiesPerUnit < 1) {
             copiesPerUnit = 1;
         }
@@ -94,13 +112,61 @@ public record MappingPart(GcodeSource source, String path, int plateId, int copi
         } else {
             m.put(family, variantPath);
         }
-        return new MappingPart(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, m);
+        return new MappingPart(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, m, variantYields, extraSlots);
+    }
+
+    /** Same part with different trays for its 2nd and later filaments (null or empty = a one-filament print). */
+    public MappingPart withExtraSlots(final java.util.List<Integer> slots) {
+        return new MappingPart(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, variants, variantYields, slots);
+    }
+
+    /** Same part with a different pieces-per-print for one family's variant (1 or less removes it). */
+    public MappingPart withVariantYield(final String family, final Integer pieces) {
+        final java.util.Map<String, Integer> y = new java.util.LinkedHashMap<>(variantYields);
+        if (pieces == null || pieces <= 1) {
+            y.remove(family);
+        } else {
+            y.put(family, pieces);
+        }
+        return new MappingPart(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, variants, y, extraSlots);
+    }
+
+    /**
+     * Pieces one print of this part makes on a printer of the given model: always 1 for the P1 file, and
+     * whatever the family's variant is set to (default 1) otherwise.
+     */
+    public int yieldFor(final BambuConst.PrinterModel model) {
+        final String family = (model == null ? BambuConst.PrinterModel.UNKNOWN : model).gcodeFamily();
+        if (BambuConst.PrinterModel.FAMILY_P1.equals(family) || !variants.containsKey(family)) {
+            return 1;
+        }
+        return Math.max(1, variantYields.getOrDefault(family, 1));
+    }
+
+    /** Pieces one H2D print makes (1 when there is no H2D file). */
+    public int h2dYield() {
+        return variants.containsKey(BambuConst.PrinterModel.FAMILY_H2D)
+                ? Math.max(1, variantYields.getOrDefault(BambuConst.PrinterModel.FAMILY_H2D, 1)) : 1;
+    }
+
+    /** Canonical constructor minus the extra filament trays. */
+    public MappingPart(final GcodeSource source, final String path, final int plateId, final int copiesPerUnit,
+            final Integer amsSlot, final String filamentType, final String filamentColor,
+            final java.util.Map<String, String> variants, final java.util.Map<String, Integer> variantYields) {
+        this(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, variants, variantYields, null);
+    }
+
+    /** Canonical constructor minus the per-variant yields - every call site written before those existed. */
+    public MappingPart(final GcodeSource source, final String path, final int plateId, final int copiesPerUnit,
+            final Integer amsSlot, final String filamentType, final String filamentColor,
+            final java.util.Map<String, String> variants) {
+        this(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, variants, null);
     }
 
     /** Canonical constructor minus variants - what every call site written before the H2D file existed uses. */
     public MappingPart(final GcodeSource source, final String path, final int plateId, final int copiesPerUnit,
             final Integer amsSlot, final String filamentType, final String filamentColor) {
-        this(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, null);
+        this(source, path, plateId, copiesPerUnit, amsSlot, filamentType, filamentColor, null, null);
     }
 
     /** Convenience constructor for parts with no AMS override (printer's current default is used). */

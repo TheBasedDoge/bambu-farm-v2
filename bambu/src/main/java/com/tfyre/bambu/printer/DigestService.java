@@ -155,20 +155,14 @@ public class DigestService {
         final int parked = dispatchQueue.parkedCount();
         final List<String> errored = printers.getPrinters().stream()
                 .filter(p -> p.getPrintError() != 0).map(BambuPrinter::getName).sorted().toList();
-        // FINISH is the state a P1/X1 sits in from the end of a print until the next one starts - i.e. the part
-        // is still on the plate. That list is the digest's reason to exist.
-        final List<String> finishedBeds = printers.getPrinters().stream()
-                .filter(p -> p.getGCodeState() == BambuConst.GCodeState.FINISH).map(BambuPrinter::getName).sorted().toList();
+        // No "finished parts waiting on beds" line any more (removed 2026-10-12). It was read from FINISH, which a
+        // printer stays in until its next print starts - clearing the bed by hand doesn't change it - so after the
+        // beds had been cleared the digest still listed every printer.
         final long printing = printers.getPrinters().stream().filter(p -> p.getGCodeState().isPrinting()).count();
 
         final StringBuilder sb = new StringBuilder("Farm digest. ");
-        if (finishedBeds.isEmpty()) {
-            sb.append("No finished parts waiting on beds. ");
-        } else {
-            sb.append("%d finished part(s) waiting on beds: %s. ".formatted(finishedBeds.size(), String.join(", ", finishedBeds)));
-        }
         if (pooled > 0 || parked > 0) {
-            sb.append("%d order job(s) waiting for a clear bed%s. ".formatted(pooled,
+            sb.append("%d order job(s) waiting in the dispatch pool%s. ".formatted(pooled,
                     parked > 0 ? " (%d parked after repeated failures)".formatted(parked) : ""));
         }
         sb.append("Now: %d printing, %d open order(s), %d job(s) in printer queues%s. "

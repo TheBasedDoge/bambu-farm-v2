@@ -247,7 +247,15 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
     private Component buildToolbar() {
         comboBox.setItemLabelGenerator(BambuPrinters.PrinterDetail::name);
         comboBox.setItems(printers.getPrintersDetail().stream().sorted(Comparator.comparing(BambuPrinters.PrinterDetail::name)).toList());
-        comboBox.addValueChangeListener(l -> buildList(l.getValue()));
+        comboBox.addValueChangeListener(l -> {
+            if (l.getValue() == null) {
+                return;
+            }
+            LastPrinter.set(l.getValue().name());
+            buildList(l.getValue());
+            // Connect straight away - picking a printer here only ever means "show me its card"
+            doConnect();
+        });
         setConnectDisconnect(true);
         connect.setEnabled(false);
         upload.setAcceptedFileTypes(BambuConst.EXT.toArray(String[]::new));
@@ -283,7 +291,9 @@ public final class SdCardView extends PushDiv implements HasUrlParameter<String>
         configureGrid();
         showProgressBar(false);
         add(buildToolbar(), progressBar, grid);
-        _printer.ifPresent(comboBox::setValue);
+        LastPrinter.pick(_printer, printers.getPrintersDetail().stream()
+                .sorted(Comparator.comparing(BambuPrinters.PrinterDetail::name)).toList(),
+                BambuPrinters.PrinterDetail::name).ifPresent(comboBox::setValue);
         createFuture(this::updateProgressBar, config.refreshInterval());
     }
 

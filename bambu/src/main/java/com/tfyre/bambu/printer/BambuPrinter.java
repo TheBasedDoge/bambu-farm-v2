@@ -166,14 +166,15 @@ public interface BambuPrinter {
     void commandGetVersion();
 
     /**
-     * Starts filament drying on an AMS 2 Pro unit.
-     * Only supported by AMS 2 Pro hardware; the command is silently ignored by other AMS types.
+     * Starts filament drying on an AMS unit whose printer can dry it (see {@link #getAmsDryStates()}). The printer
+     * answers success or fail; that answer, and the drying itself, show up in {@link #getAmsDryStates()}.
      *
-     * @param amsId        AMS unit index (0-based)
-     * @param targetTemp   drying temperature in °C — minimum 45, maximum 65 for AMS 2 Pro
+     * @param amsId         AMS unit index (0-based)
+     * @param filament      filament type being dried, e.g. "PLA" or "PETG" - the firmware refuses the command without one
+     * @param targetTemp    drying temperature in °C (minimum 45)
      * @param durationHours drying duration in HOURS (firmware expects hours, not minutes)
      */
-    void commandAmsDry(int amsId, int targetTemp, int durationHours);
+    void commandAmsDry(int amsId, String filament, int targetTemp, int durationHours);
 
     /**
      * Stops an active drying cycle on an AMS 2 Pro unit.
@@ -181,6 +182,50 @@ public interface BambuPrinter {
      * @param amsId AMS unit index (0-based)
      */
     void commandAmsStopDry(int amsId);
+
+    /**
+     * Drying state per AMS unit (key = AMS id), from the printer's own reports. A unit is absent until the printer
+     * has reported drying fields for it, or the app has sent it a drying command.
+     */
+    default Map<Integer, AmsDryState> getAmsDryStates() {
+        return Map.of();
+    }
+
+    /**
+     * @param supported   the printer reports drying settings for this unit, i.e. its firmware can actually dry it
+     * @param minutesLeft minutes of drying left as the printer reports it; 0 when not drying
+     * @param filament    what it is drying, or was last set to dry (blank when never set)
+     * @param temp        drying temperature in °C, 0 when never set
+     * @param hours       drying duration in hours, 0 when never set
+     * @param lastCommand the last start/stop the app sent this unit, with the printer's answer; null if none
+     */
+    record AmsDryState(int amsId, boolean supported, int minutesLeft, String filament, int temp, int hours,
+            DryCommand lastCommand) {
+
+        public boolean isDrying() {
+            return minutesLeft > 0;
+        }
+
+        public AmsDryState withCommand(final DryCommand command) {
+            return new AmsDryState(amsId, supported, minutesLeft, filament, temp, hours, command);
+        }
+    }
+
+    /**
+     * A drying command the app sent, and what the printer said.
+     *
+     * @param result null while waiting for the printer's answer, then its "result" ("success" / "fail")
+     */
+    record DryCommand(String sequenceId, boolean start, java.time.Instant sentAt, String result, int errCode) {
+
+        public boolean pending() {
+            return result == null;
+        }
+
+        public boolean failed() {
+            return "fail".equalsIgnoreCase(result);
+        }
+    }
 
     /**
      * Returns the list of hardware modules reported by the printer's last get_version response.

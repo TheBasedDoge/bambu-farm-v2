@@ -53,6 +53,8 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
     BambuPrinters printers;
     @Inject
     BambuConfig config;
+    @Inject
+    com.tfyre.bambu.printer.BedClearService bedClear;
 
     private final List<CameraCard> cards = new ArrayList<>();
     private Select<String> gridSelect;
@@ -71,7 +73,7 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
                 });
         applySavedSizes();
         final UI ui = attachEvent.getUI();
-        createFuture(() -> ui.access(() -> cards.forEach(CameraCard::update)), config.refreshInterval());
+        createRefresh(ui, config.refreshInterval(), () -> cards.forEach(CameraCard::update));
     }
 
     private void applySavedSizes() {
@@ -180,9 +182,9 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
         private final Span state = new Span("--");
         private final Span progressText = new Span("");
         private final Span etaText = new Span("");
-        private final Span errorText = new Span("");
-        private final ProgressBar progressBar = new ProgressBar(0, 100, 0);
-        private final Div bottom = new Div();
+        private final Span jobText = new Span("");
+        private final Div fill = new Div();
+        private Div root;
         private String thumbnailId;
         private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.UNKNOWN;
 
@@ -206,19 +208,32 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
             name.addClassName("camera-name");
             name.addClickListener(l -> UI.getCurrent().navigate(PrinterView.class, printer.getName()));
 
-            final Div top = new Div(name, state);
-            top.addClassName("overlay-top");
+            // The Overview's overlay (2026-10-07): a state pill top-left, name and job bottom-left, percentage and
+            // time bottom-right, the progress bar along the bottom edge, and an outline on the card that means
+            // what it means there. Same classes as the Dashboard cards, so the three pages cannot drift apart.
+            final Span dot = new Span();
+            dot.addClassName("dash-pill-dot");
+            final Div pill = new Div(dot, state);
+            pill.addClassName("dash-pill");
 
-            errorText.addClassName("camera-error");
-            errorText.setVisible(false);
+            jobText.addClassName("dash-file");
+            final Div left = new Div(name, jobText);
+            left.addClassName("cam-left");
+            progressText.addClassName("dash-pct");
+            etaText.addClassName("dash-left");
+            final Div right = new Div(progressText, etaText);
+            right.addClassName("dash-right");
+            final Div info = new Div(left, right);
+            info.addClassName("dash-info");
 
-            final Div info = new Div(progressText, etaText);
-            info.addClassName("camera-info");
+            final Div scrim = new Div();
+            scrim.addClassName("dash-scrim");
+            fill.addClassName("dash-fill");
+            final Div track = new Div(fill);
+            track.addClassName("dash-track");
 
-            bottom.add(errorText, progressBar, info);
-            bottom.addClassName("overlay-bottom");
-
-            final Div result = new Div(getImage(), top, bottom);
+            final Div result = new Div(getImage(), scrim, pill, info, track);
+            root = result;
             result.addClassName("camera-card");
             result.getElement().setAttribute("data-printer", printer.getName());
             result.getElement().executeJs("""
@@ -250,11 +265,6 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
             return result;
         }
 
-        private void setStateColor(final String color) {
-            state.getElement().getThemeList().clear();
-            state.getStyle().setColor(color);
-        }
-
         private void update() {
             final BambuConst.GCodeState newState = printer.getGCodeState();
             notifyPrintState(CameraView.this, printer, gcodeState, newState);
@@ -268,34 +278,40 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
                 thumbnail.setSrc(data.thumbnail());
             });
 
-            state.setText(gcodeState.getDescription());
-            if (gcodeState.isError()) {
-                setStateColor("var(--lumo-error-text-color)");
-            } else if (gcodeState.isPrinting()) {
-                setStateColor("var(--lumo-primary-text-color)");
-            } else {
-                setStateColor("var(--lumo-success-text-color)");
+            final boolean cleared = bedClear.isCleared(printer.getName());
+            final boolean paused = gcodeState == BambuConst.GCodeState.PAUSE;
+            final boolean printing = gcodeState.isPrinting() || paused;
+            final int error = printer.getPrintError();
+            final boolean fault = error != 0 || !printer.getActiveHmsErrors().isEmpty();
+            final boolean failed = gcodeState == BambuConst.GCodeState.FAILED && !cleared;
+            final boolean done = !fault && gcodeState == BambuConst.GCodeState.FINISH && !cleared;
+
+            state.setText(fault ? "Fault" : failed ? "Print failed" : done ? "Finished · clear bed"
+                    : paused ? "Paused" : gcodeState.isPrinting() ? "Printing"
+                    : gcodeState.isReady() ? "Idle" : gcodeState.getDescription());
+            if (root != null) {
+                root.getElement().setAttribute("data-tone", fault || failed ? "bad" : done ? "done" : paused ? "warn" : "none");
             }
 
-            final boolean printing = gcodeState.isPrinting() || gcodeState == BambuConst.GCodeState.PAUSE;
-            progressBar.setVisible(printing);
-            progressText.setVisible(printing);
-            etaText.setVisible(printing);
+            if (error != 0) {
+                jobText.setText("Error [%s]: %s".formatted(Integer.toHexString(error),
+                        BambuErrors.getPrinterError(error).orElse("Unknown")));
+            } else if (fault) {
+                jobText.setText(String.join(" · ", printer.getActiveHmsErrors()));
+            } else {
+                jobText.setText(printing || failed || done ? printer.getSubtaskName().orElse("") : "");
+            }
+
             if (printing) {
                 printer.getStatus()
                         .map(m -> m.message().hasPrint() ? m.message().getPrint() : null)
                         .ifPresent(this::updateProgress);
-            }
-
-            final int error = printer.getPrintError();
-            if (error == 0) {
-                errorText.setVisible(false);
             } else {
-                errorText.setText("Error [%s]: %s".formatted(Integer.toHexString(error),
-                        BambuErrors.getPrinterError(error).orElse("Unknown")));
-                errorText.setVisible(true);
+                progressText.setText("");
+                etaText.setText("");
             }
-            bottom.setVisible(printing || error != 0);
+            final int percent = Math.max(0, printer.getProgressPercent());
+            fill.getStyle().set("width", (printing || failed ? percent : done ? 100 : 0) + "%");
         }
 
         private void updateProgress(final Print print) {
@@ -303,12 +319,11 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
                 return;
             }
             if (print.hasMcPercent()) {
-                progressBar.setValue(Math.min(print.getMcPercent(), 100));
                 progressText.setText("%d%%".formatted(print.getMcPercent()));
             }
             if (print.hasMcRemainingTime()) {
                 final Duration remaining = Duration.ofMinutes(print.getMcRemainingTime());
-                etaText.setText("%s left • ETA %s".formatted(formatTime(remaining), HHMM.format(LocalTime.now().plus(remaining))));
+                etaText.setText("%s left · done %s".formatted(formatTime(remaining), HHMM.format(LocalTime.now().plus(remaining))));
             }
         }
 

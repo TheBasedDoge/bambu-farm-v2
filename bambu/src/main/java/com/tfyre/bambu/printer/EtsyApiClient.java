@@ -170,7 +170,7 @@ public class EtsyApiClient {
         return new Transaction(
                 t.path("transaction_id").asLong(),
                 t.path("listing_id").asLong(),
-                t.path("title").asText(""),
+                HtmlText.plain(t.path("title").asText("")),
                 Math.max(1, t.path("quantity").asInt(1)),
                 parseVariations(t),
                 parsePersonalization(t),
@@ -185,13 +185,13 @@ public class EtsyApiClient {
         }
         return new Receipt(
                 r.path("receipt_id").asLong(),
-                r.path("name").asText("(unknown buyer)"),
+                HtmlText.plain(r.path("name").asText("(unknown buyer)")),
                 r.path("is_shipped").asBoolean(false),
                 r.path("is_paid").asBoolean(true),
                 r.path("status").asText(""),
                 Instant.ofEpochSecond(r.path("create_timestamp").asLong(r.path("created_timestamp").asLong(0))),
                 transactions,
-                r.path("message_from_buyer").asText("").strip(),
+                HtmlText.plain(r.path("message_from_buyer").asText("").strip()),
                 money(r.path("total_shipping_cost")),
                 // What the buyer paid for the items after shop discounts, before shipping and tax.
                 money(r.path("subtotal")));
@@ -223,6 +223,47 @@ public class EtsyApiClient {
     }
 
     /** Every paid receipt created since {@code since}, shipped or not - the sales history behind the Profit page. */
+    /** A shipping label charge (or a USPS adjustment / refund, negative) from the shop's payment account. */
+    public record LabelCharge(String entryId, Instant date, double amount) {
+    }
+
+    /**
+     * Shipping label charges from the shop's payment account ledger (ledger types shipping_labels,
+     * shipping_label_usps_adjustment, ..._credit, shipping_label_refund; amounts in cents, a charge is negative in
+     * the ledger and positive here). Etsy does not say which order a label was for: the entry's reference_id is the
+     * label's own id, which matches no receipt or shipment id (checked against this shop, 2026-10-13).
+     * Uses the transactions_r scope the connect flow already requests. The ledger only answers 31 days at a time.
+     */
+    public List<LabelCharge> getLabelChargesSince(final Instant since) throws Exception {
+        final Optional<String> shopId = config.etsy().shopId();
+        if (shopId.isEmpty()) {
+            throw new IllegalStateException("bambu.etsy.shop-id is not configured.");
+        }
+        final List<LabelCharge> result = new ArrayList<>();
+        final long now = Instant.now().getEpochSecond();
+        for (long from = since.getEpochSecond(); from < now; from += 30L * 86400) {
+            final long to = Math.min(now, from + 30L * 86400);
+            for (int offset = 0; offset < 5000; offset += 100) {
+                final JsonNode root = getOrThrow("/shops/%s/payment-account/ledger-entries?min_created=%d&max_created=%d&limit=100&offset=%d"
+                        .formatted(shopId.get(), from, to, offset));
+                int pageCount = 0;
+                for (final JsonNode e : root.path("results")) {
+                    pageCount++;
+                    if (!e.path("ledger_type").asText("").startsWith("shipping_label")) {
+                        continue;
+                    }
+                    result.add(new LabelCharge(e.path("entry_id").asText(),
+                            Instant.ofEpochSecond(e.path("created_timestamp").asLong()),
+                            -e.path("amount").asDouble() / 100.0));
+                }
+                if (pageCount < 100) {
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
     public List<Receipt> getReceiptsSince(final Instant since) throws Exception {
         final Optional<String> shopId = config.etsy().shopId();
         if (shopId.isEmpty()) {
@@ -314,7 +355,7 @@ public class EtsyApiClient {
                 final String imageUrl = firstImage.path("url_75x75").asText(firstImage.path("url_170x135").asText(""));
                 result.add(new Listing(
                         l.path("listing_id").asLong(),
-                        l.path("title").asText(""),
+                        HtmlText.plain(l.path("title").asText("")),
                         l.path("quantity").asInt(0),
                         imageUrl,
                         l.path("has_variations").asBoolean(false)));

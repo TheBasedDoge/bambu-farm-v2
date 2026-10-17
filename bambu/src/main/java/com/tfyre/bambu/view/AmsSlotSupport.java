@@ -26,9 +26,27 @@ final class AmsSlotSupport {
         return items;
     }
 
+    /** Where a print's 2nd filament can come from: the AMS trays, an AMS HT (one spool each), or the external spool. */
+    static final List<Integer> EXTRA_ITEMS = buildExtraItems();
+
+    private static List<Integer> buildExtraItems() {
+        final List<Integer> items = new ArrayList<>();
+        for (int i = 128; i < 132; i++) {
+            items.add(i);
+        }
+        for (int i = 0; i < 16; i++) {
+            items.add(i);
+        }
+        items.add(BambuConst.AMS_TRAY_VIRTUAL);
+        return items;
+    }
+
     static String label(final Integer slot) {
         if (slot == null) {
             return "";
+        }
+        if (slot >= 128 && slot < 254) {
+            return "AMS HT " + (slot - 127);
         }
         if (slot == BambuConst.AMS_TRAY_VIRTUAL) {
             return "External Spool";
