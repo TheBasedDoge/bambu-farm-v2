@@ -829,13 +829,19 @@ public class PrintAiService {
         }
         final String description = second.get().description();
         final boolean repeat = !failureStreak.add(name);
+        // Since 2026-11-03 two agreeing frames are enough to pause - a P1S-2 spaghetti was confirmed at 09:41 and
+        // the print had failed by 09:44, before the next check. The wait-for-the-next-check rule stays for printers
+        // whose camera keeps ooze and hoses in shot (the H2D: eight false "tangle" verdicts in 95 minutes); a pause
+        // is undone with one Resume.
+        final boolean waitForNext = !repeat && needsSecondCheckBeforePausing(printer.getModel());
         Log.warnf("PrintAiService: %s: failure CONFIRMED on two frames%s — %s", name,
-                repeat ? " for the SECOND check running" : " (first time - watching, not acting yet)", description);
+                repeat ? " for the SECOND check running" : waitForNext ? " (first time - watching, not acting yet)"
+                        : " - pausing", description);
 
         String action = "";
         if (!config.ollama().pauseOnFailure()) {
             action = "";
-        } else if (!repeat) {
+        } else if (waitForNext) {
             // Deliberately does not act yet - see failureStreak. You are told immediately; the printer is only
             // touched once the next scheduled check agrees.
             action = "\nNot pausing yet - waiting for the next check to agree. Go and look.";
@@ -856,6 +862,11 @@ public class PrintAiService {
      * "The print has been PAUSED" for a printer that carried on printing. An alert that tells you a problem is
      * handled when it isn't is worse than no alert at all, so now it looks.
      */
+    /** Printers whose camera view false-alarms too often to pause on one confirmed check (see failureStreak). */
+    static boolean needsSecondCheckBeforePausing(final BambuConst.PrinterModel model) {
+        return model == BambuConst.PrinterModel.H2D;
+    }
+
     private String pausePrint(final BambuPrinter printer) {
         final String name = printer.getName();
         try {

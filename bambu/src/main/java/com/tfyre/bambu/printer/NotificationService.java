@@ -56,6 +56,9 @@ public class NotificationService {
     /** Lazy to avoid an eager circular reference (PrintAiService injects this service). Used for error-alert photos. */
     @Inject
     jakarta.enterprise.inject.Instance<PrintAiService> aiServiceInstance;
+    /** Lazy for the same reason: AmsRetryService injects this service. */
+    @Inject
+    jakarta.enterprise.inject.Instance<AmsRetryService> amsRetryInstance;
 
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final Map<String, Integer> lastErrors = new HashMap<>();
@@ -95,6 +98,15 @@ public class NotificationService {
     public static final String STATUS_SUPPRESSED = "suppressed";
     public static final String STATUS_NO_CHANNEL = "not sent - no channel configured";
     public static final String STATUS_FAILED_PREFIX = "failed - ";
+    public static final String STATUS_LOG_ONLY = "logged only - not sent";
+
+    /**
+     * Events that mean a print is being ruined right now. On Discord they start with a siren and {@code @here}, so
+     * they notify even in a muted channel and stand out from routine traffic; on ntfy they go out at urgent
+     * priority. 2026-11-03: a confirmed spaghetti alert went out in the middle of 16 AMS retry messages and was
+     * missed.
+     */
+    static final java.util.Set<String> URGENT_EVENTS = java.util.Set.of("failure_detected", "fail");
 
     /**
      * One notification as the farm raised it: the same text Discord/ntfy/MQTT got, plus what became of it.
@@ -373,6 +385,14 @@ public class NotificationService {
         return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
+    /** Records an event in the log and the Notifications page without sending it anywhere. */
+    public void logOnly(final String event, final String printer, final String message, final byte[] imageJpeg) {
+        Log.infof("NotificationService: event %s [%s]%s %s (log only - not sent)", event, printer,
+                imageJpeg != null ? " +photo" : "", oneLine(message));
+        final LogEntry entry = logEvent(event, printer, message, imageJpeg, STATUS_LOG_ONLY);
+        executor.submit(() -> finishLogEntry(entry.id(), STATUS_LOG_ONLY));
+    }
+
     public void notifyEvent(final String event, final String printer, final String message, final byte[] imageJpeg) {
         // One line per event, always, whether or not it goes anywhere. Until 2026-09-16 alerts went to Discord
         // and nowhere else, so the log could not answer "how often does the AMS jam" or "when did that printer
@@ -459,11 +479,14 @@ public class NotificationService {
                 }
             }
             final String target = "discord".equals(format) ? withComponents(url.get(), links) : url.get();
-            final HttpResponse<String> response = sendWithRetry(HttpRequest.newBuilder(URI.create(target))
+            final HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(target))
                     .timeout(Duration.ofSeconds(10))
                     .header("Content-Type", contentType)
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build());
+                    .POST(HttpRequest.BodyPublishers.ofString(body));
+            if ("ntfy".equals(format) && URGENT_EVENTS.contains(event.event())) {
+                request.header("Priority", "urgent").header("Tags", "rotating_light");
+            }
+            final HttpResponse<String> response = sendWithRetry(request.build());
             if (response.statusCode() >= 300) {
                 Log.errorf("NotificationService: webhook HTTP %d: %s", response.statusCode(), response.body());
                 return Optional.of("webhook HTTP %d".formatted(response.statusCode()));
@@ -557,9 +580,14 @@ public class NotificationService {
      * deliver to an application-owned webhook, so the button would appear to work and then do nothing.
      */
     private Map<String, Object> discordPayload(final FarmEvent event, final List<Link> links) {
-        final String content = "**%s** %s".formatted(event.printer(), event.message());
+        final boolean urgent = URGENT_EVENTS.contains(event.event());
+        final String content = discordContent(event.printer(), event.message(), urgent);
+        // An explicit allowed_mentions so @here notifies on urgent alerts and nothing else can ping anyone - a
+        // printer or file name containing "@everyone" must not.
+        final Map<String, Object> mentions = Map.<String, Object>of("parse",
+                urgent ? List.<String>of("everyone") : List.<String>of());
         if (links.isEmpty()) {
-            return Map.<String, Object>of("content", content);
+            return Map.<String, Object>of("content", content, "allowed_mentions", mentions);
         }
         final List<Map<String, Object>> buttons = links.stream()
                 .map(l -> Map.<String, Object>of("type", 2, "style", 5, "label", l.label(), "url", l.url()))
@@ -567,8 +595,13 @@ public class NotificationService {
         // Explicit type arguments throughout: Map.of with heterogeneous values infers the least upper bound of
         // those value types, which is not Map<String, Object>, and generics are invariant. Spelling it out costs
         // nothing and removes a class of error I cannot see without a compiler.
-        return Map.<String, Object>of("content", content,
+        return Map.<String, Object>of("content", content, "allowed_mentions", mentions,
                 "components", List.<Map<String, Object>>of(Map.<String, Object>of("type", 1, "components", buttons)));
+    }
+
+    /** "@here 🚨 **P1S-2** message" for urgent events, "**P1S-2** message" otherwise. */
+    static String discordContent(final String printer, final String message, final boolean urgent) {
+        return (urgent ? "@here \uD83D\uDEA8 " : "") + "**%s** %s".formatted(printer, message);
     }
 
     /** Discord: multipart/form-data with a payload_json part and the snapshot as files[0], per their webhook API. */
@@ -604,6 +637,9 @@ public class NotificationService {
                 .header("Filename", "snapshot.jpg")
                 .header("X-Title", title.substring(0, Math.min(title.length(), 250)))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(imageJpeg));
+        if (URGENT_EVENTS.contains(event.event())) {
+            request.header("Priority", "urgent").header("Tags", "rotating_light");
+        }
         ntfyActions(links).ifPresent(a -> request.header("Actions", a));
         final HttpResponse<String> response = sendWithRetry(request.build());
         if (response.statusCode() >= 300) {
@@ -653,9 +689,15 @@ public class NotificationService {
             if (previous == null || previous == error || error == 0) {
                 return;
             }
+            final String text = "Print error [%s]: %s".formatted(
+                    Integer.toHexString(error), BambuErrors.getPrinterError(error).orElse("Unknown"));
+            if (AmsRetryService.isRetryable(error) && amsRetryInstance.get().isEnabled()) {
+                // Auto-retry is about to deal with it, and says so with its own alert if it gives up.
+                logOnly("error", printer.getName(), text + " (auto-retry is handling it)", null);
+                return;
+            }
             // Attach the camera frame so the Discord/ntfy alert shows what the printer looks like right now
-            notifyEvent("error", printer.getName(), "Print error [%s]: %s".formatted(
-                    Integer.toHexString(error), BambuErrors.getPrinterError(error).orElse("Unknown")),
+            notifyEvent("error", printer.getName(), text,
                     aiServiceInstance.get().getSnapshot(printer.getName()).orElse(null));
         });
     }

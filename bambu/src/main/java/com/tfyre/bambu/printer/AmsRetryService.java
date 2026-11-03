@@ -51,6 +51,13 @@ public class AmsRetryService {
     /** Let the printer finish reporting the pause before the first retry, and let a retry play out before the next. */
     private static final Duration SETTLE = Duration.ofSeconds(20);
     private static final Duration BETWEEN_ATTEMPTS = Duration.ofSeconds(60);
+    /**
+     * The same code coming back this soon after a retry cleared it is the same problem, not a new one. Until
+     * 2026-11-03 every clear ended the occurrence, so a spool that fed for a minute after each Retry got "Retry 1/3"
+     * eight times in a row (only the hourly cap stopped it) and sent 16 alerts in 8 minutes - which buried a real
+     * spaghetti alert from another printer.
+     */
+    static final Duration RECUR_WINDOW = Duration.ofMinutes(10);
 
     /** One error occurrence on one printer: same code, from first sight until it clears. */
     private static final class Episode {
@@ -82,6 +89,9 @@ public class AmsRetryService {
 
     private final Map<String, Boolean> settings = new ConcurrentHashMap<>();
     private final Map<String, Episode> episodes = new ConcurrentHashMap<>();
+    /** Occurrences that cleared after at least one retry, kept for {@link #RECUR_WINDOW} in case the code returns. */
+    private final Map<String, Episode> cleared = new ConcurrentHashMap<>();
+    private final Map<String, Instant> clearedAt = new ConcurrentHashMap<>();
     /** Retry timestamps per printer for the rolling hourly cap. */
     private final Map<String, Deque<Instant>> recent = new ConcurrentHashMap<>();
 
@@ -140,6 +150,8 @@ public class AmsRetryService {
                 if (done != null && done.attempts > 0) {
                     Log.infof("AmsRetryService: %s: error [%s] cleared after %d automatic retr%s",
                             name, Integer.toHexString(done.code), done.attempts, done.attempts == 1 ? "y" : "ies");
+                    cleared.put(name, done);
+                    clearedAt.put(name, now);
                 }
                 continue;
             }
@@ -153,10 +165,19 @@ public class AmsRetryService {
             }
             Episode ep = episodes.get(name);
             if (ep == null || ep.code != code) {
-                ep = new Episode(code, now);
+                final Episode before = cleared.remove(name);
+                final Instant beforeAt = clearedAt.remove(name);
+                if (isRecurrence(before == null ? 0 : before.code, beforeAt, code, now)) {
+                    ep = before;
+                    Log.infof("AmsRetryService: %s: error [%s] came back %ds after a retry cleared it - same problem, "
+                            + "%d of %d retries used", name, Integer.toHexString(code),
+                            Duration.between(beforeAt, now).toSeconds(), ep.attempts, MAX_ATTEMPTS_PER_ERROR);
+                } else {
+                    ep = new Episode(code, now);
+                    Log.infof("AmsRetryService: %s: paused on retryable error [%s] %s", name, Integer.toHexString(code),
+                            BambuErrors.getPrinterError(code).orElse(""));
+                }
                 episodes.put(name, ep);
-                Log.infof("AmsRetryService: %s: paused on retryable error [%s] %s", name, Integer.toHexString(code),
-                        BambuErrors.getPrinterError(code).orElse(""));
             }
             if (ep.gaveUp) {
                 continue;
@@ -189,11 +210,19 @@ public class AmsRetryService {
             printer.commandAmsControl("resume");
             Log.infof("AmsRetryService: %s: sent Retry %d/%d for [%s]", name, ep.attempts, MAX_ATTEMPTS_PER_ERROR,
                     Integer.toHexString(code));
-            notificationService.notifyEvent("ams_retry", name,
+            // In the app's notification log only: a retry that works needs nobody, and one that doesn't ends in the
+            // "NOT retrying again" alert above, which does go out.
+            notificationService.logOnly("ams_retry", name,
                     "AMS error [%s] - automatic Retry %d/%d sent (%s)".formatted(Integer.toHexString(code),
                             ep.attempts, MAX_ATTEMPTS_PER_ERROR, BambuErrors.getPrinterError(code).orElse("")),
                     snapshot(name));
         }
+    }
+
+    /** True when {@code code} is the same error that a retry cleared less than {@link #RECUR_WINDOW} ago. */
+    static boolean isRecurrence(final int clearedCode, final Instant clearedAt, final int code, final Instant now) {
+        return clearedAt != null && clearedCode == code
+                && Duration.between(clearedAt, now).compareTo(RECUR_WINDOW) < 0;
     }
 
     private byte[] snapshot(final String printer) {
