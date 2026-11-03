@@ -90,7 +90,8 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private volatile String subtaskName = "";
     private int totalLayerNum;
     private BambuConst.GCodeState gcodeState = BambuConst.GCodeState.IDLE;
-    private PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
+    /** Configured, or detected from the printer after it connects (P1s are usually not configured) - volatile: read by the dispatcher. */
+    private volatile PrinterModel model = BambuConst.PrinterModel.UNKNOWN;
     private boolean blocked;
 
     public BambuPrinterImpl() {

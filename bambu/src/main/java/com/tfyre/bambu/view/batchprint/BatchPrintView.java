@@ -196,7 +196,7 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
     private String blocker(final PrinterMapping pm) {
         final BambuPrinters.PrinterDetail pd = pm.getPrinterDetail();
         if (filePath != null) {
-            final String wrong = libraryFileInfo.mismatch(filePath, pd.config().model());
+            final String wrong = libraryFileInfo.mismatch(filePath, pd.printer().getModel());
             if (wrong != null) {
                 return "wrong printer - this file is " + slicedFor.getText();
             }
@@ -215,7 +215,7 @@ public final class BatchPrintView extends PushDiv implements NotificationHelper,
     }
 
     private boolean wrongPrinter(final PrinterMapping pm) {
-        return filePath != null && libraryFileInfo.mismatch(filePath, pm.getPrinterDetail().config().model()) != null;
+        return filePath != null && libraryFileInfo.mismatch(filePath, pm.getPrinterDetail().printer().getModel()) != null;
     }
 
     private void configureGrid() {

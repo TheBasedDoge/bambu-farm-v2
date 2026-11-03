@@ -53,6 +53,13 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-elytron-security-common</artifactId>
         </dependency>
+        <!-- MCP server for agents (docs/MCP-PLAN.md). 1.10.4 is the last release built on a Quarkus older than
+             3.33 (it is built on the 3.27 LTS line); move to 2.0.x when the app moves to Quarkus 3.33+. -->
+        <dependency>
+            <groupId>io.quarkiverse.mcp</groupId>
+            <artifactId>quarkus-mcp-server-http</artifactId>
+            <version>1.10.4</version>
+        </dependency>
 
         <dependency>
             <groupId>io.quarkus</groupId>

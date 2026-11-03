@@ -123,6 +123,21 @@ public class AutoQueueService {
         }
     }
 
+    /**
+     * New orders are not looked at for this long after the app starts. Printers connect one after another and
+     * only then report what is in their AMS; on 2026-10-22, after the VM host crashed, the first poll checked
+     * three orders a second after boot, found "no printer has PETG" for every one, and they were never looked at
+     * again. Same window as {@code DispatchQueueService.STARTUP_GRACE}.
+     */
+    public static final java.time.Duration STARTUP_GRACE = java.time.Duration.ofSeconds(90);
+    private final long bootNanos = System.nanoTime();
+
+    /** Time left before new orders may be checked; zero once printers have had time to report their filament. */
+    public java.time.Duration untilReadyForOrders() {
+        final java.time.Duration left = STARTUP_GRACE.minusNanos(System.nanoTime() - bootNanos);
+        return left.isNegative() ? java.time.Duration.ZERO : left;
+    }
+
     public boolean isEnabled() {
         return settings.getOrDefault("enabled", Boolean.FALSE);
     }
@@ -351,7 +366,7 @@ public class AutoQueueService {
         // library is sliced for the P1s, and the H2D only joins in for parts with an H2D file mapped.
         // ...and a file sliced for the other kind of printer never makes its printer a candidate either, so a
         // part that exists only as an H2D slice goes to the H2D and is simply not offered to the P1s.
-        if (fileInfo.fileFor(part, detail.config().model()).isEmpty()) {
+        if (fileInfo.fileFor(part, detail.printer().getModel()).isEmpty()) {
             return Optional.empty();
         }
         final BambuPrinter printer = detail.printer();

@@ -306,8 +306,17 @@ public class OllamaService {
      * filament, but it doesn't exhibit spaghetti" is caught on the first phrase and not excused by the second.
      */
     static Optional<String> findUnreportedFailure(final String text) {
-        return scanForPhrase(text, FAILURE_PHRASE);
+        return scanForPhrase(text, true, FAILURE_PHRASE);
     }
+
+    /**
+     * A failure word followed closely by "nozzle" - "strings and blobs near the nozzle". The prompt names anything
+     * at the nozzle (ooze, purge, stringing between moves) as normal, so that is the model describing normal
+     * printing, not a failure it forgot to report. One of the 2026-10-28 false "failure confirmed" alerts on the
+     * H2D was exactly this.
+     */
+    private static final java.util.regex.Pattern AT_THE_NOZZLE = java.util.regex.Pattern.compile(
+            "(?i)^[^.;!?]{0,40}\\b(?:near|at|on|around|from|by|under|below|hanging\\s+from)\\s+(?:the\\s+)?(?:nozzle|hotend|toolhead)");
 
     /**
      * Finds a phrase in the model's own text that contradicts a "bed is clear" verdict, if there is one.
@@ -326,7 +335,7 @@ public class OllamaService {
      * @return the offending phrase, for the log and the check history, or empty when the reply is consistent
      */
     static Optional<String> findContradiction(final String text) {
-        return scanForPhrase(text, OBJECT_PHRASE, ROUND_SHAPE);
+        return scanForPhrase(text, false, OBJECT_PHRASE, ROUND_SHAPE);
     }
 
     /**
@@ -337,14 +346,22 @@ public class OllamaService {
      * excuse it) and only <b>within its own segment</b> (an earlier "Objects: none" must not negate a finding in
      * the Reason below it).
      */
-    private static Optional<String> scanForPhrase(final String text, final java.util.regex.Pattern... patterns) {
+    private static Optional<String> scanForPhrase(final String text, final boolean excuseAtNozzle,
+            final java.util.regex.Pattern... patterns) {
         if (text == null || text.isBlank()) {
             return Optional.empty();
         }
-        for (final String segment : SEGMENT_SPLIT.split(FIELD_LABEL.matcher(text).replaceAll("\n"))) {
+        // gemma3 writes typographic apostrophes ("doesn’t", "don’t"), which the negation pattern did not know: two
+        // of the three false "failure confirmed" verdicts on the H2D on 2026-10-28 were "doesn’t appear to be ...
+        // spaghetti" and "don’t meet the criteria for spaghetti" - negated, but with the wrong apostrophe.
+        final String plain = text.replace('\u2019', '\'').replace('\u2018', '\'').replace('\u02BC', '\'');
+        for (final String segment : SEGMENT_SPLIT.split(FIELD_LABEL.matcher(plain).replaceAll("\n"))) {
             for (final java.util.regex.Pattern pattern : patterns) {
                 final java.util.regex.Matcher m = pattern.matcher(segment);
                 while (m.find()) {
+                    if (excuseAtNozzle && AT_THE_NOZZLE.matcher(segment.substring(m.end())).find()) {
+                        continue;
+                    }
                     if (!NEGATION.matcher(segment.substring(0, m.start())).find()) {
                         return Optional.of(m.group(1));
                     }

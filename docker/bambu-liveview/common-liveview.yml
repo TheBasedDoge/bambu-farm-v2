@@ -1,3 +1,5 @@
+# NO LONGER USED (2026-10-17): mediamtx pulls RTSPS printers itself - see example - compose.yml.
+# Kept only so an older compose.yml that still extends it keeps working until it is updated.
 version: '3'
 
 services:

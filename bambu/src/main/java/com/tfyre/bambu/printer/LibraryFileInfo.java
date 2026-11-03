@@ -418,13 +418,24 @@ public class LibraryFileInfo {
     }
 
     /**
-     * Why {@code libraryPath} must not be sent to a printer of {@code model}, or null when it may. Only speaks
-     * when the file states a machine this class recognises and it is the wrong kind.
+     * Why {@code libraryPath} must not be sent to a printer of {@code model}, or null when it may. Speaks when the
+     * file states a machine this class recognises (or is named {@code _H2D}) and it is the wrong kind.
+     * <p>
+     * Pass the printer's EFFECTIVE model ({@code printer().getModel()}), never {@code config().model()}: the P1s
+     * aren't configured with a model, they report it after connecting. Until 2026-10-19 every caller passed the
+     * config value, this returned null for "unknown", and an H2D-only order (three Rollhoop H2D slices) was
+     * started on three P1Ss. An unknown model is now only trusted with a P1 file - the one family it could be
+     * assumed to be before this check existed - and an {@code _H2D} name blocks like a machine id does.
      */
     public String mismatch(final String libraryPath, final BambuConst.PrinterModel model) {
         final Info info = of(libraryPath);
-        if (info.family().isEmpty() || info.byName() || model == null || model == BambuConst.PrinterModel.UNKNOWN) {
+        if (info.family().isEmpty()) {
             return null;
+        }
+        if (model == null || model == BambuConst.PrinterModel.UNKNOWN) {
+            return BambuConst.PrinterModel.FAMILY_P1.equals(info.family()) ? null
+                    : "%s was sliced for a %s printer, and this printer hasn't reported its model yet".formatted(
+                            libraryPath, info.badge());
         }
         return info.family().equals(model.gcodeFamily()) ? null
                 : "%s was sliced for a %s printer, not for a %s".formatted(libraryPath, info.badge(),

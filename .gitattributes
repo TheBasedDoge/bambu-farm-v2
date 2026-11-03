@@ -1,0 +1,5 @@
+# Shell scripts and env files break inside the containers with CRLF
+*.sh text eol=lf
+*.env text eol=lf
+docker/bambu-liveview/example[[:space:]]-[[:space:]]mediamtx.env text eol=lf
+docker/bambu-liveview/example[[:space:]]-[[:space:]]printers.list text eol=lf

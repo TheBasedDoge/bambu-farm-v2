@@ -322,7 +322,8 @@ public class OrdersView extends VerticalLayout implements NotificationHelper {
         final boolean personalized = r.transactions().stream().anyMatch(t -> t.personalization().isPresent());
         final List<Component> lines = r.transactions().stream().map(t -> etsyLine(t, id, entry)).collect(Collectors.toList());
         final Component card = card("Etsy", "#f1641e", "#" + id, r.buyerName(), r.createTimestamp(), r.buyerNote(), entry,
-                personalized, config.etsy().orderUrl().replace("{id}", id), lines, () -> etsyPolling.dismiss(r.receiptId()));
+                personalized, config.etsy().orderUrl().replace("{id}", id), lines, () -> etsyPolling.dismiss(r.receiptId()),
+                () -> etsyPolling.retryAutoQueue(id));
         return new Row("etsy", r.createTimestamp(), entry, card);
     }
 
@@ -332,13 +333,14 @@ public class OrdersView extends VerticalLayout implements NotificationHelper {
         final List<Component> lines = o.lineItems().stream().map(li -> ebayLine(li, o.orderId(), entry)).collect(Collectors.toList());
         final Component card = card("eBay", "var(--lumo-primary-text-color)", o.orderId(), o.buyerUsername(), o.creationDate(),
                 o.buyerNote(), entry, personalized, config.ebay().orderUrl().replace("{id}", o.orderId()), lines,
-                () -> ebayPolling.dismiss(o.orderId()));
+                () -> ebayPolling.dismiss(o.orderId()), () -> ebayPolling.retryAutoQueue(o.orderId()));
         return new Row("ebay", o.creationDate(), entry, card);
     }
 
     private Component card(final String market, final String marketColor, final String number, final String buyer,
             final Instant created, final String note, final OrderBoardService.Entry e, final boolean personalized,
-            final String url, final List<Component> lines, final Runnable dismiss) {
+            final String url, final List<Component> lines, final Runnable dismiss,
+            final java.util.function.Supplier<java.util.Optional<String>> retryAutoQueue) {
         final Stage stage = e.stage();
         final String tone = stage == Stage.FAILED ? BAD : stage == Stage.NOT_QUEUED ? WARN : stage == Stage.READY ? OK : null;
 
@@ -393,6 +395,22 @@ public class OrdersView extends VerticalLayout implements NotificationHelper {
         hide.addThemeVariants(ButtonVariant.LUMO_TERTIARY, ButtonVariant.LUMO_SMALL);
         hide.setTooltipText("Hide this order here. It does not mark it shipped on " + market + ".");
         final HorizontalLayout actions = new HorizontalLayout(open, hide);
+        if (stage == Stage.NOT_QUEUED && !personalized) {
+            // An order auto-queue skipped is never looked at again by itself (it is "seen"). This runs the same
+            // check now - for when the reason has gone away: filament loaded, a mapping added, a printer back.
+            final Button retry = new Button("Try auto-queue again", new Icon(VaadinIcon.REFRESH), ev -> {
+                final java.util.Optional<String> why = retryAutoQueue.get();
+                if (why.isEmpty()) {
+                    showNotification("%s %s queued".formatted(market, number));
+                } else {
+                    showError("%s %s: %s".formatted(market, number, why.get()));
+                }
+                render();
+            });
+            retry.addThemeVariants(ButtonVariant.LUMO_SMALL);
+            retry.setTooltipText("Run auto-queue for this order now, the same way it runs for a new order");
+            actions.addComponentAtIndex(1, retry);
+        }
         actions.setAlignItems(FlexComponent.Alignment.CENTER);
         card.add(actions);
         return card;

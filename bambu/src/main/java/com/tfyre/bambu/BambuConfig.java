@@ -331,6 +331,30 @@ public interface BambuConfig {
 
     Backup backup();
 
+    Mcp mcp();
+
+    /**
+     * The MCP server agents use (docs/MCP-PLAN.md), at {@code /mcp}. Every request must carry
+     * {@code Authorization: Bearer <token>}; with no token configured the endpoint answers 503 and does nothing.
+     * The control token also unlocks the control tools (phase 2); the read token only the read-only ones.
+     */
+    public interface Mcp {
+
+        /** Read-only access. Generate a long random value; it lives in data/.env only. */
+        Optional<String> readToken();
+
+        /** Read + control (pause/stop/bed cleared/...). Separate from the read token on purpose. */
+        Optional<String> controlToken();
+
+        /** host:port health_check reads the TLS certificate from - the nginx container on the compose network. */
+        @WithDefault("nginx:443")
+        String tlsCheck();
+
+        /** URL whose HTTP Date header health_check compares the app clock against (report only). */
+        @WithDefault("https://www.cloudflare.com/")
+        String clockCheckUrl();
+    }
+
     /**
      * USPS Carrier Pickup (the USPS Pickup page). Credentials come from an app created at
      * https://developers.usps.com - "Add App" issues a Consumer Key and Secret. Unset = the page explains how

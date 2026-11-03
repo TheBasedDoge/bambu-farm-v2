@@ -43,7 +43,7 @@ public class GcodeMappingQueuer {
 
     /** Pieces one print of {@code part} makes on {@code printerName}: 1, or more for an H2D plate of several. */
     private int yieldOn(final MappingPart part, final String printerName) {
-        return printers.getPrinterDetail(printerName).map(d -> part.yieldFor(d.config().model())).orElse(1);
+        return printers.getPrinterDetail(printerName).map(d -> part.yieldFor(d.printer().getModel())).orElse(1);
     }
 
     /** Why this file must not go to this printer (sliced for the other kind), or empty when it may. */
@@ -52,7 +52,7 @@ public class GcodeMappingQueuer {
             return Optional.empty();
         }
         final Optional<String> mismatch = printers.getPrinterDetail(printerName)
-                .map(d -> fileInfo.mismatch(path, d.config().model()))
+                .map(d -> fileInfo.mismatch(path, d.printer().getModel()))
                 .map(reason -> "%s: %s - not sent".formatted(printerName, reason));
         if (mismatch.isPresent()) {
             return mismatch;
@@ -61,7 +61,7 @@ public class GcodeMappingQueuer {
         // other nozzle). The app assigns ONE tray to a print - it would point both filaments at the same spool,
         // on the wrong nozzle for one of them. Refused until it can say which tray feeds which filament.
         final boolean missing = printers.getPrinterDetail(printerName)
-                .map(d -> fileInfo.missingTrays(part, path, d.config().model())).orElse(false);
+                .map(d -> fileInfo.missingTrays(part, path, d.printer().getModel())).orElse(false);
         if (missing) {
             return Optional.of("%s: %s uses %d filaments - set the 2nd filament's tray on the mapping first"
                     .formatted(printerName, path, fileInfo.filamentCount(path)));
@@ -81,12 +81,12 @@ public class GcodeMappingQueuer {
      */
     public Optional<String> pathFor(final MappingPart part, final String printerName) {
         final BambuConst.PrinterModel model = printers.getPrinterDetail(printerName)
-                .map(d -> d.config().model()).orElse(BambuConst.PrinterModel.UNKNOWN);
+                .map(d -> d.printer().getModel()).orElse(BambuConst.PrinterModel.UNKNOWN);
         return fileInfo.fileFor(part, model);
     }
 
     private static String familyOf(final BambuPrinters.PrinterDetail d) {
-        return d.config().model().gcodeFamily().toUpperCase();
+        return d.printer().getModel().gcodeFamily().toUpperCase();
     }
 
     /** Reads weight and filament count for the plate from the given file (the variant actually being sent). */
@@ -265,6 +265,15 @@ public class GcodeMappingQueuer {
         final PlateInfo plateInfo = loadPlateInfo(part, path, plateId);
         final List<Integer> amsMapping = buildAmsMapping(slot, plateInfo.filamentCount(), part.extraSlots());
         final boolean useAms = !amsMapping.isEmpty() && amsMapping.stream().noneMatch(i -> i == BambuConst.AMS_TRAY_VIRTUAL);
+        // No tray at all means use_ams=false: the printer feeds from its external spool. A P1 mapping relies on
+        // that on purpose now and then; on the two-nozzle H2D it ignores the part's AMS / AMS HT trays (the
+        // Rollhoop parts on 2026-10-19 had no first tray, so their "2nd filament: AMS HT" was dropped too) and
+        // the app's H2D start command has never been run unattended. Refuse until the part names its tray.
+        final boolean dualNozzle = printers.getPrinterDetail(printerName).map(d -> d.printer().getModel().isDualNozzle()).orElse(false);
+        if (dualNozzle && amsMapping.isEmpty() && part.source() == GcodeSource.LIBRARY) {
+            return Optional.of("%s needs an AMS tray for %s before the H2D can print it automatically - set the part's "
+                    .formatted(printerName, path) + "slot (and filament) on the Mappings page");
+        }
         final BambuPrinter.CommandPPF command = new BambuPrinter.CommandPPF(
                 path, plateId, useAms,
                 config.batchPrint().timelapse(), config.batchPrint().bedLevelling(),

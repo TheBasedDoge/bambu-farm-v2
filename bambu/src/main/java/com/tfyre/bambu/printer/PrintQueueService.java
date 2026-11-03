@@ -82,6 +82,8 @@ public class PrintQueueService {
     SimulationService simulation;
     @Inject
     PlateYieldService plateYield;
+    @Inject
+    LibraryFileInfo fileInfo;
     /** Lazy to avoid an eager circular reference (AutoQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<AutoQueueService> autoQueueInstance;
@@ -219,7 +221,7 @@ public class PrintQueueService {
         // One pool job per PIECE. An entry on the H2D for a plate of two stands for two pieces, and the pool
         // counts in pieces - handing back one would quietly lose the other from the order.
         final int pieces = printers.getPrinterDetail(printer)
-                .map(d -> entry.part().yieldFor(d.config().model())).orElse(1);
+                .map(d -> entry.part().yieldFor(d.printer().getModel())).orElse(1);
         for (int i = 0; i < pieces; i++) {
             dispatchInstance.get().enqueue(entry.part(), entry.orderRef());
         }
@@ -451,6 +453,19 @@ public class PrintQueueService {
                         onError.accept("%s: not in library: %s".formatted(printerName, command.filename()));
                         return;
                     }
+                    // Last gate before anything reaches the printer, whatever queued the job (dispatch, auto-queue,
+                    // Batch Print, a hand-edited queue): a file sliced for the other kind of printer is refused here.
+                    // An H2D slice on a P1S moves outside its bed and calls a second nozzle it doesn't have.
+                    final String wrong = fileInfo.mismatch(command.filename(), detail.printer().getModel());
+                    if (wrong != null) {
+                        Log.errorf("PrintQueueService: %s: REFUSED to start - %s", printerName, wrong);
+                        // Out of this printer's queue, or auto-start would try it again every minute
+                        removeFirst(printerName, entry);
+                        notificationService.notifyEvent("error", printerName,
+                                "Refused to start a job on %s: %s. Nothing was sent to the printer.".formatted(printerName, wrong));
+                        onError.accept("%s: refused - %s".formatted(printerName, wrong));
+                        return;
+                    }
                     // A library entry may live in a project subfolder ("MyProject/part.3mf"), but the SD card only
                     // ever sees a bare filename - FTP upload and the existing-file scan both match on name alone.
                     // So resolve locally with the sub-path and hand the basename to the SD side.
@@ -471,7 +486,7 @@ public class PrintQueueService {
                 // An H2D plate that holds two of a part counts as two when it finishes - recorded for every
                 // start, so an ordinary one-piece print also clears what the last print left behind.
                 plateYield.started(printerName, entry.orderRef(), entry.part(),
-                        entry.part() == null ? 1 : entry.part().yieldFor(detail.config().model()));
+                        entry.part() == null ? 1 : entry.part().yieldFor(detail.printer().getModel()));
                 detail.printer().commandPrintProjectFile(command);
                 removeFirst(printerName, entry);
                 Log.infof("PrintQueueService: %s: started %s (plate %d)", printerName, command.filename(), command.plateId());

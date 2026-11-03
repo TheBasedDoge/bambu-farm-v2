@@ -43,3 +43,8 @@ prod-path.txt
 
 # build.ps1 output (jar staged for copying to the prod box)
 dist/
+
+# live view: contain printer access codes
+docker/bambu-liveview/printers.list
+docker/bambu-liveview/printers.env
+docker/bambu-liveview/mediamtx.env

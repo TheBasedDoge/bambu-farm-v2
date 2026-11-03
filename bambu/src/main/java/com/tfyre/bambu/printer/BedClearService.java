@@ -43,6 +43,15 @@ public class BedClearService {
      * @return false when there is no such printer or it is printing (nothing to clear)
      */
     public boolean markCleared(final String printerName, final String by) {
+        return markCleared(printerName, by, true);
+    }
+
+    /**
+     * As {@link #markCleared(String, String)}, but with {@code skipCameraCheck} false the next automatic start
+     * still runs the AI bed check: the outline goes and the dispatcher retries now, without the one-shot pass. For
+     * callers that did not look at the bed themselves (an agent over MCP).
+     */
+    public boolean markCleared(final String printerName, final String by, final boolean skipCameraCheck) {
         final boolean ok = printers.getPrinter(printerName)
                 .map(p -> !p.getGCodeState().isPrinting() && p.getGCodeState() != BambuConst.GCodeState.PAUSE)
                 .orElse(false);
@@ -51,9 +60,15 @@ public class BedClearService {
         }
         final Instant now = Instant.now();
         cleared.put(printerName, now);
-        pass.put(printerName, now);
-        Log.infof("BedClearService: %s: bed marked clear by hand (%s) - the next automatic start within %d min "
-                + "skips the camera check", printerName, by, VALID.toMinutes());
+        if (skipCameraCheck) {
+            pass.put(printerName, now);
+            Log.infof("BedClearService: %s: bed marked clear by hand (%s) - the next automatic start within %d min "
+                    + "skips the camera check", printerName, by, VALID.toMinutes());
+        } else {
+            pass.remove(printerName);
+            Log.infof("BedClearService: %s: bed marked clear (%s) - the camera check still runs before the next start",
+                    printerName, by);
+        }
         return true;
     }
 

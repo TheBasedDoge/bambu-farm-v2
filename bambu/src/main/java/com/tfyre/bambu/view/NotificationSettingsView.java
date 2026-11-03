@@ -102,7 +102,10 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("fail", "Print Failed",
                     "A print job ended in a failed state"),
             new EventDef("stopped", "Print Stopped",
-                    "A print job was stopped/cancelled before finishing")
+                    "A print job was stopped/cancelled before finishing"),
+            new EventDef("mcp_action", "Agent Action",
+                    "An agent using the MCP server changed something: paused, resumed or stopped a print, marked a "
+                    + "bed cleared, switched auto-start, retried or removed a pool job, or retried an order's auto-queue")
     );
 
     @Inject

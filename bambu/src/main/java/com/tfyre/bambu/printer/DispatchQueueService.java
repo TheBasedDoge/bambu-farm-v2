@@ -226,7 +226,7 @@ public class DispatchQueueService {
      * same part, for the same order, waiting: sending it there would print pieces nobody ordered.
      */
     public List<PendingJob> plateSiblings(final PendingJob job, final BambuPrinters.PrinterDetail pd) {
-        final int pieces = job.part().yieldFor(pd.config().model());
+        final int pieces = job.part().yieldFor(pd.printer().getModel());
         if (pieces <= 1) {
             return List.of();
         }
@@ -801,13 +801,22 @@ public class DispatchQueueService {
                         }
                         notificationService.notifyEvent("auto_start", pd.name(),
                                 "Dispatched order job to %s: %s%s%s%s".formatted(pd.name(),
-                                        job.part().pathFor(pd.config().model()).orElse(job.part().path()),
+                                        job.part().pathFor(pd.printer().getModel()).orElse(job.part().path()),
                                         match.pieces() > 1 ? " - one plate of %d pieces".formatted(match.pieces()) : "",
                                         job.orderRef() == null ? "" : " (" + job.orderRef().label() + ")",
                                         bedVerdict(pd.name())),
                                 aiService.getLastCheck(pd.name()).map(PrintAiService.CheckRecord::snapshot).orElse(null));
                     },
-                    err -> Log.warnf("DispatchQueueService: %s: start failed after dispatch: %s", pd.name(), err));
+                    err -> {
+                        Log.warnf("DispatchQueueService: %s: start failed after dispatch: %s", pd.name(), err);
+                        // The wrong-printer gate in PrintQueueService took the entry out of this printer's queue:
+                        // give the job back to the pool so the order isn't short a part
+                        if (err != null && err.contains(": refused - ")) {
+                            pendingStarts.remove(pd.name());
+                            match.extras().forEach(this::returnToPool);
+                            returnToPool(job);
+                        }
+                    });
         } catch (RuntimeException ex) {
             Log.errorf(ex, "DispatchQueueService: %s: dispatch failed unexpectedly: %s", pd.name(), ex.getMessage());
         } finally {
@@ -874,7 +883,7 @@ public class DispatchQueueService {
                 if (c.isEmpty()) {
                     continue;
                 }
-                final int pieces = job.part().yieldFor(pd.config().model());
+                final int pieces = job.part().yieldFor(pd.printer().getModel());
                 if (pieces <= 1) {
                     pool.remove(i);
                     return Optional.of(new Match(job, c.get().resolvedSlot(), List.of()));

@@ -1,0 +1,10 @@
+# Copy to `printers.list`, list the printers that stream over RTSPS (X1C/X1E/H2D - P1/A1 cameras use the
+# JPEG port instead and need nothing here), then run ./build-printers-env.sh to write printers.env.
+#
+# name = the key in bambu.printers.<id> - also the mediamtx path name. Lower case, one word, NO underscores
+#        (mediamtx takes only the first _-delimited segment of an env-var path name).
+# ip   = printer ip, also used to fetch its certificate fingerprint
+# code = printer access code
+#
+# <name> <ip> <access-code>
+printer1   FIXME_this_is_my_printer_ip   FIXME_this_is_my_access_code

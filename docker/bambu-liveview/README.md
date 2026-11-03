@@ -63,28 +63,24 @@ also remember to update `reverse-proxy.conf`:
 
 # Adding your printers
 
-**Copy `example - compose.yaml` to `compose.yml`**
+Only printers that stream over **RTSPS** (X1C / X1E / H2D) need anything here - P1/A1 cameras are read by the app
+over their JPEG port. Since 2026-10-17 (from upstream TFyre/bambu-farm `ea39ab8`) **mediamtx pulls each RTSPS
+printer itself**; there are no per-printer ffmpeg containers any more. Those could freeze with zero frames while
+the container looked healthy (`-timeout` only covers the RTSP control socket), and `restart: always` never fired
+because ffmpeg never exited. mediamtx has a real read deadline on the media path and reconnects on its own.
 
-Edit `compose.yml` and fix the printers (lines with FIXME)
+1. Copy `example - compose.yml` to `compose.yml`, `example - mediamtx.yml` to `mediamtx.yml` (a verbatim copy of
+   upstream mediamtx v1.21.2 - replace it wholesale on a version bump) and `example - mediamtx.env` to
+   `mediamtx.env` (set your docker host's LAN IP in `MTX_WEBRTCADDITIONALHOSTS`).
+2. Copy `example - printers.list` to `printers.list` and list each RTSPS printer: `<id> <ip> <access-code>`.
+   `<id>` is the printer id in the `.env` configuration file (`bambu.printers.<id>.name=...`) and becomes the
+   mediamtx path name - one word, no underscores.
+3. Run `./build-printers-env.sh` (needs bash, openssl and network access to the printers). It fetches each
+   printer's self-signed certificate fingerprint and writes `printers.env`. Re-run it after a printer firmware
+   update if its stream stops connecting - a new certificate means a new fingerprint.
+4. `docker compose up -d --remove-orphans` (env files are read at startup only).
 
-```yaml
-    printer1:
-        extends:
-            file: common-liveview.yml
-            service: liveview
-        depends_on:
-            - mediamtx
-        environment:
-            PRINTER_HOST: FIXME_this_is_my_printer_ip_or_host
-            PRINTER_ID: ([^1])FIXME_this_is_my_printer_id_from_env
-            PRINTER_ACCESS_CODE: FIXME_this_is_my_printer_access_code
-```
-
-> [!NOTE]
-> `PRINTER_ID` is the printer id in the `.env` configuration file eg: 
-> ```properties
-> bambu.printers.PRINTER_ID.name=My Printer Name
-> ```
+`printers.list` and `printers.env` contain access codes - keep them out of git.
 
 # Ports required for outside access
 

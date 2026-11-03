@@ -762,13 +762,9 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             frame.flatMap(f -> bedDiff.renderCrop(printerName, f))
                     .ifPresent(bytes -> cropHolder.add(labelledThumb("Pixel diff + bed check see",
                             "bed-crop-%s.jpg".formatted(printerName), bytes, "var(--lumo-primary-color)")));
-            // The failure check gets a DIFFERENT region - the same crop plus headroom above the plate, because
-            // spaghetti grows upward out of the print. Shown separately because tuning the crop until the diff
-            // looks right tells you nothing about what the failure check is looking at, and an invisible
-            // mismatch between the two is what let a camera full of hoses produce eight false positives.
-            frame.map(f -> bedDiff.cropForAi(printerName, f, PrintAiService.FAILURE_HEADROOM))
-                    .ifPresent(bytes -> cropHolder.add(labelledThumb("Failure check sees (+ headroom)",
-                            "bed-fail-%s.jpg".formatted(printerName), bytes, "var(--lumo-warning-color)")));
+            // The failure, first-layer and extrusion checks see the whole camera frame (since 2026-10-26 - the crop
+            // band missed the part while the bed was up; see PrintAiService.framedFor), so only the bed check's
+            // region is shown here.
             // What the number is actually reacting to. Red = the blocks driving the reading; if those land on
             // bare plate rather than on an object, the metric is measuring something that isn't a part.
             bedDiff.getLastFrame(printerName).ifPresent(cur -> bedReference.getReference(printerName)
@@ -1030,17 +1026,31 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
                     .setHeader("Pixel diff").setAutoWidth(true);
             historyGrid.addColumn(PrintAiService.CheckRecord::description).setHeader("Description").setFlexGrow(1);
             historyGrid.setWidth("100%");
-            historyGrid.setAllRowsVisible(true);
+            // Up to 1000 checks now - a scrolling grid that renders the rows in view, not one row per check
+            historyGrid.setHeight("70vh");
             historyGrid.addThemeVariants(GridVariant.LUMO_WRAP_CELL_CONTENT, GridVariant.LUMO_ROW_STRIPES, GridVariant.LUMO_COMPACT);
             historyGrid.setColumnReorderingAllowed(true);
             GridLayoutMemory.remember(historyGrid, "ai-history");
             historyGrid.getColumns().forEach(c -> c.setResizable(true));
             historyGrid.addItemClickListener(e -> showSnapshotDialog(e.getItem()));
         }
-        historyGrid.setItems(aiService.getHistory());
+        setHistoryItems(true);
 
         section.add(historyGrid);
         return section;
+    }
+
+    /** Newest check shown in the history grid - the grid is only refilled when a new check arrives. */
+    private java.time.Instant historyShownAt;
+
+    /** Refills the history grid when there's a newer check (refilling every tick would jump it back to the top). */
+    private void setHistoryItems(final boolean force) {
+        final List<PrintAiService.CheckRecord> history = aiService.getHistory();
+        final java.time.Instant newest = history.isEmpty() ? null : history.get(0).at();
+        if (force || !java.util.Objects.equals(newest, historyShownAt)) {
+            historyShownAt = newest;
+            historyGrid.setItems(history);
+        }
     }
 
     private void showSnapshotDialog(final PrintAiService.CheckRecord rec) {
@@ -1050,9 +1060,11 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
         dialog.setWidth("860px");
         final VerticalLayout layout = new VerticalLayout();
         layout.setPadding(false);
-        if (rec.snapshot() != null) {
+        // Older checks keep their frame on disk only - frameOf reads it back
+        final byte[] frame = aiService.frameOf(rec);
+        if (frame != null) {
             final Image img = new Image(new StreamResource("ai-check.jpg",
-                    () -> new ByteArrayInputStream(rec.snapshot())), "AI check snapshot");
+                    () -> new ByteArrayInputStream(frame)), "AI check snapshot");
             img.setWidth("100%");
             img.getStyle().set("border-radius", "6px");
             layout.add(img);
@@ -1072,7 +1084,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
 
     private Image snapshotImage(final PrintAiService.CheckRecord rec, final String width) {
         final Image img = new Image(new StreamResource("ai-check-%s.jpg".formatted(rec.printer()),
-                () -> new ByteArrayInputStream(rec.snapshot())), "AI check snapshot for " + rec.printer());
+                () -> new ByteArrayInputStream(aiService.frameOf(rec))), "AI check snapshot for " + rec.printer());
         img.setWidth(width);
         img.getStyle().set("border-radius", "6px").setCursor("pointer");
         img.addClickListener(e -> showSnapshotDialog(rec));
@@ -1471,7 +1483,7 @@ public class AiSettingsView extends VerticalLayout implements NotificationHelper
             }
         });
         grid.setItems(rows);
-        historyGrid.setItems(aiService.getHistory());
+        setHistoryItems(false);
         statusSpan.setText("Last refreshed: " + java.time.LocalTime.now().withNano(0));
     }
 

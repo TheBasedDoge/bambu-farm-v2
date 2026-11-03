@@ -6,9 +6,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,7 +82,30 @@ public class PrintAiService {
         }
     }
 
-    private static final int MAX_HISTORY = 50;
+    /**
+     * Checks kept in the history, on disk with their frames (raised from 50 on 2026-10-25 to build up a body of
+     * real frames to tune the checks against; ~100 KB a frame). Split by type - see {@link #HISTORY_CAPS}.
+     */
+    private static final int MAX_HISTORY = 1000;
+    /**
+     * Per-type share of the history. One shared list was all failure checks - they run on every printing printer
+     * around the clock, a bed check once per print start - so on 2026-10-25 the 50 kept were 49 failure checks,
+     * 1 first-layer and no bed checks at all. Each type now ages out only against its own kind, so the bed
+     * frames (the most useful ones for tuning) cover weeks of print starts. Sums to {@link #MAX_HISTORY}.
+     */
+    private static final Map<String, Integer> HISTORY_CAPS = Map.of(
+            "bed-clear", 400,
+            "failure", 400,
+            "first-layer", 150);
+    /** Extrusion checks, manual tests and anything else, together. */
+    private static final int OTHER_CAP = 50;
+
+    /** Prompt tests from AI Settings share the "other" allowance, whatever check they test. */
+    private static String capGroup(final CheckRecord r) {
+        return !"test".equals(r.trigger()) && HISTORY_CAPS.containsKey(r.checkType()) ? r.checkType() : "other";
+    }
+    /** Only the newest checks keep their frame in memory; older ones are read from disk by {@link #frameOf}. */
+    private static final int FRAMES_IN_MEMORY = 50;
     /** How often to sample the layer number while waiting for the first layer to be laid down. */
     private static final long FIRST_LAYER_POLL_MS = 10_000;
 
@@ -92,7 +113,7 @@ public class PrintAiService {
      * Newest-first bounded history of check attempts. Kept on disk too (see {@link #saveChecks()}), frames
      * included, so a deploy no longer leaves the AI Settings page with "no frame" on every printer.
      */
-    private final Deque<CheckRecord> history = new ArrayDeque<>();
+    private final java.util.LinkedList<CheckRecord> history = new java.util.LinkedList<>();
 
     /** Most recent CheckRecord per printer (kept even for no-snapshot attempts). */
     private final Map<String, CheckRecord> lastChecks = new ConcurrentHashMap<>();
@@ -107,8 +128,25 @@ public class PrintAiService {
         }
         synchronized (history) {
             history.addFirst(rec);
+            // Age out the oldest of this check's own type past its cap (see HISTORY_CAPS)
+            final String group = capGroup(rec);
+            final int cap = HISTORY_CAPS.getOrDefault(group, OTHER_CAP);
+            int ofType = 0;
+            for (final java.util.Iterator<CheckRecord> it = history.iterator(); it.hasNext();) {
+                if (capGroup(it.next()).equals(group) && ++ofType > cap) {
+                    it.remove();
+                }
+            }
             while (history.size() > MAX_HISTORY) {
                 history.removeLast();
+            }
+            // The check that just fell out of the newest FRAMES_IN_MEMORY lets go of its frame - once the frame is
+            // safely on disk (it is saved a couple of seconds after the check; this one is 50 checks old)
+            if (history.size() > FRAMES_IN_MEMORY) {
+                final CheckRecord older = history.get(FRAMES_IN_MEMORY);
+                if (older.snapshot() != null && java.nio.file.Files.exists(storeDir().resolve(frameName(older)))) {
+                    history.set(FRAMES_IN_MEMORY, withoutFrame(older));
+                }
             }
         }
     }
@@ -152,9 +190,21 @@ public class PrintAiService {
         }
         try {
             final StoredChecks stored = mapper.readValue(file.toFile(), StoredChecks.class);
+            final Set<String> lastFrames = new java.util.HashSet<>();
+            Optional.ofNullable(stored.last()).orElse(List.of()).forEach(sc -> {
+                if (sc.frame() != null) {
+                    lastFrames.add(sc.frame());
+                }
+            });
             final Map<String, CheckRecord> byFrame = new java.util.HashMap<>();
+            final int[] loaded = {0};
             final java.util.function.Function<StoredCheck, CheckRecord> restore = sc -> {
                 byte[] frame = null;
+                // Frames into memory for the newest checks (and every printer's last) only; the rest stay on disk
+                if (sc.frame() != null && loaded[0]++ >= FRAMES_IN_MEMORY && !lastFrames.contains(sc.frame())) {
+                    return new CheckRecord(sc.at(), sc.printer(), sc.checkType(), sc.trigger(), sc.context(),
+                            sc.good(), sc.severity(), sc.description(), null, sc.pixelDiff());
+                }
                 if (sc.frame() != null) {
                     final CheckRecord seen = byFrame.get(sc.frame());
                     if (seen != null) {
@@ -217,7 +267,11 @@ public class PrintAiService {
             final Set<String> keep = new java.util.HashSet<>();
             final java.util.function.Function<CheckRecord, StoredCheck> store = rec -> {
                 String name = null;
-                if (rec.snapshot() != null && rec.snapshot().length > 0) {
+                if (rec.snapshot() == null && java.nio.file.Files.exists(dir.resolve(frameName(rec)))) {
+                    // an older check whose frame is only on disk now
+                    name = frameName(rec);
+                    keep.add(name);
+                } else if (rec.snapshot() != null && rec.snapshot().length > 0) {
                     name = frameName(rec);
                     keep.add(name);
                     final java.nio.file.Path f = dir.resolve(name);
@@ -254,6 +308,30 @@ public class PrintAiService {
         }
     }
 
+    private static CheckRecord withoutFrame(final CheckRecord r) {
+        return new CheckRecord(r.at(), r.printer(), r.checkType(), r.trigger(), r.context(), r.good(), r.severity(),
+                r.description(), null, r.pixelDiff());
+    }
+
+    /**
+     * The frame a check analysed: from memory for recent checks, from {@code data/ai-checks} for older ones.
+     * Null when the check had no frame or it has been pruned.
+     */
+    public byte[] frameOf(final CheckRecord rec) {
+        if (rec == null) {
+            return null;
+        }
+        if (rec.snapshot() != null) {
+            return rec.snapshot();
+        }
+        try {
+            final java.nio.file.Path f = storeDir().resolve(frameName(rec));
+            return java.nio.file.Files.isRegularFile(f) ? java.nio.file.Files.readAllBytes(f) : null;
+        } catch (java.io.IOException ex) {
+            return null;
+        }
+    }
+
     /** Newest-first copy of the recent check history. */
     public List<CheckRecord> getHistory() {
         synchronized (history) {
@@ -268,22 +346,22 @@ public class PrintAiService {
 
     /** Last known GCodeState per printer, used to detect IDLE → RUNNING transitions. */
     /**
-     * Extra frame height kept above the plate for the failure check, as a fraction of the whole frame.
+     * The image a check sends to the model: the bed crop for the bed-clear check, the WHOLE frame for every check
+     * that looks at a print in progress.
      * <p>
-     * A fifth of the frame: enough to hold the airspace a spaghetti nest occupies, not so much that the toolhead
-     * and its hoses come back into shot - which is what the crop is there to exclude.
-     */
-    public static final double FAILURE_HEADROOM = 0.20;
-
-    /**
-     * How much of the frame above the plate a check needs to keep.
+     * The crop is a fixed band of the frame, tuned on bed-check frames. On the P1S the bed moves up and down in the
+     * camera's view as Z changes, so during a print the part sits well above that band: on 2026-10-26 P1S-3 ran
+     * 30 minutes of spaghetti while every failure check was shown an empty strip of plate (the band plus 20 %
+     * headroom), and its first-layer checks were shown the bed's front edge and the dark under it. Re-run on the
+     * saved frames with the full image, the same prompt flagged 7 of the 7 spaghetti frames from the first
+     * visible nest on, and passed 25 of 25 normal prints across P1P, P1S, P1S-3 and the H2D.
      * <p>
-     * Only failure detection does. A nest of filament grows upward out of the print, so cropping to the plate
-     * would hide exactly what that check is looking for - while the bed-clear check is asking a question about
-     * the plate itself and is only hindered by anything above it.
+     * (The crop came from the H2D, whose frame is half gantry and hose: eight "tangle at the nozzle" verdicts on
+     * a good print. The prompt now names cables, hoses and nozzle ooze as normal, and a failure still has to be
+     * confirmed on a second frame before anyone is told.)
      */
-    private static double headroomFor(final String checkType) {
-        return "failure".equals(checkType) ? FAILURE_HEADROOM : 0;
+    private byte[] framedFor(final String printerName, final String checkType, final byte[] frame) {
+        return "bed-clear".equals(checkType) ? bedDiff.cropForAi(printerName, frame, 0) : frame;
     }
 
     private final Map<String, BambuConst.GCodeState> lastStates = new ConcurrentHashMap<>();
@@ -438,11 +516,8 @@ public class PrintAiService {
         // empty-bed reference, compare current-vs-reference (two images) instead of judging one image alone.
         final Optional<byte[]> reference = isBedCheck && bedReference.isEnabled()
                 ? bedReference.getReference(printerName) : Optional.empty();
-        // Crop to what this printer's camera can usefully say something about, before the model sees it. The
-        // H2D's frame is more than half gantry, cable loom and coiled hose, and it produced eight "tangle of
-        // loose filament extending from the nozzle" verdicts in 95 minutes on a print that was fine. The
-        // failure check keeps headroom above the plate; the bed check does not - see cropForAi.
-        final byte[] framed = bedDiff.cropForAi(printerName, snapshot.get(), headroomFor(checkType));
+        // The bed check sees the bed crop; checks on a print in progress see the whole frame - see framedFor.
+        final byte[] framed = framedFor(printerName, checkType, snapshot.get());
         final Optional<OllamaService.AiResult> result = reference.isPresent()
                 ? ollama.checkBedClearWithReference(bedDiff.cropForAi(printerName, reference.get(), 0), framed, context)
                 : check.apply(framed, context);
@@ -493,7 +568,7 @@ public class PrintAiService {
             final Optional<byte[]> snapshot2 = getSnapshot(printerName);
             restoreLight(printerName, priorLight2);
             final Optional<OllamaService.AiResult> second = snapshot2
-                    .map(s2 -> bedDiff.cropForAi(printerName, s2, headroomFor(checkType)))
+                    .map(s2 -> framedFor(printerName, checkType, s2))
                     .map(s2 -> reference.isPresent()
                             ? ollama.checkBedClearWithReference(
                                     bedDiff.cropForAi(printerName, reference.get(), 0), s2, context)
@@ -676,8 +751,9 @@ public class PrintAiService {
             return;
         }
         final Optional<OllamaService.AiResult> result = ollama.checkExtrusion(
-                bedDiff.cropForAi(name, base.frame(), FAILURE_HEADROOM),
-                bedDiff.cropForAi(name, frame, FAILURE_HEADROOM),
+                // Whole frames, like the failure check: the crop band misses the part while the bed is up
+                base.frame(),
+                frame,
                 base.layer(), layer, printer.getTotalLayerNum());
         if (result.isEmpty()) {
             record(new CheckRecord(Instant.now(), name, "extrusion", "scheduled", null, null, null,

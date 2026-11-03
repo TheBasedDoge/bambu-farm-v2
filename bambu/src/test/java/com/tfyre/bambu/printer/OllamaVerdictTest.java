@@ -120,6 +120,20 @@ class OllamaVerdictTest {
         }
 
         @Test
+        @DisplayName("REAL: the 2026-10-28 H2D false alarms - curly apostrophes and filament at the nozzle")
+        void theH2dFalseAlarms() {
+            assertFalse(clearlyFailing("Problems: none\nConfidence: 0\nReason: There is some loose filament near the "
+                    + "nozzle, but it doesn\u2019t appear to be a substantial mass or spaghetti."));
+            assertFalse(clearlyFailing("Problems: none\nConfidence: 0\nReason: There are a few strings of filament, "
+                    + "but they don\u2019t meet the criteria for spaghetti, tangle, blob, or detachment."));
+            assertFalse(clearlyFailing("Problems: none\nConfidence: 0\nReason: There are some strings and blobs near "
+                    + "the nozzle, but no spaghetti, tangles, blobs, or detached parts on the print itself."));
+            // ...while a real nest is still caught, wherever the nozzle is mentioned
+            assertTrue(clearlyFailing("Problems: none  Reason: A tangled mess of filament covers the print, the nozzle "
+                    + "is dragging it around."));
+        }
+
+        @Test
         @DisplayName("the override is for the failure check only")
         void notAppliedToTheBedGate() {
             // "Objects:" is the bed check's findings field. A bed described as having a blob on it is already

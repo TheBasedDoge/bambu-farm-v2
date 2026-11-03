@@ -337,7 +337,7 @@ Results show as a status chip on each dashboard card (with an animated "checking
 - a runtime on/off toggle (no restart needed) and a "Check Now" button per printer;
 - **the last analyzed snapshot per printer** - the exact camera frame the AI looked at, why the check ran (manual / scheduled / Start Next gate / auto-start gate), what HMS/error hint was fed to the model, and what it concluded (click to enlarge);
 The page is split into four sub-tabs - **Status** (last result and snapshot per printer, Ollama connection), **Bed reference**, **History** and **Prompts** - instead of one long scroll. The Bed reference tab draws each printer's frames and crops only when its *Frames & diagnosis* section is opened (that image work was what made the tab take 3-4 s to open).
-- **check history** - the last 50 check attempts across the farm with trigger, result, and description; click any row to see that check's snapshot. The history and each printer's last check (frames included) are saved to `data/ai-checks/` (`checks.json` plus one JPEG per frame, pruned with the history), so they survive a restart;
+- **check history** - the last 1000 check attempts across the farm, kept per type - 400 bed-clear, 400 failure, 150 first-layer, 50 extrusion and prompt tests - so frequent failure checks never push out the bed checks (the newest 50 frames overall are kept in memory, the newest 50 frames are kept in memory, older ones are read from disk when opened) with trigger, result, and description; click any row to see that check's snapshot. The history and each printer's last check (frames included) are saved to `data/ai-checks/` (`checks.json` plus one JPEG per frame, pruned with the history), so they survive a restart;
 - **editable prompts** - the exact text sent to the model for each of the three checks, editable at runtime and saved to `bambu-ai-prompts.json` (blank or default-identical text reverts to the built-in default, so future stock-prompt improvements still reach you). Keep the leading YES/NO/GOOD answer-keyword instructions intact - result parsing depends on that first word. The built-in defaults are tuned for **gemma3:12b**. Each prompt has a **Test** button: pick a printer, and it runs the prompt as currently edited (unsaved) against that printer's live camera frame and shows the model's verdict + the analyzed image, so you can tune a prompt without waiting for a real check. There's also a **Test all three now** button that runs all three saved prompts against a single capture. Test runs are **recorded in the check history** (trigger "Prompt test"), so you can review them alongside real checks.
 - **HMS / error context hint** - there is no separate "HMS check". Instead, when a printer is actively reporting an HMS alert or print-error code, that code is prepended to the three checks above as a hint (so e.g. a nozzle-clog alert nudges the failure check). That wrapper text is itself an editable prompt at the bottom of the page (keep its `{context}` placeholder, which is replaced with the live code).
 - **Empty-bed reference (experimental)** - save a photo of each printer's *empty* bed, and when the toggle is on, the bed-clear check sends the model **two images** (the saved empty reference + the live frame) and asks it to compare, rather than judging one frame in isolation. **⚠ In practice this over-flags**: vision models report normal glue marks, lighting differences and slight plate shifts as "an object that wasn't in the reference" and block genuinely clear beds. The reference image is far more reliable feeding the deterministic [pixel-diff backstop](#pixel-diff-backstop-deterministic-bed-check) below - **the recommended setup is this AI compare OFF and the pixel-diff backstop ON**. Because it has a per-printer ground truth for bed texture, glue marks and lighting, it's much steadier at telling a real object apart from normal bed features. Fully opt-in and only used for printers that have a reference saved; the compare prompt is editable too. Retake the reference whenever you change the plate or move the camera. References live in a `bambu-bed-refs/` folder; the toggle in `bambu-bed-reference.json`.
@@ -396,12 +396,9 @@ Colour only narrows a material match; on its own it would let black PLA satisfy 
 
 The compared region is set **per printer model**, with a per-printer override. Where the camera sits is a property of the machine: every P1S frames the plate identically, and an H2D frames it nothing like a P1S — its camera looks *across* the toolhead, so more than half the frame is gantry, cable loom and coiled hose. One global crop tuned on a P1 was being applied to all five, which is why the H2D's readings never behaved.
 
-Each printer card now shows **two** previews, because the two checks look at different regions and an invisible mismatch between them is what let a camera full of hoses produce eight false positives:
+Each printer card shows **"Pixel diff + bed check see"** — the crop itself. (A second "Failure check sees" preview was removed on 2026-10-26, when the failure check stopped using the crop - see below.)
 
-- **"Pixel diff + bed check see"** — the crop itself.
-- **"Failure check sees (+ headroom)"** — the same crop with 20% of frame height added above it.
-
-Tune with the sliders and watch both. The crop is a spatial setting judged by looking, so dragging while watching is the workflow; the number is still shown beside each slider because that's what you write down. Sliders apply on release rather than on every pixel — each change re-renders five cards and re-encodes their previews.
+Tune with the sliders and watch the preview. The crop is a spatial setting judged by looking, so dragging while watching is the workflow; the number is still shown beside each slider because that's what you write down. Sliders apply on release rather than on every pixel — each change re-renders five cards and re-encodes their previews.
 
 The scope row tells you whether you're editing this scope's own values or **inherited** ones, and offers "Reset to inherited" when an override exists. Editing an inherited value silently creates an override, so it says so before you do.
 
@@ -409,10 +406,9 @@ Pick the scope on the AI Settings page next to the crop fields: **Every H2D**, o
 
 **The crop is also applied to the images sent to the vision model**, which it wasn't before — the model used to see the whole frame, hoses and all. That's what produced eight "tangle of loose filament extending from the nozzle" verdicts on the H2D in 95 minutes on a print that was fine.
 
-The two checks get different regions, deliberately:
+Only the **bed-clear** check uses it: the question is "is anything on the plate", and everything above it is noise.
 
-- **Bed-clear** gets the plate and nothing else. The question is "is anything on the plate"; everything above it is noise.
-- **Failure detection** keeps 20% of the frame height *above* the crop. A spaghetti nest grows upward out of the print — the one that started all this grew out of the top of the part — so a tight plate crop would hide exactly what that check is looking for. It still excludes the toolhead, which is where the false positives came from.
+**The failure, first-layer and extrusion checks see the whole frame** (since 2026-10-26). The crop is a fixed band of the image tuned on bed-check frames, and on a P1S the bed moves up and down in the camera's view as Z changes - so during a print the part sits well above the band. On 2026-10-26 P1S-3 printed 30 minutes of spaghetti while every failure check was shown an empty strip of plate (the band plus the 20% headroom it used to get), and its first-layer checks were shown the bed's front edge. Re-run on the saved frames with the whole image, the same prompt flagged all 7 spaghetti frames from the first visible nest on and passed 25 of 25 normal prints across P1P, P1S, P1S-3 and the H2D. The H2D's hoses that the crop was introduced for are named as normal in the failure prompt, and a failure still has to be confirmed on a second frame.
 
 Turn it on under **Empty-bed reference** on the AI Settings page (needs a reference image saved for that printer). Four controls:
 - **Enable the pixel-diff backstop** - off by default; it needs a reference and a calibrated limit.
@@ -537,6 +533,44 @@ When an order leaves the open list, the app asks the marketplace why. If it was 
 One `order_cancelled` notification says what was done, and another follows when a still-running print finishes. A finished print that cannot be matched to one of the order's parts adds nothing and says so. This is the only case where a finished print is added to stock automatically; it does not depend on a live print-to-order link (the cancelled order's parts are written to `bambu-cancelled-orders.json` and prints are matched by the order reference History keeps and the file name). eBay keeps listing a cancelled order as unfulfilled; those are now filtered out of the open orders.
 
 **Buyer notes.** A checkout note from the buyer is shown at the top of the order's card on the Sales Orders pages, is included in the new-order notification, and puts a ✎ in front of the order on the Overview (as does personalization).
+
+## MCP server for agents
+
+The app serves an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp` so an agent (e.g. Claude) can read
+the farm's state through the same services the UI uses, instead of grepping logs. Plan and phases:
+`docs/MCP-PLAN.md`.
+
+- **Off until a token is set.** Add to `data/.env` (long random values, 24+ characters; generate with
+  `openssl rand -hex 32`):
+  ```
+  bambu.mcp.read-token=...
+  bambu.mcp.control-token=...
+  ```
+  Without either the endpoint answers 503. Requests need `Authorization: Bearer <token>`; anything else gets 401
+  and a WARN in the log. The control token is for the phase 2 control tools; today every tool is read-only.
+- **Tools (all read-only):** `farm_status` (every printer: state, job, layer, ETA, temps, AMS trays, HMS
+  errors, bed cleared, queue, auto-start, last AI verdict, plus the farm headline), `health_check` (log
+  errors/warnings grouped, blocked-thread warnings, clock offset, TLS certificate expiry, disk, newest backup, last
+  Etsy/eBay poll, Ollama, printers without telemetry), `orders`, `dispatch_pool`, `print_history`,
+  `notifications`, `search_logs`, `ai_history`, `ai_frame` (the exact image an AI check judged), `mappings` and
+  `library_file`.
+- **Control tools (control token only):** `pause_print`, `resume_print`, `stop_print`, `bed_cleared`, `set_light`,
+  `set_auto_start`, `retry_pool_job`, `remove_pool_job`, `retry_auto_queue`. Read-token connections don't see
+  them. Risky ones need `confirm=true` (without it they only say what they would do), every change sends an
+  "Agent Action" notification, and `bed_cleared` keeps the AI bed check unless told the user cleared it by hand.
+  Give a PC control access with `install-bambufarm-mcp.ps1 -Control`, then restart Claude Desktop.
+- **AI prompt evaluation:** `label_frame` (control token) records whether a saved check frame really showed a
+  problem; `eval_prompt` re-runs the live prompt or a draft over saved frames and scores it against those labels,
+  without touching the live prompts. Labels live in `data/bambu-ai-labels.json` and are included in the backup.
+- **Claude Desktop:** run `C:\Bambu-Farm-Data\claude-mcp\install-bambufarm-mcp.ps1` on the PC (Node required),
+  then paste the entry it puts on the clipboard into Settings > Developer > Edit Config and restart Claude
+  Desktop. Editing the config file from outside the app doesn't stick - the app restores its own copy.
+- **Audit and redaction:** every call is appended to `data/mcp-audit.jsonl`; everything returned passes a
+  redactor that strips access codes, tokens, passwords and webhook URLs.
+- **nginx:** `reverse-proxy.conf` has an unbuffered `location /mcp`. After changing it:
+  `docker compose exec nginx nginx -t` then `docker compose restart nginx`.
+- Optional: `bambu.mcp.tls-check` (default `nginx:443`) and `bambu.mcp.clock-check-url`
+  (default `https://www.cloudflare.com/`) for the health probes.
 
 ## Files
 The **Files** page (`/files`, sidebar under Farm, admin) is the print-file library, one row per **part**. The P1 slice and the H2D slice of a part sit side by side, each with the printer it was sliced for (read from the file), whether it is sliced at all, its material, weight and print time. On the right: how many listings map to the part, how many times it has printed and how often it failed. Search covers file names, listings and materials; the filter narrows to parts that are not mapped, have no H2D file, or need attention (not sliced, an H2D slice sitting unattached, or failing one print in five).
@@ -885,7 +919,7 @@ Copying the folder is most of it, but not all of it. In order:
 5. **Set `bambu.ollama.fallback-url` to the old host before you start the migration.** Then the cutover costs nothing: checks keep running against the old server while the new one downloads its weights, and you swap `url` and drop `fallback-url` afterwards. Without it there is a hard window where AI checks are simply unavailable.
 6. **Re-create the heartbeat scheduled task** - `schtasks` entries are per-machine and do not travel.
 6b. **Check `bambu.ollama.first-layer-delay` in `data/.env`** - an explicit value there overrides the 30-minute default; an old `8m` will skip most first-layer checks on printers with a long preheat.
-6c. **Pin the ffmpeg image** in `common-liveview.yml` before the move, not after - see the comment in that file. It was the one unpinned image, and it is why a faithful copy of the folder still broke the H2D camera on 2026-08-21.
+6c. ~~Pin the ffmpeg image~~ - gone since 2026-10-17: mediamtx (pinned, `1.21.2`) pulls the H2D camera itself, so there is no ffmpeg container. Copy `mediamtx.env`, `printers.list` and `printers.env` with the folder; after a printer firmware update re-run `./build-printers-env.sh` (new certificate, new fingerprint).
 7. **Check VPN subnet routes on both boxes.** For a while you will have two machines on `192.168.0.0/24`, and if either advertises that subnet over Tailscale the other can end up tunnelling to printers sitting beside it. See "When a printer stops responding" below - this failure looks exactly like broken printer firmware.
 8. **Shut the old instance down before starting the new one.** Two instances against the same five printers both poll, both dispatch, and both hold the same Discord webhook, while keeping *separate* `data/` directories - so order tracking, stock and history silently diverge and a part can be printed twice. An alert arriving from a host you thought was off is the symptom; nothing in the message says which machine sent it.
 7. **Verify before trusting it**: `.\heartbeat.ps1 -WhatIf` (probes and logs, never restarts), then confirm the startup log names the right timezone and the right Ollama endpoint.

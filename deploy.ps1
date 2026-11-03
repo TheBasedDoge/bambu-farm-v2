@@ -258,7 +258,11 @@ try {
     # container across a bind mount, the app rotates it on startup, and reading it from
     # the host while it's held open gave a false "never came up" on a container that was
     # in fact already serving.
-    $since = (Get-Date).ToUniversalTime().AddSeconds(-5).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    # Relative, not a clock time: `--since 95s` is resolved by the Docker engine against its OWN clock. An
+    # absolute timestamp from this machine's clock missed the startup line whenever the two clocks disagreed
+    # by more than a few seconds (the Docker VM's clock drifts), and the step then fell through to the
+    # fallback below even on a clean start (2026-10-25).
+    $restartAt = Get-Date
 
     Step 'Starting bambuweb'
     docker compose up -d bambuweb
@@ -276,7 +280,8 @@ try {
         # deliberately: a JVM "Invalid or corrupt jarfile" arrives that way and must not be missed.
         $out = & {
             $ErrorActionPreference = 'Continue'
-            docker compose logs --no-color --no-log-prefix --since $since bambuweb 2>&1
+            $sinceSecs = [int]((Get-Date) - $restartAt).TotalSeconds + 10
+            docker compose logs --no-color --no-log-prefix --since "${sinceSecs}s" bambuweb 2>&1
         } | ForEach-Object { $_.ToString() }
         if ($out -match 'Invalid or corrupt jarfile|Unable to access jarfile') {
             throw 'Container reports a corrupt or missing jarfile - check that bambu-web.jar is a FILE, not a directory, in the prod folder.'
@@ -288,7 +293,12 @@ try {
         Ok ($startLine.ToString() -replace '^.*\(main\)\s*', '')
     } else {
         # Not necessarily a failure - fall back to asking Docker whether it's running.
-        $state = (docker compose ps --format '{{.State}}' bambuweb 2>$null | Select-Object -First 1)
+        # Same relaxed scope as the log capture: under 'Stop', Windows PowerShell turns docker's stderr warnings
+        # into a terminating NativeCommandError even with 2>$null - which is how this fallback itself failed.
+        $state = & {
+            $ErrorActionPreference = 'Continue'
+            docker compose ps --format '{{.State}}' bambuweb 2>$null
+        } | Select-Object -First 1
         if ($state -match 'running') {
             Warn "no startup line seen in 120s, but the container reports '$state'."
             Warn 'It has most likely started - confirm with: docker compose logs -f bambuweb'
