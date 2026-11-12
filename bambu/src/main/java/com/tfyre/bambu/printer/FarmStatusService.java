@@ -87,13 +87,7 @@ public class FarmStatusService {
     }
 
     private static Optional<String> fault(final BambuPrinter p) {
-        final int code = p.getPrintError();
-        if (code != 0) {
-            return Optional.of("Error %s: %s".formatted(Integer.toHexString(code),
-                    BambuErrors.getPrinterError(code).orElse("unknown error")));
-        }
-        final List<String> hms = p.getActiveHmsErrors();
-        return hms.isEmpty() ? Optional.empty() : Optional.of(String.join(" · ", hms));
+        return HmsCodes.problems(p);
     }
 
     public Status status() {

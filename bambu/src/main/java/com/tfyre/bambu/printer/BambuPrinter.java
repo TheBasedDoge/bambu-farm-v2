@@ -106,6 +106,11 @@ public interface BambuPrinter {
      */
     List<String> getActiveHmsErrors();
 
+    /** The same alerts with their full code, Bambu's text and wiki link. */
+    default List<HmsCodes.Hms> getActiveHms() {
+        return List.of();
+    }
+
     /**
      * Filament type currently loaded per AMS tray, from the latest telemetry that carried AMS data.
      * Key = global tray index ({@code amsId*4 + trayId}, A1=0…D4=15, plus {@link BambuConst#AMS_TRAY_VIRTUAL}

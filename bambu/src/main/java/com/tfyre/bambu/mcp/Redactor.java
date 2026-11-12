@@ -73,6 +73,7 @@ public class Redactor {
         add(found, config.usps().clientSecret());
         add(found, config.mcp().readToken());
         add(found, config.mcp().controlToken());
+        add(found, config.mcp().liteToken());
         found.addAll(envSecrets(Path.of(config.maintenanceFile()).toAbsolutePath().getParent().resolve(".env")));
         secrets = ordered(found);
         Log.infof("Redactor: %d secret values loaded", secrets.size());

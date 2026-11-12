@@ -5,7 +5,7 @@ import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.printer.AutoQueueService;
 import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
-import com.tfyre.bambu.printer.BambuErrors;
+import com.tfyre.bambu.printer.HmsCodes;
 import com.tfyre.bambu.printer.BambuPrinter;
 import com.tfyre.bambu.printer.BambuPrinters;
 import com.tfyre.bambu.printer.BedDiffService;
@@ -556,13 +556,7 @@ public class OverviewView extends VerticalLayout {
     }
 
     private Optional<String> fault(final BambuPrinter printer) {
-        final int code = printer.getPrintError();
-        if (code != 0) {
-            return Optional.of("Error %s: %s".formatted(Integer.toHexString(code),
-                    BambuErrors.getPrinterError(code).orElse("unknown error")));
-        }
-        final List<String> hms = printer.getActiveHmsErrors();
-        return hms.isEmpty() ? Optional.empty() : Optional.of(String.join(" · ", hms));
+        return HmsCodes.problems(printer);
     }
 
     /** A verdict from before the printer's current situation is worse than no verdict. */

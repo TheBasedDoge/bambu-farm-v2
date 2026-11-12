@@ -32,16 +32,17 @@ public class McpAccessFilter {
     /** Shorter tokens are ignored: a guessable token on an endpoint that can stop prints is worse than none. */
     static final int MIN_TOKEN_LENGTH = 24;
 
+    /** READ and CONTROL work on /mcp; LITE (the lite token) only on /mcp-lite, where CONTROL also works. */
     public enum Access {
-        READ, CONTROL
+        READ, CONTROL, LITE
     }
 
     @Inject
     BambuConfig config;
 
     void onStart(@Observes final StartupEvent ev) {
-        Log.infof("MCP: read token %s, control token %s", describe(config.mcp().readToken()),
-                describe(config.mcp().controlToken()));
+        Log.infof("MCP: read token %s, control token %s, lite token %s", describe(config.mcp().readToken()),
+                describe(config.mcp().controlToken()), describe(config.mcp().liteToken()));
     }
 
     void register(@Observes final Filters filters) {
@@ -56,18 +57,22 @@ public class McpAccessFilter {
         }
         // mcp-remote looks for OAuth metadata on every start; there is none, so answer quietly instead of
         // logging a rejected request each time.
-        if (path.startsWith("/mcp/.well-known/")) {
+        if (path.startsWith("/mcp/.well-known/") || path.startsWith("/mcp-lite/.well-known/")) {
             rc.response().setStatusCode(404).end();
             return;
         }
         final Optional<String> read = usable(config.mcp().readToken());
         final Optional<String> control = usable(config.mcp().controlToken());
-        if (read.isEmpty() && control.isEmpty()) {
+        final Optional<String> lite = usable(config.mcp().liteToken());
+        final boolean litePath = isLitePath(path);
+        if (litePath ? lite.isEmpty() && control.isEmpty() : read.isEmpty() && control.isEmpty()) {
             rc.response().setStatusCode(503).putHeader("Content-Type", "text/plain")
                     .end("MCP is off: set bambu.mcp.read-token in data/.env");
             return;
         }
-        final Optional<Access> access = resolve(rc.request().getHeader("Authorization"), read, control);
+        final Optional<Access> access = litePath
+                ? resolveLite(rc.request().getHeader("Authorization"), lite, control)
+                : resolve(rc.request().getHeader("Authorization"), read, control);
         if (access.isEmpty()) {
             final String from = Optional.ofNullable(rc.request().getHeader("X-Forwarded-For"))
                     .orElseGet(() -> String.valueOf(rc.request().remoteAddress()));
@@ -77,7 +82,8 @@ public class McpAccessFilter {
         }
         // A GET without a session asks to open a server-sent-events stream before initialize. Clients probe for it
         // and fall back; the extension would answer the same 405 but log an ERROR for every probe.
-        if (HttpMethod.GET.equals(rc.request().method()) && (path.equals("/mcp") || path.equals("/mcp/"))
+        if (HttpMethod.GET.equals(rc.request().method())
+                && (path.equals("/mcp") || path.equals("/mcp/") || path.equals("/mcp-lite") || path.equals("/mcp-lite/"))
                 && rc.request().getHeader("Mcp-Session-Id") == null) {
             rc.response().setStatusCode(405).putHeader("Allow", "POST, DELETE").end();
             return;
@@ -87,7 +93,17 @@ public class McpAccessFilter {
     }
 
     static boolean isMcpPath(final String path) {
-        return path != null && (path.equals("/mcp") || path.startsWith("/mcp/"));
+        return path != null && (path.equals("/mcp") || path.startsWith("/mcp/") || isLitePath(path));
+    }
+
+    static boolean isLitePath(final String path) {
+        return path != null && (path.equals("/mcp-lite") || path.startsWith("/mcp-lite/"));
+    }
+
+    /** On /mcp-lite: the lite token, or the control token (so Claude can test the lite tools). */
+    static Optional<Access> resolveLite(final String header, final Optional<String> lite, final Optional<String> control) {
+        final Optional<Access> a = resolve(header, lite, control);
+        return a.map(x -> x == Access.READ ? Access.LITE : x);
     }
 
     /** The access a presented {@code Authorization} header grants; the control token also grants read. */

@@ -94,7 +94,10 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
             new EventDef("first_layer_issue", "AI First Layer Issue",
                     "First layer quality problem detected by AI"),
             new EventDef("error", "Printer Error",
-                    "Non-zero print error code reported by a printer"),
+                    "Non-zero print error code reported by a printer, with Bambu's text and any HMS alerts behind it"),
+            new EventDef("hms", "Printer HMS Alert",
+                    "A printer raised a fatal or serious HMS health alert without a print error (e.g. paused itself "
+                    + "mid-print) - full code, Bambu's description and the wiki link"),
             new EventDef("maintenance", "Maintenance Due",
                     "A maintenance task is overdue on a printer"),
             new EventDef("finish", "Print Finished",

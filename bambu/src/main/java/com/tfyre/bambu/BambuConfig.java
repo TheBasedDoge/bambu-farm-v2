@@ -346,6 +346,12 @@ public interface BambuConfig {
         /** Read + control (pause/stop/bed cleared/...). Separate from the read token on purpose. */
         Optional<String> controlToken();
 
+        /**
+         * For {@code /mcp-lite} only: the small tool set for local models (Open WebUI + Ollama). Its own value so
+         * it can be revoked without touching Claude's tokens; it does nothing on {@code /mcp}.
+         */
+        Optional<String> liteToken();
+
         /** host:port health_check reads the TLS certificate from - the nginx container on the compose network. */
         @WithDefault("nginx:443")
         String tlsCheck();

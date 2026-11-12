@@ -5,7 +5,7 @@ import com.tfyre.bambu.MainLayout;
 import com.tfyre.bambu.SystemRoles;
 import com.tfyre.bambu.model.Print;
 import com.tfyre.bambu.printer.BambuConst;
-import com.tfyre.bambu.printer.BambuErrors;
+import com.tfyre.bambu.printer.HmsCodes;
 import com.tfyre.bambu.printer.BambuPrinter;
 import com.tfyre.bambu.printer.BambuPrinters;
 import com.vaadin.flow.component.AttachEvent;
@@ -293,11 +293,8 @@ public class CameraView extends PushDiv implements ViewHelper, NotificationHelpe
                 root.getElement().setAttribute("data-tone", fault || failed ? "bad" : done ? "done" : paused ? "warn" : "none");
             }
 
-            if (error != 0) {
-                jobText.setText("Error [%s]: %s".formatted(Integer.toHexString(error),
-                        BambuErrors.getPrinterError(error).orElse("Unknown")));
-            } else if (fault) {
-                jobText.setText(String.join(" · ", printer.getActiveHmsErrors()));
+            if (fault) {
+                jobText.setText(HmsCodes.problems(printer).orElse(""));
             } else {
                 jobText.setText(printing || failed || done ? printer.getSubtaskName().orElse("") : "");
             }

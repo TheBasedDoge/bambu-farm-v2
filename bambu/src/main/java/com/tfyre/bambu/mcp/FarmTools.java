@@ -7,6 +7,7 @@ import com.tfyre.bambu.model.Print;
 import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
+import com.tfyre.bambu.printer.HmsCodes;
 import com.tfyre.bambu.printer.BambuPrinters;
 import com.tfyre.bambu.printer.BedClearService;
 import com.tfyre.bambu.printer.DispatchQueueService;
@@ -155,9 +156,10 @@ public class FarmTools {
 
         final int err = p.getPrintError();
         if (err != 0) {
-            m.put("printError", Integer.toHexString(err));
+            m.put("printError", HmsCodes.describeError(p.getModel(), err));
         }
-        final List<String> hms = p.getActiveHmsErrors();
+        final List<String> hms = p.getActiveHms().isEmpty() ? p.getActiveHmsErrors()
+                : p.getActiveHms().stream().map(h -> h.url().isBlank() ? h.describe() : h.describe() + " (wiki: " + h.url() + ")").toList();
         if (!hms.isEmpty()) {
             m.put("hms", hms);
         }

@@ -62,6 +62,9 @@ public class NotificationService {
 
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final Map<String, Integer> lastErrors = new HashMap<>();
+    /** Serious HMS codes per printer as of the last pass, and the ones already announced. */
+    private final Map<String, Set<String>> hmsSeen = new HashMap<>();
+    private final Map<String, Set<String>> hmsTold = new HashMap<>();
     private final Set<String> maintenanceNotified = new HashSet<>();
     private MqttClient mqtt;
 
@@ -684,22 +687,62 @@ public class NotificationService {
             return;
         }
         printers.getPrinters().forEach(printer -> {
+            final String name = printer.getName();
+            final List<HmsCodes.Hms> hms = printer.getActiveHms();
+            final Set<String> active = new HashSet<>(hms.stream().map(HmsCodes.Hms::code).toList());
+            final Set<String> seenBefore = hmsSeen.put(name, active);
+            final Set<String> told = hmsTold.computeIfAbsent(name, k -> new HashSet<>());
+            if (seenBefore == null) {
+                told.addAll(active); // already up when the app started - not news
+            }
+            told.retainAll(active); // a code that clears and comes back is news again
+
             final int error = printer.getPrintError();
-            final Integer previous = lastErrors.put(printer.getName(), error);
-            if (previous == null || previous == error || error == 0) {
+            final boolean autoRetry = AmsRetryService.isRetryable(error) && amsRetryInstance.get().isEnabled();
+            final Integer previous = lastErrors.put(name, error);
+            if (previous != null && previous != error && error != 0) {
+                // The print error with the HMS alerts that explain it: 2026-11-12 the H2D said only "Mesh bed
+                // leveling failed" while HMS 0300-2600-0001-xxxx said which sensor and why.
+                final String text = "Print error [%s]: %s".formatted(HmsCodes.errorCode(error),
+                        HmsCodes.printError(printer.getModel(), error).orElse("Unknown")) + hmsLines(hms);
+                told.addAll(active);
+                if (autoRetry) {
+                    // Auto-retry is about to deal with it, and says so with its own alert if it gives up.
+                    logOnly("error", name, text + " (auto-retry is handling it)", null);
+                    return;
+                }
+                // Attach the camera frame so the Discord/ntfy alert shows what the printer looks like right now
+                notifyEvent("error", name, text, aiServiceInstance.get().getSnapshot(name).orElse(null));
                 return;
             }
-            final String text = "Print error [%s]: %s".formatted(
-                    Integer.toHexString(error), BambuErrors.getPrinterError(error).orElse("Unknown"));
-            if (AmsRetryService.isRetryable(error) && amsRetryInstance.get().isEnabled()) {
-                // Auto-retry is about to deal with it, and says so with its own alert if it gives up.
-                logOnly("error", printer.getName(), text + " (auto-retry is handling it)", null);
+            if (autoRetry || seenBefore == null) {
+                told.addAll(active);
                 return;
             }
-            // Attach the camera frame so the Discord/ntfy alert shows what the printer looks like right now
-            notifyEvent("error", printer.getName(), text,
-                    aiServiceInstance.get().getSnapshot(printer.getName()).orElse(null));
+            // A serious HMS alert without a new print error (a pause mid-print, a sensor fault). Told once per
+            // code, after two passes in a row, so an error that lands a few seconds later goes out as one alert.
+            final List<HmsCodes.Hms> fresh = hms.stream()
+                    .filter(h -> seenBefore.contains(h.code()) && !told.contains(h.code()))
+                    .toList();
+            if (fresh.isEmpty()) {
+                return;
+            }
+            fresh.forEach(h -> told.add(h.code()));
+            notifyEvent("hms", name, "Health alert (%s):".formatted(printer.getGCodeState().getDescription()) + hmsLines(fresh),
+                    aiServiceInstance.get().getSnapshot(name).orElse(null));
         });
+    }
+
+    /** One line per HMS alert - full code and Bambu's text - each followed by its wiki link. */
+    static String hmsLines(final List<HmsCodes.Hms> hms) {
+        final StringBuilder b = new StringBuilder();
+        for (final HmsCodes.Hms h : hms) {
+            b.append('\n').append(h.describe());
+            if (!h.url().isBlank()) {
+                b.append('\n').append(h.url());
+            }
+        }
+        return b.toString();
     }
 
     @Scheduled(every = "6h")

@@ -21,6 +21,8 @@ public class ControlToolFilter implements ToolFilter {
         if (!ControlTools.NAMES.contains(tool.name())) {
             return true;
         }
-        return audit.caller().map(a -> a == McpAccessFilter.Access.CONTROL).orElse(true);
+        // Only read-token callers lose them. LITE can't reach /mcp at all (and the lite server's tools have names of
+        // their own), so for it there is nothing to hide.
+        return audit.caller().map(a -> a != McpAccessFilter.Access.READ).orElse(true);
     }
 }

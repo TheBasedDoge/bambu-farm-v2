@@ -9,7 +9,7 @@ import com.tfyre.bambu.model.Print;
 import com.tfyre.bambu.model.Tray;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuConst.Speed;
-import com.tfyre.bambu.printer.BambuErrors;
+import com.tfyre.bambu.printer.HmsCodes;
 import com.tfyre.bambu.printer.Filament;
 import com.tfyre.bambu.security.SecurityUtils;
 import com.tfyre.bambu.printer.BambuPrinters;
@@ -532,9 +532,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                         final int severity = (int) ((h.getCode() >> 16) & 0xFFFFL);
                         return severity <= 2 && severity > 0;
                     })
-                    .map(h -> BambuErrors.getPrinterError((int) h.getAttr())
-                            .filter(s -> !s.isBlank())
-                            .orElse("HMS 0x%08X".formatted(h.getAttr())))
+                    .map(h -> HmsCodes.hms(printer.getModel(), h.getAttr(), h.getCode()).describe())
                     .distinct()
                     .toList();
             if (serious.isEmpty()) {
@@ -598,9 +596,8 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
             errorString = "";
         } else {
             hasError = true;
-            errorString = "\n\nPrint Error [%d / %s]: %s".formatted(
-                    lastError, Integer.toHexString(lastError),
-                    BambuErrors.getPrinterError(lastError).orElseGet(() -> "No Translation"));
+            errorString = "\n\nPrint Error [%s]: %s".formatted(HmsCodes.errorCode(lastError),
+                    HmsCodes.printError(printer.getModel(), lastError).orElse("No Translation"));
         }
 
         printerInfo = "Last Updated: %s%s".formatted(DTF.format(message.lastUpdated()), errorString);

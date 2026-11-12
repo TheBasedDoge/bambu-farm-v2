@@ -877,17 +877,11 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     }
 
     /**
-     * The printer's own error text, if any - a print error code resolved through {@link BambuErrors}, else an
+     * The printer's own error text, if any - a print error code resolved through Bambu's database, plus any
      * active HMS alert. Without this a paused printer with a jammed AMS is indistinguishable from a paused one.
      */
     private Optional<String> problems(final BambuPrinter printer) {
-        final int code = printer.getPrintError();
-        if (code != 0) {
-            return Optional.of("Error %s: %s".formatted(Integer.toHexString(code),
-                    com.tfyre.bambu.printer.BambuErrors.getPrinterError(code).orElse("unknown error")));
-        }
-        final List<String> hms = printer.getActiveHmsErrors();
-        return hms.isEmpty() ? Optional.empty() : Optional.of(String.join(" · ", hms));
+        return com.tfyre.bambu.printer.HmsCodes.problems(printer);
     }
 
     private static Div errorBanner(final String message) {

@@ -106,3 +106,51 @@ Estimate: steps 1-2 about a day; touches no existing behaviour (new classes, one
   (commit-msg.txt covers the batch). Check `git log` first.
 - Repo editing rules from AGENT-HANDOFF.md apply (CRLF files list, no git writes from the sandbox, push only to
   `fork`).
+
+## Next: start_print + local models (planned 2026-11-05; start_print BUILT 2026-11-10 in PrintTools - queues via GcodeMappingQueuer.queuePart + auto-start bed check rather than a separate synchronous start path; /mcp-lite BUILT same day in LiteTools - host = Open WebUI native MCP (>= v0.6.31, Streamable HTTP, Bearer); Ollama 0.35.1 has only gemma3:12b, which has no 'tools' capability - a tool-calling model must be pulled; GPU holds ~7.9 GB for gemma3, so a second model will swap with it)
+
+Asked by Vishal: "MCP can easily and directly start a print", and "hook MCP into Ollama so a simpler model can
+use it". Context: on 11-05 starting one Mk8 cupholder took ~20 browser steps on Batch Print because no tool could.
+`reprint_part` (open-order reprints) is written in ControlTools but UNCOMMITTED - ship it with this.
+
+### 1. `start_print` (control token)
+- Args: `file` (fuzzy: title/path fragment, e.g. "mk8 cupholder"), `printer` (name or `any`, default any),
+  `plate` (default 1), `copies` (default 1, max 4), `when` = `now` | `queue` (default now), `confirm`.
+- Resolution: LibraryService.parts() match -> exactly one file or return the candidates (no guessing). Check
+  LibraryFileInfo.mismatch against the effective model (printer().getModel(), never config().model()) - refuse a
+  P1 file on the H2D and vice versa; with `any`, prefer the family the file was sliced for.
+- Tray mapping: reuse the code Batch Print uses for the Filament column (file's filament type -> loaded AMS tray,
+  e.g. PETG -> A1). Refuse if no tray has that type; say which printers do.
+- `printer=any`: free (isReady/FINISH), bed cleared or bed check passes, filament loaded, auto-start opted in;
+  pick like the dispatcher's next-free logic. Report which printer and why.
+- `when=now`: run the same AI bed check as auto-start, synchronously (~25 s), then start through the same
+  PrintQueueService path as Batch Print's "Print now" (SD-card reuse, plate, ams mapping, bed levelling on).
+  If the bed check fails: don't start, return the verdict + frame id. `when=queue`: same as "Add to queue".
+- Without confirm: "would start <file> plate N on <printer> (tray A1 PETG, ~3h18m, 131 g) after a bed check".
+- mcp_action notification + audit as the other control tools. Find the Batch Print handlers first
+  (BatchPrintView "Print now"/"Add to queue") and call the same service methods - no new printer commands.
+- Also useful while there: `list_library` (read) = library_file query without needing a guess; and make
+  `farm_status` say per printer "can take a P1 PETG job now: yes/no (why)".
+
+### 2. Local models through Ollama
+- Ollama itself does not speak MCP; it needs an MCP *host* in front. Candidates (verify current versions/flags
+  before choosing): Home Assistant Assist with the Ollama conversation agent + HA's MCP client integration (fits
+  his HA setup: voice "start a Mk8 cupholder on any printer"); Open WebUI (MCP via its tool servers / mcpo
+  proxy); a CLI host such as mcphost/ollmcp for testing. Check that the chosen host can send our static
+  `Authorization: Bearer` header (or put a tiny local proxy that adds it).
+- Model: needs Ollama tool-calling support. gemma3:12b (current AI-check model) is believed NOT to support
+  tools in Ollama - verify; candidates qwen3 8b/14b, llama3.1 8b, mistral-small. Must fit the same GPU next to
+  gemma3 (or swap on demand - Ollama unloads idle models).
+- Small models do badly with 23 tools and big JSON. Add a second MCP server on the same app
+  (quarkus-mcp `@McpServer("lite")`, root path `/mcp-lite`) with ~6 tools: `farm_summary` (plain sentences, not
+  JSON), `orders_summary`, `start_print`, `bed_cleared` (camera check kept, never skip), `pause_print`,
+  `notifications_recent`. Short descriptions, flat string/int args, enums spelled out, outputs < 1 KB.
+- Safety for small models: they will happily pass confirm=true. On /mcp-lite: no stop_print/remove_pool_job at
+  all; start_print only `when=queue` or `now` with the bed check enforced; its own token (bambu.mcp.lite-token)
+  so it can be revoked separately; every action still notifies (Agent Action) so a human sees it.
+- Test plan: script 10 phrasings ("what's printing", "start a mk8 cupholder", "is anything waiting", "pause
+  P1S") against the chosen model via the host; count correct tool + args; keep the eval prompts in docs/.
+
+### Order of work
+1. start_print + list_library on /mcp (commit with reprint_part), deploy, try from Claude.
+2. /mcp-lite server + lite token. 3. Pick host + tool-capable model, run the 10-phrase test. 4. HA voice hookup.

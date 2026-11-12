@@ -77,6 +77,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     private ProducerTemplate producerTemplate;
     private int printerError;
     private List<String> activeHmsErrors = List.of();
+    private List<HmsCodes.Hms> activeHms = List.of();
     private volatile java.util.Map<Integer, String> amsTrayTypes = java.util.Map.of();
     /** Tray colours as the printer reports them - 8-digit RRGGBBAA hex. Kept in step with {@link #amsTrayTypes}. */
     private volatile java.util.Map<Integer, String> amsTrayColors = java.util.Map.of();
@@ -115,16 +116,15 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
         updateAmsDry(print);
         // Mirrors the dashboard's HMS badge filter: severity 1 (fatal) or 2 (serious) only. Recomputed from
         // this message's hms list (not sticky) - matches the existing, already-working badge behaviour.
-        activeHmsErrors = print.getHmsList().stream()
+        activeHms = print.getHmsList().stream()
                 .filter(h -> {
                     final int severity = (int) ((h.getCode() >> 16) & 0xFFFFL);
                     return severity <= 2 && severity > 0;
                 })
-                .map(h -> BambuErrors.getPrinterError((int) h.getAttr())
-                        .filter(s -> !s.isBlank())
-                        .orElse("HMS 0x%08X".formatted(h.getAttr())))
+                .map(h -> HmsCodes.hms(getModel(), h.getAttr(), h.getCode()))
                 .distinct()
                 .toList();
+        activeHmsErrors = activeHms.stream().map(HmsCodes.Hms::describe).toList();
         if (print.hasTotalLayerNum()) {
             totalLayerNum = print.getTotalLayerNum();
         }
@@ -450,6 +450,11 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
     @Override
     public List<String> getActiveHmsErrors() {
         return activeHmsErrors;
+    }
+
+    @Override
+    public List<HmsCodes.Hms> getActiveHms() {
+        return activeHms;
     }
 
     @Override

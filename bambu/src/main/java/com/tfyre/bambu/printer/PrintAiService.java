@@ -1136,9 +1136,7 @@ public class PrintAiService {
     private Optional<String> buildContext(final BambuPrinter printer) {
         final List<String> issues = new ArrayList<>(printer.getActiveHmsErrors());
         if (printer.getPrintError() != 0) {
-            BambuErrors.getPrinterError(printer.getPrintError())
-                    .filter(s -> !s.isBlank())
-                    .ifPresent(issues::add);
+            HmsCodes.printError(printer.getModel(), printer.getPrintError()).ifPresent(issues::add);
         }
         return issues.isEmpty() ? Optional.empty() : Optional.of(String.join("; ", issues));
     }

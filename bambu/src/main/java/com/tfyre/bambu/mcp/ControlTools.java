@@ -30,7 +30,7 @@ public class ControlTools {
 
     /** Tool names, for {@link ControlToolFilter}. */
     static final Set<String> NAMES = Set.of("pause_print", "resume_print", "stop_print", "bed_cleared", "set_light",
-            "set_auto_start", "retry_pool_job", "remove_pool_job", "retry_auto_queue", "label_frame");
+            "set_auto_start", "retry_pool_job", "remove_pool_job", "retry_auto_queue", "label_frame", "reprint_part", "start_print");
 
     @Inject
     BambuPrinters printers;
@@ -46,6 +46,12 @@ public class ControlTools {
     EbayOrderPollingService ebay;
     @Inject
     NotificationService notifications;
+    @Inject
+    com.tfyre.bambu.printer.EtsyMappingService etsyMappings;
+    @Inject
+    com.tfyre.bambu.printer.EbayMappingService ebayMappings;
+    @Inject
+    com.tfyre.bambu.printer.OrderTrackingService tracking;
     @Inject
     McpAudit audit;
 
@@ -282,6 +288,74 @@ public class ControlTools {
             }
             return done(market, "re-ran auto-queue for %s order %s - it was queued".formatted(market, orderId));
         }));
+    }
+
+    @Tool(name = "reprint_part", description = """
+            Prints extra copies of one part of an open order - e.g. a piece came out bad. Adds them to the dispatch \
+            pool for the order (same file, plate, tray and filament as its mapping), so the dispatcher starts them \
+            on the first eligible printer with a clear bed, through the usual AI bed check, and the order shows \
+            the extra pieces until they are printed. Without confirm=true it only reports what it would queue. \
+            Needs the control token.""",
+            annotations = @Tool.Annotations(title = "Reprint part", readOnlyHint = false, destructiveHint = false,
+                    idempotentHint = false, openWorldHint = false))
+    ToolResponse reprintPart(
+            @ToolArg(description = "etsy or ebay") final String market,
+            @ToolArg(description = "Order id (Etsy receipt number or eBay order id)") final String orderId,
+            @ToolArg(description = "Text in the part's file name, e.g. 6_Inch; may be omitted when the order has one part", required = false) final String file,
+            @ToolArg(description = "How many extra prints (1-4)", required = false, defaultValue = "1") final int copies,
+            @ToolArg(description = "true to actually queue them", required = false, defaultValue = "false") final boolean confirm) {
+        return audit.run("reprint_part", McpAudit.args("market", market, "orderId", orderId, "file", file, "copies", copies,
+                "confirm", confirm), () -> control(() -> {
+                    if (copies < 1 || copies > 4) {
+                        return ToolResponse.error("copies must be 1-4");
+                    }
+                    final String id = orderId == null ? "" : orderId.trim();
+                    final java.util.List<com.tfyre.bambu.printer.MappingPart> parts = new java.util.ArrayList<>();
+                    final String label;
+                    if ("etsy".equalsIgnoreCase(market)) {
+                        final Optional<com.tfyre.bambu.printer.EtsyApiClient.Receipt> r = etsy.getReceipts().stream()
+                                .filter(x -> String.valueOf(x.receiptId()).equals(id)).findFirst();
+                        if (r.isEmpty()) {
+                            return ToolResponse.error("no open Etsy order " + id);
+                        }
+                        r.get().transactions().forEach(t -> etsyMappings.find(t.listingId(), t.variations())
+                                .ifPresent(e -> parts.addAll(e.parts())));
+                        label = com.tfyre.bambu.printer.OrderBoardService.label(r.get());
+                    } else if ("ebay".equalsIgnoreCase(market)) {
+                        final Optional<com.tfyre.bambu.printer.EbayApiClient.Order> o = ebay.getOrders().stream()
+                                .filter(x -> x.orderId().equals(id)).findFirst();
+                        if (o.isEmpty()) {
+                            return ToolResponse.error("no open eBay order " + id);
+                        }
+                        o.get().lineItems().forEach(li -> ebayMappings.find(li.listingKey(), li.variationAspects())
+                                .ifPresent(e -> parts.addAll(e.parts())));
+                        label = com.tfyre.bambu.printer.OrderBoardService.label(o.get());
+                    } else {
+                        return ToolResponse.error("market must be etsy or ebay");
+                    }
+                    final java.util.List<com.tfyre.bambu.printer.MappingPart> matching = parts.stream()
+                            .filter(p -> p.path() != null && (file == null || file.isBlank()
+                                    || p.path().toLowerCase().contains(file.trim().toLowerCase())))
+                            .distinct().toList();
+                    if (matching.size() != 1) {
+                        return ToolResponse.error("%d mapped parts match '%s' in that order: %s".formatted(matching.size(),
+                                file == null ? "" : file, String.join(" | ", OrderTools.parts(parts))));
+                    }
+                    final com.tfyre.bambu.printer.MappingPart part = matching.get(0);
+                    final String what = "%d extra print%s of %s for %s".formatted(copies, copies == 1 ? "" : "s",
+                            OrderTools.part(part), label);
+                    if (!confirm) {
+                        return preview("queue " + what);
+                    }
+                    final String m = market.toLowerCase();
+                    final com.tfyre.bambu.printer.OrderRef ref = new com.tfyre.bambu.printer.OrderRef(m, id, label);
+                    for (int i = 0; i < copies; i++) {
+                        dispatch.enqueue(part, ref);
+                    }
+                    tracking.addExpectedJobs(m, id, copies);
+                    dispatch.passNow();
+                    return done(null, "queued " + what + " - it starts on the first free printer with a clear bed");
+                }));
     }
 
     // ---------------------------------------------------------------------------------------------------------
