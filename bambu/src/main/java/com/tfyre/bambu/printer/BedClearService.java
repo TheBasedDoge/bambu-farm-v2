@@ -31,6 +31,8 @@ public class BedClearService {
 
     @Inject
     BambuPrinters printers;
+    @Inject
+    FaultHoldService faultHold;
 
     /** Marked clear and not printed since. Drives the display only. */
     private final Map<String, Instant> cleared = new ConcurrentHashMap<>();
@@ -60,6 +62,8 @@ public class BedClearService {
         }
         final Instant now = Instant.now();
         cleared.put(printerName, now);
+        // "I have dealt with this printer" - also the release for a hardware-fault hold.
+        faultHold.release(printerName, by);
         if (skipCameraCheck) {
             pass.put(printerName, now);
             Log.infof("BedClearService: %s: bed marked clear by hand (%s) - the next automatic start within %d min "

@@ -98,6 +98,8 @@ public class DispatchQueueService {
     @Inject
     AutoStartService autoStartService;
     @Inject
+    FaultHoldService faultHold;
+    @Inject
     AutoQueueService autoQueueService;
     @Inject
     OrderTrackingService tracking;
@@ -514,6 +516,7 @@ public class DispatchQueueService {
         final Instant now = Instant.now();
         return printers.getPrintersDetail().stream()
                 .filter(pd -> autoQueueService.isPrinterEnabled(pd.name()))
+                .filter(pd -> !faultHold.isHeld(pd.name()))
                 .filter(pd -> !inFlight.contains(pd.name()))
                 .filter(pd -> pd.printer().getGCodeState().isReady() && !pd.printer().isBlocked())
                 .filter(pd -> queueService.size(pd.name()) == 0)

@@ -67,6 +67,7 @@ public class EvalTools {
             final String id = AiTools.frameId(rec.get());
             if (HistoryTools.blank(label)) {
                 labels.set(id, null, null, null);
+                labels.drop(id);
                 return ToolResponse.success("removed the label on " + id);
             }
             final Optional<String> truth = AiLabels.truthOf(label);
@@ -74,6 +75,7 @@ public class EvalTools {
                 return ToolResponse.error("label must be problem or ok (or failure / missed / not_clear / false_alarm / clear)");
             }
             labels.set(id, truth.get(), label.trim(), note);
+            labels.keep(rec.get(), ai.frameOf(rec.get())); // outlives the history's rotation, so eval_prompt can use it
             final String recorded = AiTools.verdictOf(rec.get());
             final boolean modelRight = "good".equals(recorded) ? "ok".equals(truth.get())
                     : "problem".equals(recorded) && "problem".equals(truth.get());
@@ -124,7 +126,12 @@ public class EvalTools {
                 return ToolResponse.error("give frameIds, or a checkType to pick labelled frames of");
             }
             final int n = Math.max(1, Math.min(MAX_FRAMES, limit));
-            for (final PrintAiService.CheckRecord r : ai.getHistory()) {
+            // Labelled frames still in the history, then the kept copies of ones that have rotated out.
+            final List<PrintAiService.CheckRecord> pool = new ArrayList<>(ai.getHistory());
+            final java.util.Set<String> seen = new java.util.HashSet<>();
+            pool.forEach(r -> seen.add(AiTools.frameId(r)));
+            labels.allKept().stream().filter(r -> !seen.contains(AiTools.frameId(r))).forEach(pool::add);
+            for (final PrintAiService.CheckRecord r : pool) {
                 if (checkType.equalsIgnoreCase(r.checkType()) && labels.get(AiTools.frameId(r)).isPresent()) {
                     picked.add(r);
                     if (picked.size() >= n) {

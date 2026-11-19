@@ -296,6 +296,9 @@ public class OllamaService {
             + "|(?:mess|mass|ball|clump|blob|glob|wad)\\s+of\\s+(?:filament|plastic|material)"
             + "|blobs?|globs?|clumps?"
             + "|came\\s+off\\s+the\\s+(?:plate|bed)"
+            // lifting: "the corner appears lifted", "edge curling up", "warped base" - but "no warping" is excused
+            + "|(?:corners?|edges?|base|bottom)\\s+(?:\\w+\\s+){0,3}?(?:lifted|lifting|curl(?:ed|ing)\\s+up|peel(?:ed|ing)|warped|warping)"
+            + "|warp(?:ed|ing)|lifted\\s+off|curl(?:ed|ing)\\s+up"
             + "|dragged\\s+(?:around|across))\\b");
 
     /**

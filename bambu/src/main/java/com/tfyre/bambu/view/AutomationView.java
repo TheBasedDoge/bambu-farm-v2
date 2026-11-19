@@ -95,6 +95,8 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
     @Inject
     SimulationService simulation;
     @Inject
+    com.tfyre.bambu.printer.BedWaitingService bedWaiting;
+    @Inject
     com.tfyre.bambu.printer.BedDiffService bedDiff;
     @Inject
     com.tfyre.bambu.printer.BedReferenceService bedReference;
@@ -467,7 +469,17 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
             showNotification(dispatchQueue.dispatchNow());
             forceRefresh();
         });
-        controls.add(aqBtn, aiBtn, asBtn, rqBtn, arBtn, simBtn, dispatchBtn);
+        // The bed-waiting escalation is urgent (@here); its quiet window is when it holds off.
+        final String quiet = bedWaiting.describeQuietWindow();
+        key.append(quiet).append('|');
+        final Button quietBtn = new Button("off".equals(quiet) ? "Bed Reminders: no quiet hours" : "Bed Reminders: quiet " + quiet,
+                new Icon(VaadinIcon.BELL));
+        quietBtn.addClassName("automation-toggle");
+        quietBtn.addThemeVariants(ButtonVariant.LUMO_LARGE);
+        quietBtn.setTooltipText("A printer finished 30+ min with its bed not cleared while order jobs wait gets an urgent "
+                + "alert, repeated every 2 h. Not during these hours - it goes out when they end. Click to change.");
+        quietBtn.addClickListener(e -> openQuietWindow());
+        controls.add(aqBtn, aiBtn, asBtn, rqBtn, arBtn, simBtn, dispatchBtn, quietBtn);
         strip.add(controls);
 
         // Headline numbers: the four things worth knowing before reading anything else on the page.
@@ -838,6 +850,40 @@ public class AutomationView extends VerticalLayout implements NotificationHelper
      * port-6000 JPEG feed, so the image is re-pointed at the newest frame on every tick while the dialog is open.
      * A single still would be a freeze-frame, which is not what clicking a camera should give you.
      */
+    /** Quiet hours for the bed-waiting escalation. Both empty (or the same time) = no quiet hours. */
+    private void openQuietWindow() {
+        final com.vaadin.flow.component.dialog.Dialog dialog = new com.vaadin.flow.component.dialog.Dialog();
+        dialog.setHeaderTitle("Bed reminder quiet hours");
+        final Span help = new Span("The \"bed not cleared while orders wait\" alert pings @here. Inside these hours it "
+                + "holds off and goes out when they end. Clear both to have no quiet hours.");
+        help.getStyle().set("font-size", "var(--lumo-font-size-s)").set("display", "block").set("max-width", "360px");
+        final com.vaadin.flow.component.timepicker.TimePicker from = new com.vaadin.flow.component.timepicker.TimePicker("From");
+        final com.vaadin.flow.component.timepicker.TimePicker until = new com.vaadin.flow.component.timepicker.TimePicker("Until");
+        for (final com.vaadin.flow.component.timepicker.TimePicker t : List.of(from, until)) {
+            t.setStep(Duration.ofMinutes(15));
+            t.setClearButtonVisible(true);
+            t.setWidth("140px");
+        }
+        from.setValue(bedWaiting.getQuietFrom().orElse(null));
+        until.setValue(bedWaiting.getQuietUntil().orElse(null));
+        final Div row = flexRow();
+        row.add(from, until);
+        dialog.add(new VerticalLayout(help, row));
+        final Button save = new Button("Save", e -> {
+            if ((from.getValue() == null) != (until.getValue() == null)) {
+                showError("Set both times, or clear both for no quiet hours.");
+                return;
+            }
+            bedWaiting.setQuietWindow(from.getValue(), until.getValue());
+            showNotification("Bed reminders: quiet " + bedWaiting.describeQuietWindow());
+            dialog.close();
+            forceRefresh();
+        });
+        save.addThemeVariants(ButtonVariant.LUMO_PRIMARY);
+        dialog.getFooter().add(new Button("Cancel", e -> dialog.close()), save);
+        dialog.open();
+    }
+
     private void openCamera(final BambuPrinters.PrinterDetail detail) {
         final com.vaadin.flow.component.dialog.Dialog dialog = new com.vaadin.flow.component.dialog.Dialog();
         dialog.setHeaderTitle(detail.name());

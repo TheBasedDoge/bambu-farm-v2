@@ -121,6 +121,7 @@ public class BambuPrinterImpl implements BambuPrinter, Processor {
                     final int severity = (int) ((h.getCode() >> 16) & 0xFFFFL);
                     return severity <= 2 && severity > 0;
                 })
+                .filter(h -> !HmsCodes.isNotice(h.getAttr(), h.getCode()))
                 .map(h -> HmsCodes.hms(getModel(), h.getAttr(), h.getCode()))
                 .distinct()
                 .toList();

@@ -65,6 +65,16 @@ class HmsCodesTest {
     }
 
     @Test
+    void amsDryingNoticesAreNotFaults() {
+        assertTrue(HmsCodes.isNotice(0x07002500L, 0x00020001L));  // AMS A drying on printer power - the H2D on 11-12
+        assertTrue(HmsCodes.isNotice(0x07032500L, 0x00020001L));  // AMS D
+        assertTrue(HmsCodes.isNotice(0x18002500L, 0x00020001L));  // AMS HT A
+        assertTrue(HmsCodes.isNotice(0x07009600L, 0x00020002L));  // too cold to dry well
+        assertFalse(HmsCodes.isNotice(0x07009600L, 0x00010001L)); // drying thermal runaway - very much a fault
+        assertFalse(HmsCodes.isNotice(0x03002600L, 0x00010008L)); // the eddy sensor
+    }
+
+    @Test
     void notificationListsEachAlertWithItsLink() {
         final String lines = NotificationService.hmsLines(List.of(HmsCodes.hms(H2D, 0x03002600L, 0x00010008L)));
         assertTrue(lines.startsWith("\nHMS 0300-2600-0001-0008: "), lines);

@@ -2047,6 +2047,31 @@ img:fullscreen {
     display: none;
 }
 
+/* Folded away by the button at the right of the top bar (OverviewView.wireRailToggle). */
+.wall[data-rail-collapsed] .wall-stage-area {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.wall[data-rail-collapsed] .wall-rail {
+    display: none;
+}
+
+.wall-rail-toggle {
+    flex: none;
+    cursor: pointer;
+    user-select: none;
+    font-size: calc(var(--wall-u) * 1.4);
+    line-height: 1;
+    padding: calc(var(--wall-u) * 0.4) calc(var(--wall-u) * 0.6);
+    border-radius: calc(var(--wall-u) * 0.5);
+    color: var(--lumo-tertiary-text-color);
+}
+
+.wall-rail-toggle:hover {
+    background: var(--lumo-contrast-10pct);
+    color: var(--lumo-body-text-color);
+}
+
 /* The tiles are positioned by the layout script (OverviewView.installDisplayScripts), absolutely, so that
    enlarging one never moves it in the DOM - the H2D tile holds a live stream that reloads if re-parented. */
 .wall-printers {

@@ -2,6 +2,7 @@ package com.tfyre.servlet;
 
 import com.tfyre.bambu.BambuConfig;
 import com.tfyre.bambu.SystemRoles;
+import com.tfyre.bambu.security.LoginThrottle;
 import com.tfyre.bambu.security.RememberMeService;
 import io.quarkus.elytron.security.common.BcryptUtil;
 import io.quarkus.logging.Log;
@@ -39,6 +40,8 @@ public class TFyreIdentityProvider implements IdentityProvider<UsernamePasswordA
     BambuConfig config;
     @Inject
     RememberMeService rememberMeService;
+    @Inject
+    LoginThrottle throttle;
 
     private final Map<String, User> map = new HashMap<>();
 
@@ -76,18 +79,27 @@ public class TFyreIdentityProvider implements IdentityProvider<UsernamePasswordA
             final char[] passwordChars = request.getPassword().getPassword();
             final User user = map.get(username);
 
-            // 1. Normal username + password check
-            if (user != null && passwordValid(user.password(), passwordChars)) {
-                return buildIdentity(request.getUsername(), user.role());
-            }
-
-            // 2. Remember-me token check (token passed as the "password" field)
+            // 1. Remember-me token check (token passed as the "password" field). First, and not subject to the
+            //    login slowdown: a 256-bit token can't be guessed, and a lockout someone else triggers must not
+            //    log the owner's remembered devices out.
             final String tokenCandidate = new String(passwordChars);
             if (user != null && rememberMeService.isValidToken(username, tokenCandidate)) {
                 Log.debugf("TFyreIdentityProvider: remember-me auto-login for %s", username);
                 return buildIdentity(request.getUsername(), user.role());
             }
 
+            // 2. Locked by the login slowdown: refused even with the right password, unchecked and uncounted.
+            if (throttle.lockedFor(username).isPresent()) {
+                throw new AuthenticationFailedException();
+            }
+
+            // 3. Normal username + password check
+            if (user != null && passwordValid(user.password(), passwordChars)) {
+                throttle.succeeded(username);
+                return buildIdentity(request.getUsername(), user.role());
+            }
+
+            throttle.failed(username);
             throw new AuthenticationFailedException();
         });
     }

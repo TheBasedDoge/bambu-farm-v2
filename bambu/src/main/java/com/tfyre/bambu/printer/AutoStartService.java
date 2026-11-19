@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
@@ -65,6 +66,8 @@ public class AutoStartService {
     PrintAiService aiService;
     @Inject
     BedClearService bedClear;
+    @Inject
+    FaultHoldService faultHold;
     @Inject
     NotificationService notificationService;
 
@@ -145,6 +148,11 @@ public class AutoStartService {
         Log.infof("AutoStartService: %s: auto-start %s", printerName, value ? "enabled" : "disabled");
     }
 
+    /** When the printer entered its current state (as seen since the app started). */
+    public Optional<Instant> stateSince(final String printerName) {
+        return Optional.ofNullable(stateSince.get(printerName));
+    }
+
     /** Human-readable status for the /print-queue page, e.g. "blocked: bed not clear (12:03)". */
     public String getStatus(final String printerName) {
         if (!isGloballyEnabled()) {
@@ -178,6 +186,10 @@ public class AutoStartService {
                 return; // master switch off - nothing auto-starts, per-printer opt-ins preserved
             }
             if (!isEnabled(name)) {
+                return;
+            }
+            if (faultHold.isHeld(name)) {
+                lastStatus.put(name, "held: hardware fault - press Bed cleared once it is fixed");
                 return;
             }
             if (inFlight.contains(name)) {

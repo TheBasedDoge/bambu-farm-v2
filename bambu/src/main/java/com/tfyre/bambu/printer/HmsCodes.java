@@ -112,6 +112,62 @@ public final class HmsCodes {
         return parts.isEmpty() ? Optional.empty() : Optional.of(String.join(" · ", parts));
     }
 
+    /**
+     * HMS entries Bambu files as "serious" that are only notices, for any AMS unit (07xx) or AMS HT (18xx):
+     * <ul>
+     * <li>xx-2500-0002-0001 "AMS A uses printer power for drying during loading/printing ... connect a power
+     * adapter" - up whenever an H2D dries during a print (2026-11-12, it put the H2D in red on the farm status
+     * and raised an HMS alert mid-print)</li>
+     * <li>xx-9600-0002-0002 "Environmental temperature is too low, which will affect the drying capability"</li>
+     * </ul>
+     */
+    public static boolean isNotice(final long attr, final long code) {
+        final long module = (attr >>> 24) & 0xFF;
+        if (module != 0x07 && module != 0x18) {
+            return false;
+        }
+        final long part = attr & 0xFFFF;
+        final long c = code & 0xFFFFFFFFL;
+        return (part == 0x2500 && c == 0x00020001L) || (part == 0x9600 && c == 0x00020002L);
+    }
+
+    /**
+     * Print errors in the toolhead / motion module's "task stopped" class (0300-4xxx) that a retry will not fix:
+     * homing, bed leveling, nozzle offset / presence, fans, motors, calibration. Excludes the ones that clear on
+     * their own - a cancel, a hot nozzle or chamber, an open door, AMS drying, a communication timeout.
+     */
+    private static final java.util.Set<Integer> TRANSIENT_0300_4 = java.util.Set.of(
+            0x03004001, // timed out waiting for the nozzle to cool before homing
+            0x0300400C, // task was cancelled
+            0x03004013, // AMS drying
+            0x0300404B, // door or top cover open
+            0x0300404D, // too hot - wait
+            0x03004090); // command timed out (communication)
+
+    static boolean isHardwareError(final int code) {
+        return (code >>> 16) == 0x0300 && ((code >>> 12) & 0xF) == 0x4 && !TRANSIENT_0300_4.contains(code);
+    }
+
+    /** A fatal HMS alert from the toolhead / motion module (0300-xxxx, severity 1). */
+    static boolean isHardwareHms(final Hms h) {
+        return h.severity() == 1 && h.code().startsWith("0300-");
+    }
+
+    /**
+     * Why this printer's failure needs hands rather than a retry, or empty when a retry may work: a hardware
+     * print error, else a fatal toolhead / motion HMS alert.
+     */
+    public static Optional<String> hardwareFault(final BambuPrinter p) {
+        final int code = p.getPrintError();
+        if (code != 0 && isHardwareError(code)) {
+            final List<String> parts = new ArrayList<>();
+            parts.add(describeError(p.getModel(), code));
+            p.getActiveHms().stream().map(Hms::describe).forEach(parts::add);
+            return Optional.of(String.join(" · ", parts));
+        }
+        return p.getActiveHms().stream().filter(HmsCodes::isHardwareHms).findFirst().map(Hms::describe);
+    }
+
     // ------------------------------------------------------------------------------------------------------------
 
     static String version(final String dev) {

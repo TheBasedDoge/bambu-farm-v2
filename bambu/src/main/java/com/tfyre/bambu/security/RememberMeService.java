@@ -200,7 +200,7 @@ public class RememberMeService {
      */
     public static final String SET_COOKIE_JS =
             "document.cookie = '" + COOKIE_NAME + "=' + encodeURIComponent($0)"
-            + " + '; path=/; max-age=" + MAX_AGE_SECONDS + "; SameSite=Strict'";
+            + " + '; path=/; max-age=" + MAX_AGE_SECONDS + "; SameSite=Strict; Secure'";
 
     /**
      * JavaScript expression that clears the remember-me cookie from the browser.

@@ -90,6 +90,8 @@ public class PrintQueueService {
     /** Lazy to avoid an eager circular reference (DispatchQueueService injects this service). */
     @Inject
     jakarta.enterprise.inject.Instance<DispatchQueueService> dispatchInstance;
+    @Inject
+    FaultHoldService faultHold;
 
     private final Map<String, List<QueueEntry>> data = new HashMap<>();
     private boolean dirty;
@@ -294,6 +296,12 @@ public class PrintQueueService {
             retryCounts.remove(key);
             return false;
         }
+        // A hardware fault is not retried: the same job on the same broken printer fails the same way (the H2D's
+        // bed leveling, 2026-11-12). Hold the printer for a person; the job goes back to its order's pool.
+        final Optional<String> hardware = printers.getPrinter(job.printer()).flatMap(HmsCodes::hardwareFault);
+        if (hardware.isPresent()) {
+            return holdForFault(job, started.original(), key, hardware.get());
+        }
         if (!autoQueueInstance.get().isAutoRequeueEnabled()) {
             return false;
         }
@@ -313,6 +321,34 @@ public class PrintQueueService {
                 "Print %s: %s - automatically requeued for one retry (bed-clear gate still applies)"
                         .formatted(job.result().toLowerCase(), job.file()));
         return true;
+    }
+
+    /**
+     * @return true when the job is still going to be printed (back in the pool, or first in this printer's queue
+     *         for when it is released), so its order keeps expecting it
+     */
+    private boolean holdForFault(final PrintHistoryService.PrintJob job, final QueueEntry entry, final String key,
+            final String reason) {
+        retryCounts.remove(key);
+        faultHold.hold(job.printer(), reason);
+        final boolean keep = autoQueueInstance.get().isAutoRequeueEnabled();
+        final String where;
+        if (!keep) {
+            where = "Auto-requeue is off, so the job is not queued again.";
+        } else if (returnsToPool(entry)) {
+            returnToDispatchPool(entry, job.printer());
+            where = "The job is back in the dispatch pool for %s - another printer that can print it takes it, or this one once released."
+                    .formatted(entry.orderRef().label());
+        } else {
+            requeueFront(job.printer(), entry);
+            where = "The job is first in %s's queue for when it is released.".formatted(job.printer());
+        }
+        Log.warnf("PrintQueueService: %s: %s ended %s with a hardware fault - printer held, not retried: %s",
+                job.printer(), job.file(), job.result(), reason);
+        notificationService.notifyEvent("fault_hold", job.printer(),
+                "%s is held - %s %s with a hardware fault, so it was NOT retried:\n%s\n%s\nFix the printer, then press Bed cleared on it to put it back to work."
+                        .formatted(job.printer(), job.file(), job.result().toLowerCase(), reason, where));
+        return keep;
     }
 
     private synchronized void removeFirst(final String printer, final QueueEntry entry) {

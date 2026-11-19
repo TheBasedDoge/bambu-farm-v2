@@ -57,6 +57,16 @@ public class NotificationSettingsView extends VerticalLayout implements Notifica
                     + "per occurrence), no printer with the required filament, none opted in, AI checks off, Ollama "
                     + "unreachable, the Auto-Start master switch off, a dirty bed, or a job parked after repeated failures. "
                     + "Sent when it starts, then at most every 3 hours while it lasts"),
+            new EventDef("login_locked", "Login Locked",
+                    "5 wrong passwords for one username within 15 minutes locked that username for a while (it "
+                    + "doubles if the guessing continues). Remembered devices keep working."),
+            new EventDef("fault_hold", "Printer Held (Hardware Fault)",
+                    "A queue-started print failed with a hardware fault (bed leveling, homing, nozzle sensors, fans, "
+                    + "motors): not retried, the printer takes no work until someone presses Bed cleared on it, and "
+                    + "the job goes back to its order's pool. Urgent (@here)"),
+            new EventDef("bed_waiting", "Bed Waiting (Escalation)",
+                    "A printer has been finished for 30+ minutes with its bed not cleared while order jobs it could "
+                    + "print are waiting. Repeats every 2 h; holds off during the quiet hours set on the Automation page. Urgent (@here)"),
             new EventDef("auto_requeue", "Auto-Requeue",
                     "A failed queue-started print was automatically requeued for one retry (or gave up after retrying)"),
             new EventDef("ams_retry", "AMS Auto-Retry",

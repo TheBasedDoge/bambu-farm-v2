@@ -532,6 +532,7 @@ public final class DashboardPrinter implements NotificationHelper, ViewHelper {
                         final int severity = (int) ((h.getCode() >> 16) & 0xFFFFL);
                         return severity <= 2 && severity > 0;
                     })
+                    .filter(h -> !HmsCodes.isNotice(h.getAttr(), h.getCode()))
                     .map(h -> HmsCodes.hms(printer.getModel(), h.getAttr(), h.getCode()).describe())
                     .distinct()
                     .toList();

@@ -109,7 +109,7 @@ public class NotificationService {
      * priority. 2026-11-03: a confirmed spaghetti alert went out in the middle of 16 AMS retry messages and was
      * missed.
      */
-    static final java.util.Set<String> URGENT_EVENTS = java.util.Set.of("failure_detected", "fail");
+    static final java.util.Set<String> URGENT_EVENTS = java.util.Set.of("failure_detected", "fail", "fault_hold", "bed_waiting");
 
     /**
      * One notification as the farm raised it: the same text Discord/ntfy/MQTT got, plus what became of it.
@@ -343,7 +343,8 @@ public class NotificationService {
             // It opens a page with one confirm button rather than acting on the link itself, so a link
             // preview or a mis-tap cannot open the bed gate.
             switch (event) {
-                case "finish", "fail", "stopped", "auto_start_blocked", "dispatch_blocked", "auto_requeue" ->
+                case "finish", "fail", "stopped", "auto_start_blocked", "dispatch_blocked", "auto_requeue", "fault_hold",
+                        "bed_waiting" ->
                     links.add(new Link("Bed cleared", "%s/bed-cleared/%s".formatted(root, encode(printer))));
                 default -> {
                 }

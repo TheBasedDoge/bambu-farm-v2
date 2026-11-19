@@ -7,6 +7,7 @@ import com.tfyre.bambu.model.Print;
 import com.tfyre.bambu.printer.AutoStartService;
 import com.tfyre.bambu.printer.BambuConst;
 import com.tfyre.bambu.printer.BambuPrinter;
+import com.tfyre.bambu.printer.FaultHoldService;
 import com.tfyre.bambu.printer.HmsCodes;
 import com.tfyre.bambu.printer.BambuPrinters;
 import com.tfyre.bambu.printer.BedClearService;
@@ -76,6 +77,8 @@ public class FarmTools {
     FarmStatusService farmStatus;
     @Inject
     BedClearService bedClear;
+    @Inject
+    FaultHoldService faultHold;
     @Inject
     AutoStartService autoStart;
     @Inject
@@ -163,6 +166,7 @@ public class FarmTools {
         if (!hms.isEmpty()) {
             m.put("hms", hms);
         }
+        faultHold.get(name).ifPresent(h -> m.put("faultHold", h.reason() + " (since " + h.since() + "; released by Bed cleared)"));
         m.put("bedCleared", bedClear.isCleared(name));
         m.put("queued", line.queued());
         m.put("autoStart", autoStart.isEnabled(name));

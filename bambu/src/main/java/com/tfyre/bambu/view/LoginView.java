@@ -43,6 +43,8 @@ public class LoginView extends VerticalLayout implements BeforeEnterObserver, No
     BambuConfig config;
     @Inject
     RememberMeService rememberMeService;
+    @Inject
+    com.tfyre.bambu.security.LoginThrottle throttle;
 
     @Override
     protected void onAttach(final AttachEvent attachEvent) {
@@ -135,6 +137,10 @@ public class LoginView extends VerticalLayout implements BeforeEnterObserver, No
             UI.getCurrent().getPage().setLocation(getLoggedInUrl());
         } else {
             login.setError(true);
+            // Say why the right password stopped working - otherwise a locked owner just keeps typing.
+            throttle.lockedFor(username).ifPresent(left -> showError(
+                    "Too many wrong passwords for this username - try again in %s.".formatted(
+                            com.tfyre.bambu.security.LoginThrottle.human(left))));
         }
     }
 

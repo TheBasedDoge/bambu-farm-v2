@@ -146,7 +146,9 @@ public class AiTools {
         }
         return ai.getHistory().stream()
                 .filter(r -> r.at() != null && r.at().toEpochMilli() == millis && printer.equalsIgnoreCase(r.printer()))
-                .findFirst();
+                .findFirst()
+                // rotated out of the history - a labelled frame is still kept
+                .or(() -> labels.kept(frameId.trim()));
     }
 
     static String frameId(final PrintAiService.CheckRecord r) {

@@ -137,6 +137,8 @@ public class OverviewView extends VerticalLayout {
     private final Div stageArea = new Div();
     private final Div printerGrid = new Div();
     private final Div railSlot = new Div();
+    /** Collapses / expands the rail. Client-side only, remembered per browser - see {@link #wireRailToggle}. */
+    private final Span railToggle = new Span();
     private String statsKey = "";
     private String railKey = "";
 
@@ -178,7 +180,8 @@ public class OverviewView extends VerticalLayout {
         // plausible-looking wrong time.
         final Span clock = new Span();
         clock.addClassName("wall-clock");
-        bar.add(buildBrand(), statsSlot, clock);
+        railToggle.setClassName("wall-rail-toggle");
+        bar.add(buildBrand(), statsSlot, clock, railToggle);
         stageArea.setClassName("wall-stage-area");
         printerGrid.setClassName("wall-printers");
         railSlot.setClassName("wall-rail");
@@ -193,6 +196,7 @@ public class OverviewView extends VerticalLayout {
         seenFirstPass = false;
         refresh();
         installDisplayScripts();
+        wireRailToggle();
         hideChrome();
 
         final UI ui = attachEvent.getUI();
@@ -263,6 +267,35 @@ public class OverviewView extends VerticalLayout {
                 };
                 document.addEventListener('mousemove', app.__wallIdle);
                 app.__wallIdle();""");
+    }
+
+    /**
+     * The button at the right of the top bar folds the rail (needs-you + orders) away so the cameras take the whole
+     * width, and brings it back. Remembered per browser in localStorage, so the wall display keeps its choice across
+     * reloads and a phone can make its own. An attribute on the board rather than a class on the stage: the server
+     * rewrites the stage's classes on every refresh (no-rail) and would wipe a client-set class.
+     */
+    private void wireRailToggle() {
+        getElement().executeJs("""
+                const root = this;
+                const board = root.querySelector('.wall');
+                const toggle = root.querySelector('.wall-rail-toggle');
+                if (!board || !toggle) { return; }
+                const apply = (c) => {
+                    board.toggleAttribute('data-rail-collapsed', c);
+                    toggle.textContent = c ? '\u276E' : '\u276F';
+                    toggle.title = c ? 'Show the side panel' : 'Hide the side panel';
+                };
+                let collapsed = false;
+                try { collapsed = localStorage.getItem('bambu.wall.railCollapsed') === '1'; } catch (e) { }
+                apply(collapsed);
+                if (toggle.__wired) { return; }
+                toggle.__wired = true;
+                toggle.addEventListener('click', () => {
+                    collapsed = !board.hasAttribute('data-rail-collapsed');
+                    apply(collapsed);
+                    try { localStorage.setItem('bambu.wall.railCollapsed', collapsed ? '1' : '0'); } catch (e) { }
+                });""");
     }
 
     /** Puts the navbar and sidebar back, and unhooks everything {@link #hideChrome} left on the app layout. */

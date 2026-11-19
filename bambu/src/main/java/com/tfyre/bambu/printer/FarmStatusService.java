@@ -49,6 +49,8 @@ public class FarmStatusService {
     PrintQueueService queueService;
     @Inject
     BedClearService bedClear;
+    @Inject
+    FaultHoldService faultHold;
 
     public PrinterLine line(final BambuPrinters.PrinterDetail detail) {
         final BambuPrinter p = detail.printer();
@@ -61,6 +63,10 @@ public class FarmStatusService {
         final int queued = queueService.size(name);
         final String job = p.getSubtaskName().filter(s -> !s.isBlank()).orElse("");
 
+        if (!inJob && faultHold.isHeld(name)) {
+            return new PrinterLine(name, Tone.BAD, "Held: hardware fault · fix it, then press Bed cleared", true, false, false,
+                    percent, queued);
+        }
         final Optional<String> fault = fault(p);
         if (fault.isPresent()) {
             return new PrinterLine(name, Tone.BAD, fault.get(), false, inJob, paused, percent, queued);

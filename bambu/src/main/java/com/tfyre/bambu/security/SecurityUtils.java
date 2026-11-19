@@ -46,7 +46,7 @@ public class SecurityUtils {
                         vsr.login(username, password);
                         return true;
                     } catch (ServletException ex) {
-                        Log.error(String.format("Login failed for [%s] - %s", username, ex.getMessage()));
+                        Log.error(String.format("Login failed for [%s] - %s", LoginThrottle.shown(username), ex.getMessage()));
                         return false;
                     }
                 })).orElseGet(() -> {
