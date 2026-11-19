@@ -18,8 +18,8 @@
         <maven.deploy.skip>true</maven.deploy.skip>
 
         <failOnMissingWebXml>false</failOnMissingWebXml>
-        <vaadin.version>24.9.5</vaadin.version>
-        <quarkus.version>3.30.5</quarkus.version>
+        <vaadin.version>24.9.18</vaadin.version>
+        <quarkus.version>3.33.4.2</quarkus.version>
         <compiler-plugin.version>3.14.1</compiler-plugin.version>
         <jna.version>5.18.1</jna.version>
         <commons-net.version>3.12.0</commons-net.version>
@@ -86,6 +86,20 @@
                 <artifactId>commons-net</artifactId>
                 <version>${commons-net.version}</version>
             </dependency>            
+            <!-- 2026-11-18 security audit: pinned past what the BOMs bring.
+                 guava: CVE-2026-102554 (unbounded allocation deserializing Compact* collections), fixed 33.7.2.
+                 spring-data-commons (pulled in by Vaadin's combo box for Sort/Pageable): four DoS advisories,
+                 fixed in 3.5.12 - same minor line. Drop these once the BOMs catch up. -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.7.2-jre</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.data</groupId>
+                <artifactId>spring-data-commons</artifactId>
+                <version>3.5.12</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
     <build>
